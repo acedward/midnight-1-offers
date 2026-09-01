@@ -47,26 +47,36 @@ BASE="http://${BIND}:${FPORT}"
 FAILURES=0
 fail() { err "$*"; FAILURES=$(( FAILURES + 1 )); }
 
+# ALL THREE HELPERS BELOW PRINT NOTHING AND STILL SUCCEED when there is no match, and every
+# one of them ends in an explicit `return 0`. "Absent" is a normal, expected answer here — the
+# kernel does not report a nodeUri at all — and under `set -e` with `pipefail` a non-matching
+# grep makes the whole pipeline fail, so `x="$(json_field …)"` would abort the script instead
+# of assigning the empty string. That is exactly what happened on the first live run: the
+# script died silently at the first absent key with every remaining assertion unreported.
+
 # json_field <body> <key> — the string value of a top-level JSON key, or nothing.
 # grep/sed rather than jq or python: this repository's verify scripts take no dependency a
 # clean macOS box does not already have.
 json_field() {
-  printf '%s' "$1" \
-    | grep -oE "\"$2\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" \
-    | head -1 \
-    | sed -E "s/^\"$2\"[[:space:]]*:[[:space:]]*\"(.*)\"$/\1/"
+  local raw
+  raw="$(printf '%s' "$1" | grep -oE "\"$2\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" | head -1 || true)"
+  [[ -n "$raw" ]] || return 0
+  printf '%s' "$raw" | sed -E "s/^\"$2\"[[:space:]]*:[[:space:]]*\"(.*)\"$/\1/"
+  return 0
 }
 
 # uri_host <url> — the hostname, without scheme, port or path.
 uri_host() {
   local u="$1"
   [[ "$u" =~ ^[a-zA-Z][a-zA-Z0-9+.-]*://([^/:]+) ]] && printf '%s' "${BASH_REMATCH[1]}"
+  return 0
 }
 
 # uri_port <url> — the explicit port, or nothing when the URL carries none.
 uri_port() {
   local u="$1"
   [[ "$u" =~ ^[a-zA-Z][a-zA-Z0-9+.-]*://[^/:]+:([0-9]+) ]] && printf '%s' "${BASH_REMATCH[1]}"
+  return 0
 }
 
 log "frontend: endpoints"
@@ -137,7 +147,7 @@ log "frontend: browser-network rewrite is in the shipped bundle"
 # 6 MB file that does not contain it and failed a correct build. Chunk names are content
 # hashed, so they are discovered from what is served (index.html's script/modulepreload tags,
 # then the entry's own import map) rather than guessed.
-ENTRY_PATH="$(printf '%s' "$HTML" | grep -oE 'src="/assets/[^"]+\.js"' | head -1 | sed -E 's/^src="(.*)"$/\1/')"
+ENTRY_PATH="$(printf '%s' "$HTML" | grep -oE 'src="/assets/[^"]+\.js"' | head -1 | sed -E 's/^src="(.*)"$/\1/' || true)"
 if [[ -z "$ENTRY_PATH" ]]; then
   fail "could not find the module bundle referenced by index.html"
 else
@@ -151,7 +161,7 @@ else
     # inside the entry's own import map, and a pattern anchored on "/assets/" would silently
     # find fewer chunks than exist.
     ASSET_PATHS="$( { printf '%s\n' "$HTML"; printf '%s\n' "$ENTRY"; } \
-      | grep -oE 'assets/[A-Za-z0-9_.@-]+\.js' | sort -u | sed 's|^|/|' )"
+      | grep -oE 'assets/[A-Za-z0-9_.@-]+\.js' | sort -u | sed 's|^|/|' || true )"
     info "chunks $(printf '%s\n' "$ASSET_PATHS" | grep -c '^/assets/') javascript asset(s)"
     FOUND_OVERRIDE=0
     FOUND_REWRITE=0
@@ -342,7 +352,7 @@ for asset in keys/mint_shielded.prover keys/mint_shielded.verifier zkir/mint_shi
     fail "GET ${url} did not answer 2xx — the browser prover cannot fetch this circuit"
     continue
   fi
-  ctype="$(printf '%s' "$headers" | grep -i '^content-type:' | head -1 | tr -d '\r')"
+  ctype="$(printf '%s' "$headers" | grep -i '^content-type:' | head -1 | tr -d '\r' || true)"
   case "$(printf '%s' "$ctype" | tr '[:upper:]' '[:lower:]')" in
     *text/html*)
       fail "GET ${url} answered text/html — that is an SPA fallback, not a ZK artifact"

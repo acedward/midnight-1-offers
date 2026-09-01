@@ -83,11 +83,11 @@ RUN set -eux; \
     cp -a templates/zswap-da/. /src/; \
     printf '%s' "${actual}" > /.zswap-da-commit
 
-# THE v8 ASSERTION. This repository ships no ledger-v9.patch because the template at this ref
-# is already on the ledger-v8 lane the 1.x kernel runs. Assert it, both directions: the exact
-# ledger-v8 pin must be present AND no ledger-v9 dependency may appear. A frozen ref that
-# moved would otherwise produce a bundle proving against the wrong ledger, which fails much
-# later and much less legibly.
+# THE v8 ASSERTION. This repository ships no ledger-v9.patch because the template's CONTRACT
+# lane at this ref is already on the ledger-v8 line the 1.x kernel runs. Assert it, both
+# directions: the exact ledger-v8 pin must be present AND no ledger-v9 dependency may appear
+# in package.json. A frozen ref that moved would otherwise produce a bundle proving against
+# the wrong ledger, which fails much later and much less legibly.
 RUN set -eux; \
     cd /src; \
     grep -q '"@midnight-ntwrk/ledger-v8": "8.1.0"' package.json; \
@@ -97,6 +97,44 @@ RUN set -eux; \
     grep -q '"@midnight-ntwrk/compact-runtime": "0.16.0"' package.json; \
     test -f LICENSE-APACHE; \
     test -f LICENSE-MIT
+
+# ── the OTHER half of "v8-native", which package.json alone does not show ────
+#
+# "The template is v8-native at this ref" is true of its CONTRACT lane and FALSE of its WALLET
+# lane. At the frozen ref `@effectstream/{midnight-contracts,wallets}` are 0.200.1 — the
+# Midnight 2.x line — whose closure is `@midnightntwrk/ledger-v9` 1.0.0-rc.3 plus the v9
+# wallet SDK. MEASURED CONSEQUENCE on a live 1.x stack: the in-page JS wallet connects, then
+# its sync loop fails every event with `Wallet.Sync: … Failed to decode ledger event payload`,
+# so its balance stays 0 forever and offer create/take die with "Insufficient <token>". The
+# faucet mint still works, because it is gasless — the batcher balances and submits, and the
+# browser only proves the contract call with midnight-js 4.1.1 / ledger-v8.
+#
+# This patch is UPSTREAM'S OWN DIFF, not our invention: it is exactly
+# `git diff 332503c8 02a04de3 -- templates/zswap-da`, i.e. the reverse of effectstream commit
+# 98b2b78b ("bump @effectstream/* 0.104.0 -> 0.200.1"). Between those two commits the template
+# subtree differs ONLY in package.json (2 lines) and bun.lock — no source file changes at all.
+# 0.104.0 is the 1.x line: `@effectstream/midnight-contracts@0.104.0` depends on
+# `@midnight-ntwrk/ledger-v8@8.1.0` and `wallet-sdk-facade@4.1.0`, and the resulting lockfile
+# contains ZERO references to ledger-v9 — which also collapses the bundle to ONE wasm ledger
+# instead of two.
+#
+# See plan question Q14 for the alternative (moving FRONTEND_REF to 02a04de3 instead of
+# patching), which is cleaner but changes an identity the spec names.
+COPY effectstream-1x-line.patch /tmp/effectstream-1x-line.patch
+RUN set -eux; \
+    cd /src; \
+    git apply --check /tmp/effectstream-1x-line.patch; \
+    git apply /tmp/effectstream-1x-line.patch; \
+    grep -q '"@effectstream/midnight-contracts": "0.104.0"' package.json; \
+    grep -q '"@effectstream/wallets": "0.104.0"' package.json; \
+    if grep -q '0\.200\.' package.json; then \
+      echo "FAIL: a 0.200.x @effectstream dependency survived the 1.x-line patch" >&2; exit 1; \
+    fi; \
+    # The decisive one. The wallet lane is v8-only if and only if nothing in the resolved
+    # dependency graph pulls ledger-v9 — and the lockfile is where that is visible.
+    if grep -q 'ledger-v9' bun.lock; then \
+      echo "FAIL: the resolved lockfile still contains ledger-v9; the wallet lane is not v8" >&2; exit 1; \
+    fi
 
 # The kernel's GET /v1/midnight/config reports the URIs the KERNEL dials — inside compose
 # those are service hostnames (indexer, proof-server) on container ports. The patch fixes both
@@ -110,6 +148,14 @@ RUN set -eux; \
     git apply /tmp/browser-network-urls.patch; \
     grep -q 'pageHost' src/services/api.ts; \
     grep -q "'proofServerUri'" src/services/api.ts
+
+# BOTH identities are baked into the runtime image, not just the commit.
+# scripts/verify-source-pins.sh reads them out of the built image and asserts them against
+# config/artifact-decisions.json, so "which bytes is this?" is answerable from a running
+# stack rather than from remembering how it was built. The subtree hash is the one that
+# matters most here: a commit says which history, only the tree says which files.
+ARG FRONTEND_SUBTREE_SHA
+RUN printf '%s' "${FRONTEND_SUBTREE_SHA}" > /.zswap-da-subtree
 
 # ── stage 1: compile the matching Compact bindings and keys ──────────────────
 # Fetched as a release asset and SHA-256 verified, rather than run through the `compact`
@@ -214,7 +260,8 @@ RUN set -eux; \
 FROM ${NGINX_BASE}
 
 COPY --from=build  /src/dist /usr/share/nginx/html
-COPY --from=source /.zswap-da-commit /.zswap-da-commit
+COPY --from=source /.zswap-da-commit  /.zswap-da-commit
+COPY --from=source /.zswap-da-subtree /.zswap-da-subtree
 COPY --from=source /src/LICENSE-APACHE /usr/share/licenses/zswap-da/LICENSE-APACHE
 COPY --from=source /src/LICENSE-MIT    /usr/share/licenses/zswap-da/LICENSE-MIT
 COPY PROVENANCE.md /usr/share/licenses/zswap-da/PROVENANCE.md
