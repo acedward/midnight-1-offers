@@ -101,11 +101,19 @@ RELAY_HTTP_HOST_PORT=$(( BASE + 7 ))
 RELAY_WS_HOST_PORT=$(( BASE + 8 ))
 INTENTS_UI_HOST_PORT=$(( BASE + 9 ))
 
-# The SPA's hostname-relative fallback is only valid on the default :9999/:3334 layout, so a
-# generated random-port stack MUST inject its actual host endpoints or the browser will fetch
-# from ports nothing is listening on.
+# THE BROWSER RUNS OUTSIDE COMPOSE, so every endpoint the page touches has to be a HOST
+# endpoint. The SPA's own fallbacks (http://<pageHost>:9999, :3334) and the kernel-config
+# hostname rewrite both keep the DEFAULT/CONTAINER port, which a generated block by definition
+# does not publish — so a random-port stack MUST inject all six or the browser fetches from
+# ports nothing is listening on. The last four are folded into GET /v1/midnight/config by
+# images/zswap-da/browser-network-urls.patch; FRONTEND_NODE_URI has no counterpart there at
+# all (the kernel reports no node URI) and is what the in-page JS wallet dials.
 FRONTEND_API_BASE=http://127.0.0.1:$(( BASE + 3 ))
 FRONTEND_BATCHER_URL=http://127.0.0.1:$(( BASE + 4 ))
+FRONTEND_NODE_URI=http://127.0.0.1:$(( BASE + 0 ))
+FRONTEND_INDEXER_URI=http://127.0.0.1:$(( BASE + 1 ))${INDEXER_API_PATH:-/api/v3/graphql}
+FRONTEND_INDEXER_WS_URI=ws://127.0.0.1:$(( BASE + 1 ))${INDEXER_API_PATH:-/api/v3/graphql}/ws
+FRONTEND_PROOF_SERVER_URI=http://127.0.0.1:$(( BASE + 2 ))
 
 INDEXER_SECRET=303132333435363738393031323334353637383930313233343536373839303132
 
