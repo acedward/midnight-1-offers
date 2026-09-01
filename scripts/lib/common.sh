@@ -326,7 +326,6 @@ FUTURE_PROFILES_BLOCKER=""
 partial_profile_note() {
   case "$1" in
     core)       echo "placeholder — node, indexer, proof-server and postgres land in P1" ;;
-    offerfiles) echo "placeholder — celestia, contract deploy, kernel and batcher land in P2" ;;
     frontend)   echo "placeholder — the zswap-da SPA lands in P3" ;;
     solver)     echo "placeholder — relay, COW solver, provisioning and the intents UI land in P4" ;;
     *) return 1 ;;
