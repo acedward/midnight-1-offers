@@ -751,19 +751,29 @@ def _fx_source_id_collides(doc):
     return doc
 
 
+# The three toolchain fixtures below SYNTHESISE the state they test rather than assuming the
+# live document is still in it. They were originally written against an UNRESOLVED `compact`
+# entry (Q9 was open at P0); when P3 resolved it, "delete openQuestion" and "set resolved" both
+# stopped describing a defect — one raised KeyError, the other mutated nothing. A fixture that
+# quietly stops biting is exactly what --self-test exists to prevent, so each now sets up its
+# own precondition and is independent of how the entry happens to be pinned today.
 def _fx_unresolved_toolchain_untracked(doc):
-    del _tc(doc, "compact")["openQuestion"]
+    tc = _tc(doc, "compact")
+    tc["resolved"] = False
+    tc.pop("openQuestion", None)
     return doc
 
 
 def _fx_toolchain_resolved_without_pins(doc):
-    _tc(doc, "compact")["resolved"] = True
+    tc = _tc(doc, "compact")
+    tc["resolved"] = True
+    tc.pop("assets", None)
     return doc
 
 
 def _fx_toolchain_darwin_asset(doc):
-    _tc(doc, "compact")["candidateAssets"]["v0.30.0-rc.1"]["linux/arm64"]["name"] = \
-        "compactc_v0.30.0-rc.1_aarch64-darwin.zip"
+    _tc(doc, "compact")["assets"]["linux/arm64"]["name"] = \
+        "compactc_v0.31.0_aarch64-darwin.zip"
     return doc
 
 

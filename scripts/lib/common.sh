@@ -140,6 +140,13 @@ load_env() {
       warn "${retired} is IGNORED — this repository has no AA/EVM profile, no PGLite and no solver sink"
     fi
   done
+  # There are TWO Compact toolchains here (kernel 0.30.0, frontend 0.31.0), so one variable
+  # could never have configured both. Each is pinned where it is enforced — a Dockerfile ARG
+  # in images/offerfiles-kernel, a literal in compose/frontend.yml that
+  # scripts/verify-compose-pins.sh binds to the matrix — and neither reads the environment.
+  if [[ -n "${COMPACT_VERSION-}" ]]; then
+    warn "COMPACT_VERSION is IGNORED — the kernel compiles at 0.30.0 and the frontend at 0.31.0, both pinned in-build"
+  fi
 
   # ── external runtime images: repository + IMMUTABLE DIGEST, never a tag ─────
   # All three are good official multiarch (linux/amd64 + linux/arm64) indexes, so the same
@@ -344,7 +351,6 @@ FUTURE_PROFILES_BLOCKER=""
 # services; a note that outlives the gap it described is worse than none.
 partial_profile_note() {
   case "$1" in
-    frontend)   echo "placeholder — the zswap-da SPA lands in P3" ;;
     solver)     echo "placeholder — relay, COW solver, provisioning and the intents UI land in P4" ;;
     *) return 1 ;;
   esac

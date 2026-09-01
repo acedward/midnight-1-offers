@@ -325,6 +325,14 @@ def synthetic_base(matrix: dict) -> dict:
         o = _component(matrix, cid)["oci"]
         return f"{o['repository']}@{o['indexDigest']}"
 
+    def toolchain(tid):
+        # BY ID, never by position. There is more than one Compact toolchain in the matrix
+        # (the kernel compiles at 0.30.0, the frontend at 0.31.0), so `toolchains[0]` would
+        # silently build the synthetic frontend against whichever entry happens to be first —
+        # and _check_build_args, which looks up 'compact' by id, would then disagree with the
+        # very document the self-test hands it.
+        return next((t for t in matrix.get("toolchains") or [] if t.get("id") == tid), {})
+
     def port(p):
         return {"mode": "ingress", "host_ip": DEFAULT_BIND, "target": p, "published": str(p), "protocol": "tcp"}
 
@@ -366,7 +374,7 @@ def synthetic_base(matrix: dict) -> dict:
                 "build": {"context": "images/zswap-da",
                           "args": {"FRONTEND_REF": _source(matrix, "zswap-da-template")["ref"],
                                    "FRONTEND_SUBTREE_SHA": _source(matrix, "zswap-da-template")["subtreeSha"],
-                                   "COMPACT_VERSION": (matrix.get("toolchains") or [{}])[0].get("version")}},
+                                   "COMPACT_VERSION": toolchain("compact").get("version")}},
             },
             "relay": {
                 "image": LOCAL_IMAGE_PREFIX + "relay:local",
@@ -497,7 +505,12 @@ def _fx_weak_warm_condition(doc):
 
 
 def _fx_warm_service_removed(doc):
-    doc["services"].pop(PROOF_WARM_SERVICE, None)
+    # `del`, not `.pop(…, None)`. With a default this never raised, so on a rendering that has
+    # no pre-warm service to remove the fixture mutated NOTHING, validate() found nothing
+    # wrong, and the self-test reported "the checker did not bite" — blaming the rule for a
+    # broken fixture. A KeyError is the machinery's own signal for "not present in this
+    # rendering", which is the honest answer. (Found at P3, on a frontend-only rendering.)
+    del doc["services"][PROOF_WARM_SERVICE]
     return doc
 
 
