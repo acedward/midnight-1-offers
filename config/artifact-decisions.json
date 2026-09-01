@@ -1,6 +1,6 @@
 {
   "schemaVersion": "artifact-decision-matrix-v2",
-  "pinsDigest": "c788922defd00b2c881bdeb2da62919f1f7ca1e2fd8863586af1c5806ebf3b6b",
+  "pinsDigest": "6901da2e4c7d56a61b480bfbfcb4c87cf7deb5e9a0b2d594942020a65a39e9e8",
   "frozenOn": "2026-09-01",
   "note": "Frozen artifact-selection contract for every external dependency of this Midnight 1.x demo. Each field was re-derived from a live source on the freeze date. scripts/verify-artifact-decisions.sh enforces it offline. Do not edit a digest, SHA or hash to make a build pass: re-verify against the source first, then regenerate pinsDigest with --update-pins so the change is visible in review. Schema v2 differs from the 2.x sibling's v1 by adding `sources` (git-pinned source builds) and `toolchains`, and by replacing the warehouse proof-data generation with a pre-warm strategy.",
   "selectionOrder": [
@@ -308,6 +308,42 @@
         }
       },
       "$comment": "The same releases also ship aarch64-darwin and x86_64-darwin zips. Those must never enter a Linux build stage, which is why forbiddenAssetSubstrings is applied to toolchain assets too and not only to warehouse components."
+    },
+    {
+      "id": "compact-kernel",
+      "version": "0.30.0",
+      "decision": "official-upstream-direct",
+      "resolved": true,
+      "requiredBy": "images/offerfiles-kernel — kernel main's own contract pragma `compact compile +0.30.0` in packages/contracts-midnight/contract-offer-files/package.json",
+      "repository": "midnightntwrk/compact",
+      "releaseTag": "compactc-v0.30.0",
+      "releaseId": 298133014,
+      "reason": "THERE ARE TWO COMPACT TOOLCHAINS IN THIS STACK, ON PURPOSE, and conflating them is the mistake this separate entry exists to prevent. The kernel deploys a contract compiled at +0.30.0 (its package.json pragma, paired with compact-runtime 0.15.0); the frontend template compiles ITS copy at 0.31.0 because the template's own manifest.json records compilerVersion 0.31.0 and fails the build on any mismatch (see the `compact` entry above and Q9). Same contract source on both sides, two compilers, one deliberate split. This entry pins the kernel half. It is `official-upstream-direct` from midnightntwrk/compact (repo id 967499978) rather than LFDT-Minokawa/compact (repo id 1115336329): those are DIFFERENT repositories, and only the former publishes a FINAL compactc-v0.30.0 — it is also where the `compact` toolchain manager itself is published, so it is what `compact update 0.30.0` resolves against. The asset is fetched and sha256-verified in the image rather than through the version manager, whose resolution is an unpinnable network lookup. NOT passed as a compose build arg: it is a Dockerfile ARG, like the celestia warehouse hashes, so it cannot collide with the frontend's COMPACT_VERSION.",
+      "assets": {
+        "linux/amd64": {
+          "name": "compactc_v0.30.0_x86_64-unknown-linux-musl.zip",
+          "assetId": 375958333,
+          "outerSize": 27315372,
+          "outerSha256": "06641b55befd35384ece539f7b12b65cb2cf6fb49996d27ef17a02fcacad4d2d"
+        },
+        "linux/arm64": {
+          "name": "compactc_v0.30.0_aarch64-unknown-linux-musl.zip",
+          "assetId": 375958332,
+          "outerSize": 26638736,
+          "outerSha256": "e4f36268ee652f1415d253d9fabd64a92b5eb0dc7cf28f40fa68c2445c7b3341"
+        }
+      },
+      "verifiedOn": "2026-09-01",
+      "$comment": [
+        "VERIFIED BY BUILD, not by inspection (P2, 2026-09-01): the image's compact stage matched",
+        "the arm64 sha256, found the `zkir` sibling the compiler shells out to, and `compactc",
+        "--version` printed exactly 0.30.0. All four are build-time assertions, so a re-uploaded",
+        "asset fails the build instead of silently producing artifacts the kernel would reject at",
+        "runtime as a bad verifier key.",
+        "",
+        "The same release also ships aarch64-darwin and x86_64-darwin zips; the build refuses any",
+        "asset name carrying a forbiddenAssetSubstrings marker."
+      ]
     }
   ],
   "proofData": {
