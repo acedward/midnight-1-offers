@@ -160,8 +160,13 @@ load_env() {
   : "${PROOF_VERSION:=8.1.0}"
 
   # ── source pins (full 40-hex commit SHAs; see config/artifact-decisions.json) ─
+  # KERNEL_REF is on `feat/cow-solver`, NOT on `main`, and deliberately (Q13): the solver
+  # profile's two kernel routes — the websocket book-update stream and the exact-files read —
+  # exist only there, and without them the intents lane publishes nothing and settles nothing.
+  # It is a strict descendant of main and exactly one commit past SOLVER_REF, so the kernel and
+  # the solver in this stack are two views of ONE tree. Re-pin to main when kernel PR #48 lands.
   : "${KERNEL_REPO:=https://github.com/effectstream/zswap-offerfiles-kernel.git}"
-  : "${KERNEL_REF:=6c5ebabc3533147d9a5cd73a57c16175b2974266}"
+  : "${KERNEL_REF:=773e70cb2f9d9583a01b8540231ae393ed8db207}"
   : "${FRONTEND_REPO:=https://github.com/effectstream/effectstream.git}"
   : "${FRONTEND_REF:=332503c8f9216143a8c805f2a0acbcfd39e5a21d}"
   : "${SOLVER_REPO:=https://github.com/effectstream/zswap-offerfiles-kernel.git}"
