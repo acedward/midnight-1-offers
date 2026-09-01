@@ -1,6 +1,6 @@
 {
   "schemaVersion": "artifact-decision-matrix-v2",
-  "pinsDigest": "c788922defd00b2c881bdeb2da62919f1f7ca1e2fd8863586af1c5806ebf3b6b",
+  "pinsDigest": "45a98fbf36fe1ce376884bd8b9c401a4d7bae8e4275dd205219703bea447d2ef",
   "frozenOn": "2026-09-01",
   "note": "Frozen artifact-selection contract for every external dependency of this Midnight 1.x demo. Each field was re-derived from a live source on the freeze date. scripts/verify-artifact-decisions.sh enforces it offline. Do not edit a digest, SHA or hash to make a build pass: re-verify against the source first, then regenerate pinsDigest with --update-pins so the change is visible in review. Schema v2 differs from the 2.x sibling's v1 by adding `sources` (git-pinned source builds) and `toolchains`, and by replacing the warehouse proof-data generation with a pre-warm strategy.",
   "selectionOrder": [
@@ -282,32 +282,54 @@
   "toolchains": [
     {
       "id": "compact",
-      "version": "0.30.0",
+      "version": "0.31.0",
       "decision": "official-upstream-direct",
-      "resolved": false,
-      "openQuestion": "Q9",
-      "requiredBy": "kernel main's contract pragma `compact compile +0.30.0`",
-      "repository": "LFDT-Minokawa/compact",
-      "reason": "The Compact compiler keeps its direct official LFDT acquisition. It is NOT pinned yet, and that is recorded rather than papered over: LFDT-Minokawa/compact has never published a FINAL 0.30.0 compactc release. Enumerated from the releases API on 2026-09-01, the 0.30.0 line has only v0.30.0-rc.0 and v0.30.0-rc.1, and the tag convention changed at 0.31 (bare `v<semver>` before, `compactc-v<semver>` after), so a URL built the way the 2.x sibling builds it 404s here. Which compiler compiles the SPA's contract is therefore a decision, not a lookup — see Q9. T3.3 resolves it; the verifier refuses an unresolved toolchain that carries no openQuestion, so this cannot be quietly forgotten.",
-      "candidateAssets": {
-        "v0.30.0-rc.1": {
-          "releaseId": 297550868,
-          "tagConvention": "v<semver>",
-          "linux/amd64": {
-            "name": "compactc_v0.30.0-rc.1_x86_64-unknown-linux-musl.zip",
-            "assetId": 375076951,
-            "outerSize": 27315223,
-            "outerSha256": null
-          },
-          "linux/arm64": {
-            "name": "compactc_v0.30.0-rc.1_aarch64-unknown-linux-musl.zip",
-            "assetId": 375077834,
-            "outerSize": 26638587,
-            "outerSha256": null
-          }
+      "resolved": true,
+      "requiredBy": "images/zswap-da — the frozen template's scripts/build-contract.ts pins COMPILER_VERSION 0.31.0 and its committed src/contract/manifest.json verifies all 16 outputs plus the source hash byte-for-byte",
+      "repository": "midnightntwrk/compact",
+      "releaseTag": "compactc-v0.31.0",
+      "releaseId": 315357301,
+      "reason": "RESOLVED AT P3/T3.3 (Q9). This is not a version this repository chose: the frozen template DICTATES it. scripts/build-contract.ts pins COMPILER_VERSION = \"0.31.0\" and src/contract/manifest.json records the sha256 of the contract source (6fde5f8e2cfc5d5559f1468f3997f72810aec3093c6a87a54036b9175dadd3f0 — byte-identical to kernel main's copy) and of all 16 generated files; `compact compile` is deterministic, so any other compiler fails that manifest. The compiler is also the right partner for the template's runtime pins: compact-runtime 0.16.0 / compact-js 2.5.1 / midnight-js 4.1.1, which the Midnight Preview matrix pairs with the Compact 0.31.x toolchain. Q9's original option table was enumerated against LFDT-Minokawa/compact and assumed a 0.30.0 pin was needed; both premises were wrong — see `compact-kernel` for the other half of the split. The asset is fetched and sha256-verified in the image rather than through the `compact` version manager, whose resolution is an unpinnable network lookup.",
+      "assets": {
+        "linux/amd64": {
+          "name": "compactc_v0.31.0_x86_64-unknown-linux-musl.zip",
+          "assetId": 408401778,
+          "outerSize": 27444303,
+          "outerSha256": "ddbb4bb227c6a9c67098e65663648d8647097404ae094fdc0abe660839ea3ee8"
+        },
+        "linux/arm64": {
+          "name": "compactc_v0.31.0_aarch64-unknown-linux-musl.zip",
+          "assetId": 408401776,
+          "outerSize": 26746686,
+          "outerSha256": "9ead84322fb0c64aac6f94f12cd01eb011c1f3d0321d9fabc6a52b419c3dd6c6"
         }
       },
-      "$comment": "The same releases also ship aarch64-darwin and x86_64-darwin zips. Those must never enter a Linux build stage, which is why forbiddenAssetSubstrings is applied to toolchain assets too and not only to warehouse components."
+      "verifiedOn": "2026-09-01",
+      "$comment": [
+        "TWO COMPACT TOOLCHAINS, ON PURPOSE. This entry is the FRONTEND half (0.31.0, images/",
+        "zswap-da); `compact-kernel` is the kernel half (0.30.0, images/offerfiles-kernel). Same",
+        "contract source on both sides, two compilers, one deliberate split — because each side's",
+        "generated bindings are version-checked against ITS OWN compact-runtime at import time",
+        "(0.16.0 here, 0.15.0 there). Conflating them is what these two separate entries prevent.",
+        "",
+        "THE RESIDUAL RISK THIS SPLIT CARRIES, stated rather than discovered: the contract is",
+        "DEPLOYED by the kernel from a 0.30.0 compile, while the browser proves against ZK assets",
+        "the kernel serves from that same 0.30.0 compile (GET /keys/*, /zkir/* — the browser's own",
+        "compiled keys are never used; only managed/contract/index.js is). So the browser's 0.31.0",
+        "bindings drive 0.30.0 proving artifacts. P3's browser mint / offer create / offer take are",
+        "the measurement that settles it; on a verifier-key rejection the fallback is Q9 option D.",
+        "",
+        "midnightntwrk/compact (repo id 967499978) and LFDT-Minokawa/compact (id 1115336329) both",
+        "publish this tag, and for compactc-v0.31.0 the assets are BYTE-IDENTICAL: same sha256 and",
+        "same sizes on both Linux triples (LFDT asset ids 408401806 / 408401804, verified",
+        "2026-09-01). midnightntwrk is recorded because it is where the `compact` toolchain manager",
+        "itself is published — so it is what `compact update <v>` resolves against — and because",
+        "the kernel image already pins there; one fewer distinct upstream in the stack.",
+        "",
+        "The same release also ships aarch64-darwin and x86_64-darwin zips. Those must never enter",
+        "a Linux build stage, which is why forbiddenAssetSubstrings is applied to toolchain assets",
+        "and asserted again in the Dockerfile."
+      ]
     }
   ],
   "proofData": {
