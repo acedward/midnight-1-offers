@@ -1,0 +1,371 @@
+{
+  "schemaVersion": "artifact-decision-matrix-v2",
+  "pinsDigest": "c788922defd00b2c881bdeb2da62919f1f7ca1e2fd8863586af1c5806ebf3b6b",
+  "frozenOn": "2026-09-01",
+  "note": "Frozen artifact-selection contract for every external dependency of this Midnight 1.x demo. Each field was re-derived from a live source on the freeze date. scripts/verify-artifact-decisions.sh enforces it offline. Do not edit a digest, SHA or hash to make a build pass: re-verify against the source first, then regenerate pinsDigest with --update-pins so the change is visible in review. Schema v2 differs from the 2.x sibling's v1 by adding `sources` (git-pinned source builds) and `toolchains`, and by replacing the warehouse proof-data generation with a pre-warm strategy.",
+  "selectionOrder": [
+    "official-oci",
+    "warehouse-binary",
+    "exact-oci-mirror",
+    "source-build"
+  ],
+  "selectionRule": "Prefer a good official multiarch OCI image pinned by index digest. Otherwise use the verified official warehouse binary inside a thin local image. Otherwise mirror an unreliable upstream OCI image exactly into an owner-controlled registry. Only build from source when no reusable executable artifact exists.",
+  "linuxArchitectures": [
+    "amd64",
+    "arm64"
+  ],
+  "forbiddenAssetSubstrings": [
+    "macos",
+    "darwin",
+    "windows",
+    "-standalone_"
+  ],
+  "warehouse": {
+    "repository": "effectstream/binaries",
+    "releaseTag": "0.3.120",
+    "releaseId": 270761136,
+    "assetCount": 97,
+    "catalogCommit": "42c1b610ea1cbafd3eaf4c95901610d79541091b",
+    "catalogPath": "metadata/releases/0.3.120.json",
+    "mutable": true,
+    "distributionTier": "development-only",
+    "warning": "DEVELOPMENT ONLY - NOT FOR PRODUCTION USE. Release 0.3.120 is mutable; verify every downloaded SHA-256 against this file before installation or execution."
+  },
+  "components": [
+    {
+      "id": "midnight-node",
+      "version": "1.0.0",
+      "inArtifactNormalizationScope": true,
+      "decision": "official-oci",
+      "reason": "A good official multiarch image exists for the exact required version. Repacking it under another registry owner would add risk and no value.",
+      "oci": {
+        "repository": "docker.io/midnightntwrk/midnight-node",
+        "readableTag": "1.0.0",
+        "indexDigest": "sha256:ede01da35e982b6a4b85461ad8492ae2753ef14246fba33c8039b782aa8e39fb",
+        "indexMediaType": "application/vnd.docker.distribution.manifest.list.v2+json",
+        "platforms": {
+          "linux/amd64": {
+            "manifestDigest": "sha256:666e5bc90814618423c33e11088e94b51c9fd62e886a614f996cddaec1a6623c",
+            "configDigest": "sha256:530d6b0a9dc18fb0f5734d1c977a2dade24a4c29c531bb90e558e9a3704c09f9"
+          },
+          "linux/arm64": {
+            "manifestDigest": "sha256:c3e46f8beff308b352813cd8904f6480c331504e09060abd671b8a32e1255220",
+            "configDigest": "sha256:1a9fdc745f5731b1415c8fe07478f9b634f624e6ffca36bbec3f7bdebc8db571"
+          }
+        }
+      }
+    },
+    {
+      "id": "indexer-standalone",
+      "version": "4.3.3",
+      "inArtifactNormalizationScope": true,
+      "decision": "official-oci",
+      "reason": "Unlike the 4.4.0-rc.3 the 2.x sibling needs, 4.3.3 IS published as a good official multiarch image, so this repository neither compiles it nor installs a warehouse binary into a thin local image. Both are strictly worse when an official index exists.",
+      "oci": {
+        "repository": "docker.io/midnightntwrk/indexer-standalone",
+        "readableTag": "4.3.3",
+        "indexDigest": "sha256:03afd079b00bcd229df29a24771439c5e7695c339cd89216d0763ce40731cc4b",
+        "indexMediaType": "application/vnd.oci.image.index.v1+json",
+        "platforms": {
+          "linux/amd64": {
+            "manifestDigest": "sha256:07de7d3b615a95cf0fa693557d69446cb4fce0d52dc6d2182d719b20a61c478e",
+            "configDigest": "sha256:e22afd54ca3afb622e3a0f3440b495f8e768476c15a81f77325f80429f20ff09"
+          },
+          "linux/arm64": {
+            "manifestDigest": "sha256:ff3f511ab81e7e337b76dd794cfbe0da8d22c43b915ac457557f937bb6e5f868",
+            "configDigest": "sha256:9d76917aee7574d6085a2532b4d694dc0862e9e2aa1966ddd3916fffe34e8f2b"
+          }
+        }
+      },
+      "$comment": [
+        "The index also carries two unknown/unknown attestation manifests (sha256:57b5182d… and",
+        "sha256:1452f338…), which are in-toto provenance attachments referencing the two real",
+        "platform manifests, not runnable platforms. They are deliberately NOT recorded as",
+        "platforms: `platforms` means 'what this stack may run', and an attestation manifest is",
+        "not that.",
+        "",
+        "4.3.3 serves an IDENTICAL GraphQL schema at /api/v3/graphql and /api/v4/graphql. Both",
+        "paths are asserted by verify.sh so a future version that drops one cannot break half",
+        "the stack silently."
+      ]
+    },
+    {
+      "id": "proof-server",
+      "version": "8.1.0",
+      "inArtifactNormalizationScope": true,
+      "decision": "official-oci",
+      "reason": "A good official multiarch image exists for the ledger-v8 proof server. There is exactly ONE proof server in this repository: the second, experimental (zkir-v3) build the 2.x sibling mirrors exists only for its AA profile, which this repository does not have. Nothing here compiles with --feature-zkir-v3, so no second variant, no separate pin, and no mirror record are needed.",
+      "oci": {
+        "repository": "docker.io/midnightntwrk/proof-server",
+        "readableTag": "8.1.0",
+        "indexDigest": "sha256:801bbc0340e9e96f16735f77b523f23c7459e3359842f7c79c2c53f4e994d531",
+        "indexMediaType": "application/vnd.docker.distribution.manifest.list.v2+json",
+        "platforms": {
+          "linux/amd64": {
+            "manifestDigest": "sha256:829d02876b346fe773d3d17419a38aadb9fafc6653603afbb3f16672bc122bd4",
+            "configDigest": "sha256:6e1ffb4a816a751443762ff5e8400852a4a1e38ba764b0a0ec4cc520cddbcdce"
+          },
+          "linux/arm64": {
+            "manifestDigest": "sha256:1288b69dde74551f8bd9a50eba0609e468bd7d3874d3e00d7dd0f45f35800797",
+            "configDigest": "sha256:bda885e7f6b7f46fed33d514a5b2166541cf2290e72e2094edb2440bdfd4ace6"
+          }
+        }
+      }
+    },
+    {
+      "id": "celestia-appd",
+      "version": "6.4.10",
+      "inArtifactNormalizationScope": true,
+      "decision": "warehouse-binary",
+      "reason": "The combined local Celestia devnet runtime is carried over unchanged in identity from midnight-2-offers: these two versions are exactly what @effectstream/celestia@0.103.1 — a kernel-main dependency — vendors, so this is the devnet the offer-files kernel was developed against. Both binaries come from the warehouse by TARGETARCH; Linux arm64 IS published, so there is no platform pin.",
+      "assets": {
+        "linux/amd64": {
+          "name": "celestia-appd-linux-amd64-v6.4.10.tar.gz",
+          "assetId": 378640596,
+          "outerSize": 198844329,
+          "outerSha256": "fa1826187a91514c6d506e22f1fcce25afbd551b98458caf899801b662a0c8da",
+          "format": "tar.gz",
+          "memberPath": "celestia-appd",
+          "memberSize": 285614960,
+          "memberSha256": null,
+          "installMode": "0755",
+          "catalogProvenance": "legacy-unverified",
+          "officialEquality": {
+            "required": true,
+            "reason": "The catalog row truthfully records legacy-unverified with null source and null member hashes. Those nulls must never be back-filled. Equality is instead proven directly against the official release.",
+            "repository": "celestiaorg/celestia-app",
+            "releaseTag": "v6.4.10",
+            "releaseId": 282480015,
+            "assetName": "celestia-app_Linux_x86_64.tar.gz",
+            "assetId": 349955092,
+            "assetSize": 198844329,
+            "assetSha256": "fa1826187a91514c6d506e22f1fcce25afbd551b98458caf899801b662a0c8da",
+            "checksumsAssetId": 349955278,
+            "checksumsSha256": "960c02e97215f6c802e0992a64458b3f3df04cf2fb56f2f9e802a204a7a9e5c1",
+            "verifiedOn": "2026-08-31"
+          }
+        },
+        "linux/arm64": {
+          "name": "celestia-appd-linux-arm64-v6.4.10.tar.gz",
+          "assetId": 534358491,
+          "outerSize": 180685852,
+          "outerSha256": "52cc9d59f9db5e3d2b7de91008c808f46ba319922db4a39404735b0a5dd6a76b",
+          "format": "tar.gz",
+          "memberPath": "celestia-appd",
+          "memberSize": 262644248,
+          "memberSha256": "bdeec5aefadecd3b517545347110ea1f9e95dfabb5a287979c1a3fb6626db91b",
+          "installMode": "0755",
+          "catalogProvenance": "known",
+          "sourceProvenance": {
+            "repository": "celestiaorg/celestia-app",
+            "commit": "0b26ea0cf0b52406d6004cef4a36e13c30ddca85",
+            "method": "rename-only",
+            "upstreamAssetName": "celestia-app_Linux_arm64.tar.gz",
+            "upstreamAssetId": 349955149
+          }
+        }
+      }
+    },
+    {
+      "id": "celestia-node",
+      "version": "0.28.4",
+      "inArtifactNormalizationScope": true,
+      "decision": "warehouse-binary",
+      "reason": "Same as celestia-appd. Note the installed executable is named 'celestia', not 'celestia-node'.",
+      "assets": {
+        "linux/amd64": {
+          "name": "celestia-node-linux-amd64-v0.28.4.tar.gz",
+          "assetId": 378640594,
+          "outerSize": 78842331,
+          "outerSha256": "bb8b9fd2ac859945fdf2f8c84ba038f75e01be54e56d1a946cbbd4b540f120d9",
+          "format": "tar.gz",
+          "memberPath": "celestia",
+          "memberSize": 190846060,
+          "memberSha256": null,
+          "installMode": "0755",
+          "catalogProvenance": "legacy-unverified",
+          "officialEquality": {
+            "required": true,
+            "reason": "The catalog row truthfully records legacy-unverified with null source and null member hashes. Those nulls must never be back-filled. Equality is instead proven directly against the official release.",
+            "repository": "celestiaorg/celestia-node",
+            "releaseTag": "v0.28.4",
+            "releaseId": 265784044,
+            "assetName": "celestia-node_Linux_x86_64.tar.gz",
+            "assetId": 321528009,
+            "assetSize": 78842331,
+            "assetSha256": "bb8b9fd2ac859945fdf2f8c84ba038f75e01be54e56d1a946cbbd4b540f120d9",
+            "checksumsAssetId": 321528021,
+            "checksumsSha256": "10b730253822bff3be9517f649d56b26ebfa192f23a40b9a0b1b2313a55425ec",
+            "verifiedOn": "2026-08-31"
+          }
+        },
+        "linux/arm64": {
+          "name": "celestia-node-linux-arm64-v0.28.4.tar.gz",
+          "assetId": 534359261,
+          "outerSize": 71184641,
+          "outerSha256": "09eb0505c5265bb08dfd09f14aa397516efd89d7b8f120e06f133d9e387ad50c",
+          "format": "tar.gz",
+          "memberPath": "celestia",
+          "memberSize": 176946394,
+          "memberSha256": "b38154ba4ec52ba784c4fd1e52af41fb9fb78e1a928f20cf9264d837a7ad6d2e",
+          "installMode": "0755",
+          "catalogProvenance": "known",
+          "sourceProvenance": {
+            "repository": "celestiaorg/celestia-node",
+            "commit": "52cd8b52ec031bb9e3b4e476e0b159db2053384c",
+            "method": "rename-only",
+            "upstreamAssetName": "celestia-node_Linux_arm64.tar.gz",
+            "upstreamAssetId": 321528010
+          }
+        }
+      }
+    }
+  ],
+  "sources": [
+    {
+      "id": "offerfiles-kernel",
+      "role": "the offer-files kernel, batcher and contract-deploy one-shot — one image, three entrypoints",
+      "acquisition": "anonymous-git-fetch",
+      "repository": "https://github.com/effectstream/zswap-offerfiles-kernel.git",
+      "branch": "main",
+      "ref": "6c5ebabc3533147d9a5cd73a57c16175b2974266",
+      "envVar": "KERNEL_REF",
+      "verifiedOn": "2026-09-01",
+      "reason": "The 1.x line lives on main: @effectstream/* 0.103.1, ledger-v8 8.1.0, mip-zswap-offer 0.3.0, contract pragma 'compact compile +0.30.0', /v1 API. Pinned at the branch HEAD as of the freeze date, as a full SHA — a branch name is not an identity, and Docker cannot see a branch move."
+    },
+    {
+      "id": "zswap-da-template",
+      "role": "the zswap-da trading SPA, built from a frozen upstream template subtree",
+      "acquisition": "anonymous-git-fetch",
+      "repository": "https://github.com/effectstream/effectstream.git",
+      "ref": "332503c8f9216143a8c805f2a0acbcfd39e5a21d",
+      "subtree": "templates/zswap-da",
+      "subtreeSha": "1f63d7eedc9a8aff729b7fe026486cb89cb618de",
+      "envVar": "FRONTEND_REF",
+      "verifiedOn": "2026-09-01",
+      "reason": "The same frozen ref midnight-2-offers uses, but consumed UNPATCHED for ledger: at this ref the template is already v8-native (ledger-v8 8.1.0, midnight-js 4.1.1, compact-js 2.5.1), so this repository ships no ledger-v9.patch stage. The subtree SHA is recorded separately and verified during the build, because the commit alone does not prove which bytes of it were extracted.",
+      "$comment": "Upstream templates/** is FROZEN by effectstream 00016 FR-10. Nothing in this repository may push to it."
+    },
+    {
+      "id": "cow-solver",
+      "role": "the COW posted-price solver, in execution mode",
+      "acquisition": "anonymous-git-fetch",
+      "repository": "https://github.com/effectstream/zswap-offerfiles-kernel.git",
+      "ref": "c37bfa68cb944d883f52af7fa8ea533896a34654",
+      "envVar": "SOLVER_REF",
+      "verifiedOn": "2026-09-01",
+      "reason": "Kernel PR #52 — the remediated solver the 51-assertion relay e2e was proven on, against exactly the relay pin recorded below. Confirmed anonymously fetchable at refs/pull/52/head AND refs/heads/codex/00005-cow-solver-remediation-compose-e2e on 2026-09-01. This line publishes NOTHING for a pair it holds no tokenIn inventory for, which is why the solver-provision one-shot is mandatory rather than optional."
+    },
+    {
+      "id": "intents-relay",
+      "role": "the Midnight Intents relay and the phase1-native-swaps browser UI",
+      "acquisition": "operator-local-clone",
+      "privateRepository": "shieldedtech/midnight-intents-swaps",
+      "subtree": "phase1-native-swaps",
+      "ref": "061f4d3258e25b9f3a451b4b4358ed232349d96b",
+      "envVar": "RELAY_REF",
+      "sourceDirEnv": "RELAY_SOURCE_DIR",
+      "leakPolicy": "no-bytes-committed",
+      "verifiedOn": null,
+      "reason": "The audited pin the PR #52 solver was proven against end to end. Recorded as an IDENTITY ONLY. The repository is private and this public repository carries none of its content, fetches it from nowhere, and deliberately has no repository URL here — an operator supplies their own clone through RELAY_SOURCE_DIR and up.sh verifies it sits at this exact commit with a clean tree before any build. verifiedOn is null on purpose: this executor made no attempt to read the private remote, so claiming a verification date would be a fabrication.",
+      "$comment": [
+        "Every rule this pin implies is enforced mechanically, not by convention:",
+        "  * .gitignore ignores local/, the conventional place for the operator's clone;",
+        "  * scripts/verify-no-private-source.sh fails on any committed byte of that source;",
+        "  * scripts/lib/common.sh assert_relay_source() verifies the clone before a build;",
+        "  * images built from it are never pushed to any registry.",
+        "Bumping this pin requires re-running the P5 end-to-end driver — the solver pin above",
+        "was proven against THIS relay commit and no other."
+      ]
+    }
+  ],
+  "toolchains": [
+    {
+      "id": "compact",
+      "version": "0.30.0",
+      "decision": "official-upstream-direct",
+      "resolved": false,
+      "openQuestion": "Q9",
+      "requiredBy": "kernel main's contract pragma `compact compile +0.30.0`",
+      "repository": "LFDT-Minokawa/compact",
+      "reason": "The Compact compiler keeps its direct official LFDT acquisition. It is NOT pinned yet, and that is recorded rather than papered over: LFDT-Minokawa/compact has never published a FINAL 0.30.0 compactc release. Enumerated from the releases API on 2026-09-01, the 0.30.0 line has only v0.30.0-rc.0 and v0.30.0-rc.1, and the tag convention changed at 0.31 (bare `v<semver>` before, `compactc-v<semver>` after), so a URL built the way the 2.x sibling builds it 404s here. Which compiler compiles the SPA's contract is therefore a decision, not a lookup — see Q9. T3.3 resolves it; the verifier refuses an unresolved toolchain that carries no openQuestion, so this cannot be quietly forgotten.",
+      "candidateAssets": {
+        "v0.30.0-rc.1": {
+          "releaseId": 297550868,
+          "tagConvention": "v<semver>",
+          "linux/amd64": {
+            "name": "compactc_v0.30.0-rc.1_x86_64-unknown-linux-musl.zip",
+            "assetId": 375076951,
+            "outerSize": 27315223,
+            "outerSha256": null
+          },
+          "linux/arm64": {
+            "name": "compactc_v0.30.0-rc.1_aarch64-unknown-linux-musl.zip",
+            "assetId": 375077834,
+            "outerSize": 26638587,
+            "outerSha256": null
+          }
+        }
+      },
+      "$comment": "The same releases also ship aarch64-darwin and x86_64-darwin zips. Those must never enter a Linux build stage, which is why forbiddenAssetSubstrings is applied to toolchain assets too and not only to warehouse components."
+    }
+  ],
+  "proofData": {
+    "decision": "prewarm-volume",
+    "reason": "Proof data is architecture-neutral and belongs in one persistent volume, not embedded in an OCI layer and not fetched independently per service. The 2.x sibling populates that volume from a hash-verified immutable warehouse GENERATION, but that generation is Ledger-9 specific (SRS K0-K19 + ledger-static-noarch-9.0.0) and no equivalent v8 generation exists today. So the volume is filled by a pre-warm one-shot instead: it pays the srs.midnight.network fetch once, before up.sh reports ready, rather than during the first browser mint mid-demo.",
+    "strategy": "prewarm-one-shot",
+    "volume": "proof-data",
+    "generation": null,
+    "integrityLevel": "fetch-time-trust",
+    "integrityCaveat": "HONEST LIMITATION: unlike the 2.x generation, these are not offline-verified bytes. The pre-warm trusts srs.midnight.network at fetch time. That is a real downgrade and is recorded here rather than implied by the absence of a hash.",
+    "supersededBy": {
+      "plannedDecision": "warehouse-data-generation",
+      "note": "The user is preparing an audited v8 proof-data mirror/generation in parallel. When it lands, its initializer replaces this one-shot as a drop-in WRITER OF THE SAME VOLUME, so no consumer changes. At that point `generation` becomes a 64-hex content digest and `decision` becomes warehouse-data-generation; the verifier enforces that pairing in both directions so a half-migration cannot pass."
+    },
+    "midnightParamSourceMustNotBeGitHub": true
+  },
+  "retainedPaths": [
+    {
+      "id": "offerfiles-kernel-image",
+      "decision": "source-build",
+      "inArtifactNormalizationScope": false,
+      "reason": "Application code with no reusable warehouse runtime artifact. Built from the `offerfiles-kernel` source pin above."
+    },
+    {
+      "id": "zswap-da-image",
+      "decision": "source-build",
+      "inArtifactNormalizationScope": false,
+      "reason": "Application code with no reusable warehouse runtime artifact. Built from the `zswap-da-template` source pin above."
+    },
+    {
+      "id": "cow-solver-image",
+      "decision": "source-build",
+      "inArtifactNormalizationScope": false,
+      "reason": "Application code with no reusable warehouse runtime artifact. Overlaid onto the locally built kernel image so it reuses the already-compiled Compact artifacts."
+    },
+    {
+      "id": "relay-image",
+      "decision": "source-build",
+      "inArtifactNormalizationScope": false,
+      "reason": "Application code from a PRIVATE repository. Built only from an operator-local clone, and never pushed to any registry."
+    },
+    {
+      "id": "intents-ui-image",
+      "decision": "source-build",
+      "inArtifactNormalizationScope": false,
+      "reason": "Same private source and the same rules as relay-image."
+    },
+    {
+      "id": "celestia-image",
+      "decision": "source-build",
+      "inArtifactNormalizationScope": false,
+      "reason": "A thin local runtime image around the two verified warehouse binaries recorded in components[]. The image is built; the executables inside it are not."
+    },
+    {
+      "id": "postgres-image",
+      "decision": "source-build",
+      "inArtifactNormalizationScope": false,
+      "reason": "pg_ivm is compiled in; no reusable warehouse runtime artifact exists."
+    }
+  ]
+}
