@@ -1,0 +1,34 @@
+# compose/offerfiles.yml — the `offerfiles` profile: Celestia DA + the offer-files kernel.
+#
+#   ./up.sh --with offerfiles
+#
+# A profile IS this file's basename; no compose `profiles:` key is used here.
+#
+# ── PLACEHOLDER (P0 scaffold) ────────────────────────────────────────────────
+# This fragment renders cleanly and declares no services yet. P2 fills it with:
+#
+#   celestia            a local single-node Celestia devnet — celestia-appd 6.4.10 +
+#                       celestia-node 0.28.4, the exact pair `@effectstream/celestia@0.103.1`
+#                       vendors — ported unchanged in identity from midnight-2-offers,
+#                       including its offline official-equality pins.
+#                       CADENCE MATTERS: a ~1s block time leaves the kernel's projection
+#                       permanently more than MAX_CELESTIA_LAG_BLOCKS behind, and then
+#                       POST /v1/offers/files answers 503 FILES_UNAVAILABLE forever. Default
+#                       CELESTIA_BLOCK_TIME to 3s with a 1s kernel poll, as the 1.x deploy
+#                       prototype resolved it.
+#   offerfiles-deploy   one-shot. Deploys the contract ONCE per stack, mints the dev tokens,
+#                       and persists the address on a shared volume so a recreate JOINS the
+#                       existing book instead of minting a new contract and resetting book
+#                       identity. It must be the only deployer in the stack.
+#   kernel              the offer-files sync node and /v1 API on ${KERNEL_HOST_PORT}, built
+#                       from effectstream/zswap-offerfiles-kernel main at ${KERNEL_REF}.
+#                       Runs in POSTGRES mode against the shared `postgres` service in core —
+#                       no PGLite. With pg_ivm present, ALLOW_NO_PG_IVM stays unset.
+#   batcher             the same image on ${BATCHER_HOST_PORT} with its own storage volume
+#                       and its own dedicated seed, so gasless submission is independent of
+#                       the kernel's own lifecycle.
+#
+# WIPE GROUP: the Celestia data volume, the persisted contract address and the batcher
+# storage go with the chain volumes on `./down.sh -v` — a contract address from a genesis
+# that no longer exists gives you a kernel that starts fine and shows an empty book forever.
+services: {}

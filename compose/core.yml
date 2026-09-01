@@ -1,0 +1,30 @@
+# compose/core.yml — the `core` profile. UNCONDITIONAL: every ./up.sh includes it.
+#
+# A profile IS this file's basename. up.sh never passes `--profile`, so NO service in this
+# repository may ever carry a compose `profiles:` key — it would be declared and then
+# silently never start.
+#
+# ── PLACEHOLDER (P0 scaffold) ────────────────────────────────────────────────
+# This fragment renders cleanly and declares no services yet. P1 fills it with:
+#
+#   node           docker.io/midnightntwrk/midnight-node@sha256:ede01da3…  (1.0.0, official
+#                  multiarch, digest-pinned). CFG_PRESET=dev, THRESHOLD=0, loopback-published
+#                  on ${NODE_HOST_PORT}. Its data volume must be mounted at the image's own
+#                  BASE_PATH — mounting it anywhere else loses chain state silently.
+#   indexer        docker.io/midnightntwrk/indexer-standalone@sha256:03afd079…  (4.3.3,
+#                  official multiarch). Points at ws://node:9944, network id `undeployed`.
+#                  Serves an identical schema on /api/v3/graphql and /api/v4/graphql.
+#   proof-server   docker.io/midnightntwrk/proof-server@sha256:801bbc03…  (8.1.0, official
+#                  multiarch), reading a pre-warmed proof-data volume.
+#   proof-warm     one-shot: fills that volume before the stack reports ready, so a clean
+#                  bring-up pays the SRS download once, up front, instead of mid-demo. Built
+#                  so the audited v8 proof-data initializer can replace it as a drop-in
+#                  writer of the same volume without touching any consumer.
+#   postgres       locally built, pg_ivm compiled in. ONE shared database, no host port; the
+#                  offer-files kernel is its only consumer. There is no PGLite anywhere in
+#                  this repository.
+#
+# WIPE GROUP: the node, indexer and postgres volumes are wiped together by `./down.sh -v`
+# because each is keyed to a chain genesis. The proof-data volume is the exception and
+# survives a plain `./down.sh` — see the reasoning in down.sh.
+services: {}

@@ -115,10 +115,11 @@ SELF_EXEMPT = frozenset({
 #   why      why naming the repo there is not a leak
 EXPLICIT_ALLOW = (
     {
-        "path": "up.sh",
+        "path": "scripts/lib/common.sh",
         "pattern": r'^\s*(info|dim|err|warn)\s+".*midnight-intents-swaps.*"$',
-        "why": "the solver profile's fatal 'RELAY_SOURCE_DIR is unset' guidance has to name "
-               "the repository the operator must clone",
+        "why": "assert_relay_source()'s fatal 'RELAY_SOURCE_DIR is unset' guidance has to name "
+               "the repository the operator must clone; a leak gate that forced that message "
+               "to be useless would just get switched off",
     },
 )
 

@@ -1,0 +1,45 @@
+# compose/solver.yml — the `solver` profile: the Midnight Intents relay and the COW solver.
+#
+#   ./up.sh --with offerfiles --with solver      (needs RELAY_SOURCE_DIR — see below)
+#
+# A profile IS this file's basename; no compose `profiles:` key is used here.
+#
+# This is the lane midnight-2-offers deliberately dropped. Its Q14 settled on an
+# observation-only sink: the solver mirrored the book, published ladders to a dashboard, and
+# never built, proved or submitted anything. Here the real relay replaces the sink's receive
+# half and the solver runs in EXECUTION mode, so the sink has no reason to exist and is not
+# ported. Relay /state plus scripts/verify-solver.sh cover the observability it provided.
+#
+# ── THE PRIVATE HALF (spec FR-11, plan Q4) ───────────────────────────────────
+# The relay and the intents UI come from `shieldedtech/midnight-intents-swaps`, which is
+# PRIVATE. This repository is PUBLIC and carries NONE of that source: no vendored files, no
+# patches quoting it in their context lines, no copied lockfiles, no build outputs. Instead
+# the operator clones it themselves and points RELAY_SOURCE_DIR at their clone, which arrives
+# here as a named build context. up.sh verifies that clone sits at the pinned commit with a
+# clean tree BEFORE any build starts, because a local directory — unlike a pinned fetch —
+# proves nothing about its own identity. The images built from it are never pushed anywhere.
+#
+# ── PLACEHOLDER (P0 scaffold) ────────────────────────────────────────────────
+# This fragment renders cleanly and declares no services yet. P4 fills it with:
+#
+#   relay              the unmodified Midnight Intents relay: HTTP on ${RELAY_HTTP_HOST_PORT},
+#                      solver WS on ${RELAY_WS_HOST_PORT}. Explicit-URL mode against the core
+#                      node, indexer and proof server. It has NO /health route — probe
+#                      GET /tokens instead. Our Dockerfile is a transcription; every runtime
+#                      conf arrives --from the private build context, at build time only.
+#   solver             the COW solver at ${SOLVER_REF} (kernel PR #52), overlaid onto the
+#                      locally built kernel image so it reuses the already-compiled Compact
+#                      artifacts. EXECUTION mode: SOLVER_DRY_RUN=false, journal volume
+#                      fail-closed, MIDNIGHT_NETWORK_ID=undeployed as a hard gate, and an
+#                      assertion that node_modules carries ledger-v8 only.
+#   solver-provision   REQUIRED one-shot, not optional. The PR #52 solver publishes NOTHING
+#                      for a pair it holds no tokenIn inventory for, so an unfunded solver
+#                      yields a silently empty ladder — the worst possible demo failure. This
+#                      funds it through the kernel's own bootstrap and fails loudly.
+#   maker-offer        optional seeder, a no-op once a real maker (the SPA, or a person) has
+#                      posted an offer.
+#   intents-ui         the phase1-native-swaps browser app on ${INTENTS_UI_HOST_PORT}, built
+#                      from the same private context. Its relay/indexer URLs must be rewritten
+#                      to browser-reachable hosts — the zswap-da lesson applies unchanged: no
+#                      compose-internal hostname may ever reach a browser.
+services: {}

@@ -35,7 +35,7 @@
 set -uo pipefail   # deliberately NOT -e: every step's failure is handled and reported
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-# shellcheck source=lib/common.sh
+# shellcheck source=scripts/lib/common.sh
 source "$REPO_ROOT/scripts/lib/common.sh"
 
 PROFILE_MODE=all      # all | core | list
@@ -121,6 +121,8 @@ step() {  # step <n> <label> <command...>
 #
 # Each runs `--self-test`, so a check that stopped biting is reported as a failure rather
 # than passing vacuously.
+#
+# shellcheck disable=SC2329  # invoked indirectly, as `step 1 <label> static_gates`
 static_gates() {
   local rc=0
   "$REPO_ROOT/scripts/verify-no-private-source.sh" --self-test  >/dev/null || { rc=1; \
@@ -129,7 +131,7 @@ static_gates() {
     ok "artifact decision matrix verified (with negative fixtures)" || rc=1
   "$REPO_ROOT/scripts/verify-compose-pins.sh" --self-test        >/dev/null && \
     ok "rendered compose pins verified (with negative fixtures)" || rc=1
-  return $rc
+  return "$rc"
 }
 
 step 1 "offline gates: private-source leak scan, decision matrix, rendered compose pins" \
@@ -187,6 +189,8 @@ TORE_DOWN=0
 # leak_count — prints "<containers> <volumes> <networks> <unlabelled-volumes>" for this
 # project. The fourth number matters most: `docker volume create` (or a `docker run -v`)
 # makes a volume with NO compose labels, so it is invisible to the first three counts.
+#
+# shellcheck disable=SC2329  # invoked from teardown(), which is itself invoked by a trap
 leak_count() {
   local c v n u
   c=$(docker ps -aq --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME}" | wc -l | tr -d ' ')
@@ -196,6 +200,7 @@ leak_count() {
   printf '%s %s %s %s\n' "$c" "$v" "$n" "$u"
 }
 
+# shellcheck disable=SC2329  # invoked by the EXIT/INT/TERM traps installed below
 teardown() {
   local rc=$?
   (( TORE_DOWN )) && return 0

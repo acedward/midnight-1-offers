@@ -1,0 +1,35 @@
+# compose/frontend.yml — the `frontend` profile: the zswap-da trading SPA.
+#
+#   ./up.sh --with offerfiles --with frontend
+#
+# A profile IS this file's basename; no compose `profiles:` key is used here.
+#
+# `--with frontend` alone is legal: the SPA serves and shows a disconnected state, exactly as
+# in midnight-2-offers. It needs `--with offerfiles` to have a kernel to talk to.
+#
+# ── PLACEHOLDER (P0 scaffold) ────────────────────────────────────────────────
+# This fragment renders cleanly and declares no services yet. P3 fills it with:
+#
+#   frontend   the zswap-da SPA on ${FRONTEND_HOST_PORT}, built in-image from
+#              effectstream/effectstream at ${FRONTEND_REF}, subtree templates/zswap-da,
+#              subtree SHA verified during the build. No frontend source is copied into this
+#              repository.
+#
+#              UNPATCHED FOR LEDGER, unlike the 2.x sibling: the template is v8-native at
+#              that ref (ledger-v8 8.1.0, midnight-js 4.1.1, compact-js 2.5.1), so this
+#              repository ships no ledger-v9.patch stage at all.
+#
+#              The contract is compiled in-image with the 1.x Compact toolchain matching the
+#              kernel's own pragma (`compact compile +0.30.0`).
+#
+#              browser-network-urls.patch is retained and re-verified against the unpatched
+#              tree: it rewrites dot-less non-localhost hostnames at the api.ts chokepoint so
+#              no compose-internal hostname can ever reach the browser. Applied fail-closed
+#              (`git apply --check` plus a guard grep) — a patch that stops applying must
+#              break the build, not quietly no-op.
+#
+#              The entrypoint generates /config.js at runtime (API_BASE / BATCHER_URL), whose
+#              empty defaults fall back to hostname-relative :9999 / :3334. A stack on a
+#              generated random-port block MUST set FRONTEND_API_BASE / FRONTEND_BATCHER_URL,
+#              because that fallback is only correct on the default port layout.
+services: {}
