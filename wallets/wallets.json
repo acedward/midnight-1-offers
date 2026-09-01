@@ -43,17 +43,35 @@
       "address encoding is stable across the two version lines, and these values were really",
       "derived on 1.x rather than copied across."
     ],
-    "genesisFundingIsUNVERIFIED": [
-      "`expect` is null on every wallet ON PURPOSE. The 2.x sibling records concrete genesis",
-      "balances (5 UTXOs, 250,000,000,000,000 stars, DUST registered at genesis) measured",
-      "against node 2.0.0-rc.4. Those are facts about THAT node's dev preset, and copying them",
-      "here would assert something about midnight-node 1.0.0 that nobody has measured.",
-      "",
-      "P1/T1.1 brings up node 1.0.0 with CFG_PRESET=dev and verifies which of these wallets it",
-      "actually funds and whether DUST is registered at genesis; the measured values are filled",
-      "in then, and scripts/verify-wallets.sh starts asserting them. Until then `funding` says",
-      "'genesis-unverified' rather than 'genesis' — an unmeasured claim is worse than none."
-    ]
+    "genesisFundingMEASURED": {
+      "status": "measured",
+      "measuredOn": "2026-09-01",
+      "measuredAt": "P1/T1.1",
+      "how": "midnight-node 1.0.0 (index digest sha256:ede01da3…) brought up with CFG_PRESET=dev, then `midnight-node-toolkit show-wallet --seed <seed>` and `dust-balance --seed <seed>` (toolkit 1.0.0, index digest sha256:8d7dbd84…) run against ws://node:9944 over the compose network.",
+      "notes": [
+        "`expect` was null on every wallet until this measurement, and `funding` read",
+        "'genesis-unverified'. The 2.x sibling's numbers were measured against node",
+        "2.0.0-rc.4 and were deliberately NOT copied here.",
+        "",
+        "MEASURED RESULT: the 1.0.0 dev preset funds exactly four of the seven wallets —",
+        "genesis-1, genesis-2, batcher (genesis seed 3) and lace-test — and funds all four",
+        "IDENTICALLY. solver, e2e-maker and e2e-taker are empty at genesis, which is what",
+        "their `funding: provisioned` already claimed.",
+        "",
+        "The four funded wallets happen to match the 2.x sibling's unshielded figures (5",
+        "UTXOs of 50,000,000,000,000 = 250,000,000,000,000). That is a measured coincidence",
+        "of the two dev presets, not an inherited assumption — it was derived here on 1.0.0.",
+        "",
+        "The shielded coin sets are per-wallet and fully DISJOINT across the four (checked:",
+        "zero shared coin ids between any pair), so these are each wallet's own holdings and",
+        "not one global ledger view repeated.",
+        "",
+        "DUST is registered at genesis: each funded wallet has 5 dust UTXOs, one backing each",
+        "NIGHT UTXO, all with ctime 1754395200 and initial_value 0, giving a total generation",
+        "capacity of 1.25e24. `dust.capacity` is a STRING because 1.25e24 exceeds the IEEE-754",
+        "safe integer range and would be silently mangled by any JavaScript reader."
+      ]
+    }
   },
   "wallets": [
     {
@@ -62,8 +80,29 @@
       "envVar": "MIDNIGHT_GENESIS_SEED",
       "seed": "0000000000000000000000000000000000000000000000000000000000000001",
       "seedBytes": 32,
-      "funding": "genesis-unverified",
-      "expect": null,
+      "funding": "genesis",
+      "expect": {
+        "measuredOn": "2026-09-01",
+        "node": "midnight-node 1.0.0, CFG_PRESET=dev",
+        "unshielded": {
+          "utxoCount": 5,
+          "tokenType": "0000000000000000000000000000000000000000000000000000000000000000",
+          "utxoValue": 50000000000000,
+          "totalValue": 250000000000000
+        },
+        "shieldedCoins": [
+          { "tokenType": "0000000000000000000000000000000000000000000000000000000000000000", "count": 5, "totalValue": 250000000000000 },
+          { "tokenType": "0000000000000000000000000000000000000000000000000000000000000001", "count": 1, "totalValue": 50000000000000 },
+          { "tokenType": "0000000000000000000000000000000000000000000000000000000000000002", "count": 1, "totalValue": 50000000000000 }
+        ],
+        "dust": {
+          "registeredAtGenesis": true,
+          "utxoCount": 5,
+          "initialValue": 0,
+          "ctime": 1754395200,
+          "capacity": "1250000000000000000000000"
+        }
+      },
       "addresses": {
         "unshielded": "mn_addr_undeployed1h3ssm5ru2t6eqy4g3she78zlxn96e36ms6pq996aduvmateh9p9sk96u7s",
         "shielded": "mn_shield-addr_undeployed1r020sfa7jllsz0z2wqhykz8npmphsu5223nsea7vjt9ekxs5almtvtnrpgpszud4uyd0yjrlqyp7v5xvwqljsng2g79j5w4al9c4kuqy0xtw4",
@@ -78,8 +117,29 @@
       "envVar": null,
       "seed": "0000000000000000000000000000000000000000000000000000000000000002",
       "seedBytes": 32,
-      "funding": "genesis-unverified",
-      "expect": null,
+      "funding": "genesis",
+      "expect": {
+        "measuredOn": "2026-09-01",
+        "node": "midnight-node 1.0.0, CFG_PRESET=dev",
+        "unshielded": {
+          "utxoCount": 5,
+          "tokenType": "0000000000000000000000000000000000000000000000000000000000000000",
+          "utxoValue": 50000000000000,
+          "totalValue": 250000000000000
+        },
+        "shieldedCoins": [
+          { "tokenType": "0000000000000000000000000000000000000000000000000000000000000000", "count": 5, "totalValue": 250000000000000 },
+          { "tokenType": "0000000000000000000000000000000000000000000000000000000000000001", "count": 1, "totalValue": 50000000000000 },
+          { "tokenType": "0000000000000000000000000000000000000000000000000000000000000002", "count": 1, "totalValue": 50000000000000 }
+        ],
+        "dust": {
+          "registeredAtGenesis": true,
+          "utxoCount": 5,
+          "initialValue": 0,
+          "ctime": 1754395200,
+          "capacity": "1250000000000000000000000"
+        }
+      },
       "addresses": {
         "unshielded": "mn_addr_undeployed1gkasr3z3vwyscy2jpp53nzr37v7n4r3lsfgj6v5g584dakjzt0xqun4d4r",
         "shielded": "mn_shield-addr_undeployed1tth9g6jf8he6cmhgtme6arty0jde7wnypsg53qc3x5navl9za355jqqvfftm8asg986dx9puzwkmedeune9nfkuqvtmccmxtjwvlrvccwypcs",
@@ -101,8 +161,29 @@
       ],
       "seed": "0000000000000000000000000000000000000000000000000000000000000003",
       "seedBytes": 32,
-      "funding": "genesis-unverified",
-      "expect": null,
+      "funding": "genesis",
+      "expect": {
+        "measuredOn": "2026-09-01",
+        "node": "midnight-node 1.0.0, CFG_PRESET=dev",
+        "unshielded": {
+          "utxoCount": 5,
+          "tokenType": "0000000000000000000000000000000000000000000000000000000000000000",
+          "utxoValue": 50000000000000,
+          "totalValue": 250000000000000
+        },
+        "shieldedCoins": [
+          { "tokenType": "0000000000000000000000000000000000000000000000000000000000000000", "count": 5, "totalValue": 250000000000000 },
+          { "tokenType": "0000000000000000000000000000000000000000000000000000000000000001", "count": 1, "totalValue": 50000000000000 },
+          { "tokenType": "0000000000000000000000000000000000000000000000000000000000000002", "count": 1, "totalValue": 50000000000000 }
+        ],
+        "dust": {
+          "registeredAtGenesis": true,
+          "utxoCount": 5,
+          "initialValue": 0,
+          "ctime": 1754395200,
+          "capacity": "1250000000000000000000000"
+        }
+      },
       "addresses": {
         "unshielded": "mn_addr_undeployed1g9nr3mvjcey7ca8shcs5d4yjndcnmczf90rhv4nju7qqqlfg4ygs0t4ngm",
         "shielded": "mn_shield-addr_undeployed1ngp7ce7cqclgucattj5kuw68v3s4826e9zwalhhmurymwet3v7psvrs4gtpv5p2zx8rd3jxpgjr4m8mxh7js7u3l33g23gcty67uq9cug4xep",
@@ -124,7 +205,8 @@
         "  * the BIP-39 master seed of that mnemonic (empty passphrase) IS this seed, byte for",
         "    byte — which is why it is 64 bytes rather than 32.",
         "Whether midnight-node 1.0.0's dev preset funds it is a P1 measurement, not an",
-        "assumption: see $verification.genesisFundingIsUNVERIFIED."
+        "MEASURED at P1/T1.1: node 1.0.0's dev preset DOES fund it, identically to the three",
+        "genesis seeds — see `expect` below and $verification.genesisFundingMEASURED."
       ],
       "mnemonic": "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon diesel",
       "derivation": {
@@ -138,8 +220,29 @@
       "envVar": null,
       "seed": "a51c86de32d0791f7cffc3bdff1abd9bb54987f0ed5effc30c936dddbb9afd9d530c8db445e4f2d3ea42a321b260e022aadf05987c9a67ec7b6b6ca1d0593ec9",
       "seedBytes": 64,
-      "funding": "genesis-unverified",
-      "expect": null,
+      "funding": "genesis",
+      "expect": {
+        "measuredOn": "2026-09-01",
+        "node": "midnight-node 1.0.0, CFG_PRESET=dev",
+        "unshielded": {
+          "utxoCount": 5,
+          "tokenType": "0000000000000000000000000000000000000000000000000000000000000000",
+          "utxoValue": 50000000000000,
+          "totalValue": 250000000000000
+        },
+        "shieldedCoins": [
+          { "tokenType": "0000000000000000000000000000000000000000000000000000000000000000", "count": 5, "totalValue": 250000000000000 },
+          { "tokenType": "0000000000000000000000000000000000000000000000000000000000000001", "count": 1, "totalValue": 50000000000000 },
+          { "tokenType": "0000000000000000000000000000000000000000000000000000000000000002", "count": 1, "totalValue": 50000000000000 }
+        ],
+        "dust": {
+          "registeredAtGenesis": true,
+          "utxoCount": 5,
+          "initialValue": 0,
+          "ctime": 1754395200,
+          "capacity": "1250000000000000000000000"
+        }
+      },
       "addresses": {
         "unshielded": "mn_addr_undeployed1nqhdatus5d6tvye57q854kdrs6ur2ytsl8yaygzfsdy2e3tvtmesdcgp8m",
         "shielded": "mn_shield-addr_undeployed1qpc63v0np98f86ycsx0jn6letdrr9gdf92rpkgae43dd2etsv58x3zypyz9t39lq38zr0kxx4v6fug7wack76gkjrqdsgtsxf7800kg208t0p",
@@ -171,7 +274,14 @@
       "seedBytes": 32,
       "funding": "provisioned",
       "provisionedBy": "solver-provision (compose/solver.yml, profile `solver`)",
-      "expect": null,
+      "expect": {
+        "measuredOn": "2026-09-01",
+        "node": "midnight-node 1.0.0, CFG_PRESET=dev",
+        "emptyAtGenesis": true,
+        "unshielded": { "utxoCount": 0 },
+        "shieldedCoins": [],
+        "dust": { "registeredAtGenesis": false, "utxoCount": 0 }
+      },
       "addresses": {
         "unshielded": "mn_addr_undeployed132d9fc9d4vzyajfztghdk5rj2u703f8pawj28v0uyz8mpj508x2qev82lf",
         "shielded": "mn_shield-addr_undeployed1c8nre3r5gpvaymfvk0403u4vm2tc92frkd6p8dcr844u2awwsk3ydf5nt2er2k7sttnsy798j6gk0ewq9pguq23r4tdpxmdlmc0afns27tpqh",
@@ -188,7 +298,14 @@
       "seedBytes": 32,
       "funding": "provisioned",
       "provisionedBy": "the e2e driver (P5/T5.2), from genesis-1",
-      "expect": null,
+      "expect": {
+        "measuredOn": "2026-09-01",
+        "node": "midnight-node 1.0.0, CFG_PRESET=dev",
+        "emptyAtGenesis": true,
+        "unshielded": { "utxoCount": 0 },
+        "shieldedCoins": [],
+        "dust": { "registeredAtGenesis": false, "utxoCount": 0 }
+      },
       "addresses": {
         "unshielded": "mn_addr_undeployed1jvpe7c7lfzjtfkzh9rec0z9utfkm6nvp5ggm4gw5rlmdlr8frjwsuj9nhu",
         "shielded": "mn_shield-addr_undeployed1fqeqysmtfq55kq04a8xwf6t2jdepqdhtktj80hlse2y2jkz0j0tf70cfxq2e4v5pjgl3zvxp5du69a3zmmgsc855mmdzx0ehx2l2h3g3eqpem",
@@ -206,7 +323,14 @@
       "seedBytes": 32,
       "funding": "provisioned",
       "provisionedBy": "the e2e driver (P5/T5.2), from genesis-1",
-      "expect": null,
+      "expect": {
+        "measuredOn": "2026-09-01",
+        "node": "midnight-node 1.0.0, CFG_PRESET=dev",
+        "emptyAtGenesis": true,
+        "unshielded": { "utxoCount": 0 },
+        "shieldedCoins": [],
+        "dust": { "registeredAtGenesis": false, "utxoCount": 0 }
+      },
       "addresses": {
         "unshielded": "mn_addr_undeployed1zecc6agn6xqspgkvd3gn83yp86gyw0aw0kev24542d3ay74wa9uqp4xxen",
         "shielded": "mn_shield-addr_undeployed1qs9u9p08xpk3cgypyndvy748mnp35l929vpeqarqg9x2ygqs3f8uggt2rfx3e7a9td0spql05l0t00cc30adf25psvfm55cdxycxmhsq9udvc",
