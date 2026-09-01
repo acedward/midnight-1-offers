@@ -287,7 +287,15 @@ if (( ! FAILED )) && [[ " $PROFILES " == *" solver "* ]] && service_present rela
   wait_compose_healthy relay "$RELAY_WAIT_TIMEOUT" || FAILED=1
 fi
 if (( ! FAILED )) && [[ " $PROFILES " == *" solver "* ]] && service_present solver; then
+  # The solver's healthcheck is a RUNTIME assertion, not a liveness one: on the default path
+  # it requires the relay to be advertising a non-empty token set, i.e. that this solver
+  # connected, mirrored the seeded book and published a ladder. Reaching healthy here is
+  # therefore the profile's real "it works", and it implicitly covers both one-shots —
+  # compose will not start the solver until solver-provision has exited 0.
   wait_compose_healthy solver "$SOLVER_WAIT_TIMEOUT" || FAILED=1
+fi
+if (( ! FAILED )) && [[ " $PROFILES " == *" solver "* ]] && service_present intents-ui; then
+  wait_compose_healthy intents-ui "$RELAY_WAIT_TIMEOUT" || FAILED=1
 fi
 
 if (( FAILED )); then

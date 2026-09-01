@@ -79,6 +79,16 @@ PROOF_IMAGE=${PROOF_IMAGE:-docker.io/midnightntwrk/proof-server@sha256:801bbc034
 WAREHOUSE_REPO=${WAREHOUSE_REPO:-effectstream/binaries}
 WAREHOUSE_RELEASE=${WAREHOUSE_RELEASE:-0.3.120}
 
+# The solver profile's PRIVATE build context, passed straight through from the caller's
+# environment so a disposable stack can build it too:
+#
+#     RELAY_SOURCE_DIR=... ./scripts/ci-check.sh --with offerfiles --with solver
+#
+# Empty when the caller has no clone, which is the ordinary case: up.sh then refuses the
+# solver profile with instructions and every other profile builds unaffected. A generated
+# env file must never contain a path somebody else's machine cannot honour.
+RELAY_SOURCE_DIR=${RELAY_SOURCE_DIR:-}
+
 BIND_ADDR=127.0.0.1
 NODE_HOST_PORT=$(( BASE + 0 ))
 INDEXER_HOST_PORT=$(( BASE + 1 ))
