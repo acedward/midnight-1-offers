@@ -28,7 +28,7 @@ celestia_defaults() {
   : "${CELESTIA_CHAIN_ID:=test}"
   : "${CELESTIA_NETWORK:=devnet}"
   : "${CELESTIA_IMAGE:=midnight-1-offers/celestia:local}"
-  : "${CELESTIA_SKIP_AUTH:=false}"
+  : "${CELESTIA_SKIP_AUTH:=true}"
   : "${CELESTIA_WAIT_TIMEOUT:=300}"
   : "${CELESTIA_GAS_PRICE:=0.002}"
   export CELESTIA_HOST_PORT CELESTIA_NAMESPACE CELESTIA_CHAIN_ID CELESTIA_NETWORK \

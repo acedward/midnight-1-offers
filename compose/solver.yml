@@ -2,44 +2,331 @@
 #
 #   ./up.sh --with offerfiles --with solver      (needs RELAY_SOURCE_DIR — see below)
 #
-# A profile IS this file's basename; no compose `profiles:` key is used here.
+# A profile IS this file's basename; no compose `profiles:` key is used here. up.sh never
+# passes `--profile`, so a service carrying one would be declared, rendered, verified — and
+# then silently never started.
 #
-# This is the lane midnight-2-offers deliberately dropped. Its Q14 settled on an
-# observation-only sink: the solver mirrored the book, published ladders to a dashboard, and
-# never built, proved or submitted anything. Here the real relay replaces the sink's receive
-# half and the solver runs in EXECUTION mode, so the sink has no reason to exist and is not
-# ported. Relay /state plus scripts/verify-solver.sh cover the observability it provided.
+# The solver mirrors the offer-files kernel's book, so `--with offerfiles` is not optional:
+# this fragment declares no kernel of its own.
 #
-# ── THE PRIVATE HALF (spec FR-11, plan Q4) ───────────────────────────────────
+# ─── FIVE SERVICES, ONE CONCERN EACH ─────────────────────────────────────────
+#   relay             the unmodified Midnight Intents relay: HTTP :3000, solver WS :9001
+#   solver-provision  ONE-SHOT, MANDATORY: mints the solver the inventory it needs to publish
+#   maker-offer       ONE-SHOT: posts one real, settle-able maker offer into the kernel book
+#   solver            the COW posted-price solver in EXECUTION mode
+#   intents-ui        the intents browser app, with nginx as its edge to the relay
+#
+# ─── WHAT THIS IS, AND WHAT midnight-2-offers DELIBERATELY IS NOT ────────────
+# The 2.x sibling settled Q14 on an observation-only sink: its solver mirrored the book,
+# published ladders to a dashboard, and never built, proved or submitted anything — the
+# property was structural, because the sink contained no code that could dispatch a job.
+#
+# HERE THAT DECISION IS REVERSED. The real relay replaces the sink's receive half, the solver
+# runs with SOLVER_DRY_RUN=false, and a taker's intent is settled on chain against the maker's
+# offer. So `solver-sink` has nothing left to do and is NOT ported: its observability is
+# covered by the relay's own `GET /state` and by scripts/verify-solver.sh, and its safety
+# property is replaced by the network gate below (`undeployed` only) rather than by the
+# absence of a code path.
+#
+# ─── THE PRIVATE HALF (spec FR-11, plan Q4) ──────────────────────────────────
 # The relay and the intents UI come from `shieldedtech/midnight-intents-swaps`, which is
 # PRIVATE. This repository is PUBLIC and carries NONE of that source: no vendored files, no
-# patches quoting it in their context lines, no copied lockfiles, no build outputs. Instead
-# the operator clones it themselves and points RELAY_SOURCE_DIR at their clone, which arrives
-# here as a named build context. up.sh verifies that clone sits at the pinned commit with a
-# clean tree BEFORE any build starts, because a local directory — unlike a pinned fetch —
-# proves nothing about its own identity. The images built from it are never pushed anywhere.
+# patches quoting it, no copied lockfiles, no build outputs. The operator clones it and points
+# RELAY_SOURCE_DIR at the workspace directory inside that clone; it arrives below as the
+# `reference` NAMED build context, and up.sh verifies the checkout sits at the pinned commit
+# with a clean tree BEFORE any build starts. The images built from it are never pushed.
 #
-# ── PLACEHOLDER (P0 scaffold) ────────────────────────────────────────────────
-# This fragment renders cleanly and declares no services yet. P4 fills it with:
-#
-#   relay              the unmodified Midnight Intents relay: HTTP on ${RELAY_HTTP_HOST_PORT},
-#                      solver WS on ${RELAY_WS_HOST_PORT}. Explicit-URL mode against the core
-#                      node, indexer and proof server. It has NO /health route — probe
-#                      GET /tokens instead. Our Dockerfile is a transcription; every runtime
-#                      conf arrives --from the private build context, at build time only.
-#   solver             the COW solver at ${SOLVER_REF} (kernel PR #52), overlaid onto the
-#                      locally built kernel image so it reuses the already-compiled Compact
-#                      artifacts. EXECUTION mode: SOLVER_DRY_RUN=false, journal volume
-#                      fail-closed, MIDNIGHT_NETWORK_ID=undeployed as a hard gate, and an
-#                      assertion that node_modules carries ledger-v8 only.
-#   solver-provision   REQUIRED one-shot, not optional. The PR #52 solver publishes NOTHING
-#                      for a pair it holds no tokenIn inventory for, so an unfunded solver
-#                      yields a silently empty ladder — the worst possible demo failure. This
-#                      funds it through the kernel's own bootstrap and fails loudly.
-#   maker-offer        optional seeder, a no-op once a real maker (the SPA, or a person) has
-#                      posted an offer.
-#   intents-ui         the phase1-native-swaps browser app on ${INTENTS_UI_HOST_PORT}, built
-#                      from the same private context. Its relay/indexer URLs must be rewritten
-#                      to browser-reachable hosts — the zswap-da lesson applies unchanged: no
-#                      compose-internal hostname may ever reach a browser.
-services: {}
+# RELAY_SOURCE_DIR names the WORKSPACE DIRECTORY, not the repository root — the exact path is
+# in .env.example. The repository's own leak gate is why: naming the subtree outside a comment
+# anywhere in this public tree is a finding, so the path is composed by the operator rather
+# than by a variable expansion here.
+
+# ── shared endpoint anchors ──────────────────────────────────────────────────
+# YAML anchors do not cross files, so these repeat compose/offerfiles.yml's values rather than
+# reusing them. Every endpoint is stated EXPLICITLY on every service: the kernel packages
+# default an unset MIDNIGHT_NETWORK_ID to `undeployed` with 127.0.0.1 endpoints, which inside
+# a container means "nothing is listening" — a silent misconfiguration rather than an error.
+x-midnight-endpoints: &midnight_endpoints
+  # A HARD GATE, not a default: this stack is a throwaway devnet and nothing here may ever be
+  # pointed at a network carrying real value. The solver's own launch contract refuses to
+  # start without it.
+  MIDNIGHT_NETWORK_ID: 'undeployed'
+  MIDNIGHT_NODE_HTTP: 'http://node:9944'
+  MIDNIGHT_INDEXER_HTTP: 'http://indexer:8088${INDEXER_API_PATH:-/api/v3/graphql}'
+  MIDNIGHT_INDEXER_WS: 'ws://indexer:8088${INDEXER_API_PATH:-/api/v3/graphql}/ws'
+  MIDNIGHT_PROOF_SERVER_URL: 'http://proof-server:6300'
+  # Where the deploy one-shot published this stack's contract address and minted colours.
+  CONTRACT_SHARE_DIR: '/srv/offerfiles-deploy'
+  # The kernel whose book the solver mirrors and whose offers it rebuilds. Container port,
+  # never the host port.
+  ZSWAP_API: 'http://kernel:9999'
+
+x-solver-build: &solver_build
+  context: '../images/cow-solver'
+  args:
+    SOLVER_REPO: '${SOLVER_REPO:-https://github.com/effectstream/zswap-offerfiles-kernel.git}'
+    SOLVER_REF: '${SOLVER_REF:-c37bfa68cb944d883f52af7fa8ea533896a34654}'
+  additional_contexts:
+    # The kernel image this stack just built, so the solver reuses its already-compiled
+    # Compact artifacts instead of pinning a second compiler and producing a second set of
+    # verifier keys. `service:kernel` also orders the two builds.
+    kernel-image: 'service:kernel'
+
+services:
+  # ── relay ──────────────────────────────────────────────────────────────────
+  relay:
+    image: '${RELAY_IMAGE:-midnight-1-offers/relay:local}'
+    build:
+      context: '../images/relay'
+      args:
+        RELAY_REF: '${RELAY_REF:-061f4d3258e25b9f3a451b4b4358ed232349d96b}'
+      additional_contexts:
+        # YOUR clone, from YOUR environment. The default below is a deliberately non-existent
+        # path: it keeps `docker compose config` renderable on a clean checkout (the offline
+        # pin gate renders with an EMPTY env file) while making a build without
+        # RELAY_SOURCE_DIR fail immediately and legibly. up.sh refuses long before this.
+        reference: '${RELAY_SOURCE_DIR:-../local/relay-source-is-not-configured}'
+    ports:
+      - '${BIND_ADDR:-127.0.0.1}:${RELAY_HTTP_HOST_PORT:-13000}:3000'
+      # Published for inspection and for a host-side driver; the solver reaches it over the
+      # compose network. Loopback-bound like everything else here.
+      - '${BIND_ADDR:-127.0.0.1}:${RELAY_WS_HOST_PORT:-19001}:9001'
+    environment:
+      NODE_ENV: 'production'
+      LOG_LEVEL: '${RELAY_LOG_LEVEL:-info}'
+      # 0.0.0.0 INSIDE the container. Upstream's own deployment binds loopback because a
+      # reverse proxy sits on the same host; here the solver and the UI reach it across the
+      # compose network. Host exposure is still bounded — the published ports bind BIND_ADDR.
+      BIND_HOST: '0.0.0.0'
+      RELAY_PORT: '3000'
+      RELAY_WS_PORT: '9001'
+      RELAY_PUBLIC_URL: 'http://127.0.0.1:${RELAY_HTTP_HOST_PORT:-13000}'
+      RELAY_PUBLIC_DOCS_ENABLED: '${RELAY_PUBLIC_DOCS_ENABLED:-true}'
+      NETWORK_ID: 'undeployed'
+      # EXPLICIT-URL mode. The alternative (a host + port pair) hard-codes the indexer's API
+      # path, and which path this stack serves must stay switchable from .env — 4.3.3 answers
+      # identically on /api/v3 and /api/v4, and a future version need not.
+      MIDNIGHT_NODE_URL: 'ws://node:9944'
+      INDEXER_HTTP_URL: 'http://indexer:8088${INDEXER_API_PATH:-/api/v3/graphql}'
+      INDEXER_WS_URL: 'ws://indexer:8088${INDEXER_API_PATH:-/api/v3/graphql}/ws'
+      PROOF_SERVER_URL: 'http://proof-server:6300'
+      # The shared bearer. The relay calls it SOLVER_AUTH_TOKEN and the solver calls the same
+      # secret SOLVER_RELAY_AUTH_TOKEN; both read this ONE variable so they cannot drift.
+      # BOTH sides refuse a token shorter than 32 characters.
+      SOLVER_AUTH_TOKEN: '${SOLVER_AUTH_TOKEN:-demo-midnight-1-offers-solver-token-0000}'
+      INTENT_TIMEOUT_MS: '${RELAY_INTENT_TIMEOUT_MS:-300000}'
+      SUBMIT_TIMEOUT_MS: '${RELAY_SUBMIT_TIMEOUT_MS:-180000}'
+      # 0 disables rate limiting. A scripted driver polls job status in a tight loop, and the
+      # public default would throttle the proof itself.
+      RATE_LIMIT_MAX: '${RELAY_RATE_LIMIT_MAX:-0}'
+      WALLET_CACHE_DIR: '/app/data/wallet-sync-cache'
+      NODE_OPTIONS: '${RELAY_NODE_OPTIONS:---max-old-space-size=4096}'
+    volumes:
+      - 'relay-wallet-cache:/app/data/wallet-sync-cache'
+    healthcheck:
+      # THE RELAY HAS NO /health ROUTE. GET /tokens is its only unauthenticated public route;
+      # it answers 200 with an empty list when no solver is connected, which is exactly the
+      # "serving but idle" state that should read as healthy. (GET /state would say more, but
+      # it is loopback-only by design and a healthcheck must not need a shell to reach it.)
+      test: ['CMD-SHELL', 'wget -q -O /dev/null -T 5 http://127.0.0.1:3000/tokens || exit 1']
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      start_period: 30s
+    depends_on:
+      node: { condition: service_healthy }
+      indexer: { condition: service_healthy }
+      proof-server: { condition: service_healthy }
+    restart: 'unless-stopped'
+
+  # ── solver-provision ───────────────────────────────────────────────────────
+  # ONE-SHOT, and MANDATORY rather than a convenience — see the entrypoint's header. The
+  # pinned solver publishes NOTHING for a pair it holds no tokenIn inventory for, so an
+  # unfunded solver reaches all-healthy and quotes nothing, with no error anywhere.
+  solver-provision:
+    image: '${SOLVER_IMAGE:-midnight-1-offers/cow-solver:local}'
+    build: *solver_build
+    entrypoint: ['/usr/local/bin/entrypoint-solver-provision.sh']
+    restart: 'no'
+    environment:
+      <<: *midnight_endpoints
+      # It funds NIGHT from genesis before minting, so it drives TWO wallets: this one and
+      # SOLVER_SEED.
+      MIDNIGHT_WALLET_SEED: '${MIDNIGHT_GENESIS_SEED:-0000000000000000000000000000000000000000000000000000000000000001}'
+      MIDNIGHT_STORAGE_PASSWORD: '${MIDNIGHT_STORAGE_PASSWORD:-YourPasswordMy1!}'
+      SOLVER_SEED: '${SOLVER_SEED:-0000000000000000000000000000000000000000000000000000000000000021}'
+      SOLVER_PROVISION_ENABLED: '${SOLVER_PROVISION_ENABLED:-true}'
+      # The GENERATED ladder, not the branch's checked-in one: token colours derive from the
+      # deployed contract address, so the in-repo file names colours from an older deployment.
+      # This one-shot rewrites it with THIS stack's real ones onto the shared volume.
+      SOLVER_LADDER_CONFIG: '/srv/solver-config/ladders.dev.json'
+    volumes:
+      - 'offerfiles-deploy:/srv/offerfiles-deploy:ro'
+      - 'solver-config:/srv/solver-config'
+    depends_on:
+      node: { condition: service_healthy }
+      indexer: { condition: service_healthy }
+      proof-server: { condition: service_healthy }
+      # The contract must exist before anything can mint against it.
+      offerfiles-deploy: { condition: service_completed_successfully }
+
+  # ── maker-offer ────────────────────────────────────────────────────────────
+  # ONE-SHOT: one real, settle-able offer, so the mirrored book is not empty. The solver's
+  # ladder comes from the BOOK, not from its config file, so an empty book publishes an empty
+  # ladder however well funded the solver is.
+  maker-offer:
+    image: '${SOLVER_IMAGE:-midnight-1-offers/cow-solver:local}'
+    build: *solver_build
+    entrypoint: ['/usr/local/bin/entrypoint-maker-offer.sh']
+    restart: 'no'
+    environment:
+      <<: *midnight_endpoints
+      MAKER_OFFER_ENABLED: '${MAKER_OFFER_ENABLED:-true}'
+      # The genesis wallet by default, because the deploy one-shot's mint credits exactly that
+      # wallet — it is the only one holding a test token to give away.
+      MAKER_SEED: '${MAKER_OFFER_SEED:-0000000000000000000000000000000000000000000000000000000000000001}'
+      MIDNIGHT_STORAGE_PASSWORD: '${MIDNIGHT_STORAGE_PASSWORD:-YourPasswordMy1!}'
+      # Unset ⇒ read from minted-tokens.json on the shared volume. Colours derive from the
+      # deployed contract address, so they differ on every fresh stack and cannot be written
+      # down here.
+      GIVE_TOKEN: '${MAKER_OFFER_GIVE_TOKEN:-}'
+      WANT_TOKEN: '${MAKER_OFFER_WANT_TOKEN:-}'
+      GIVE_AMOUNT: '${MAKER_OFFER_GIVE_AMOUNT:-500000}'
+      WANT_AMOUNT: '${MAKER_OFFER_WANT_AMOUNT:-750000}'
+      TTL_MINUTES: '${MAKER_OFFER_TTL_MINUTES:-120}'
+      MAKER_OFFER_MARKER_DIR: '/var/lib/maker-offer'
+    volumes:
+      - 'offerfiles-deploy:/srv/offerfiles-deploy:ro'
+      - 'maker-offer-state:/var/lib/maker-offer'
+    depends_on:
+      kernel: { condition: service_healthy }
+      offerfiles-deploy: { condition: service_completed_successfully }
+      # NOT ordering for its own sake: solver-provision drives a wallet on the SAME genesis
+      # seed this service posts from, and two wallet facades on one seed against one node
+      # force each other's connection down — the second to connect wins and the first
+      # silently stops syncing.
+      solver-provision: { condition: service_completed_successfully }
+
+  # ── solver ─────────────────────────────────────────────────────────────────
+  solver:
+    image: '${SOLVER_IMAGE:-midnight-1-offers/cow-solver:local}'
+    build: *solver_build
+    entrypoint: ['/usr/local/bin/entrypoint-solver.sh']
+    environment:
+      <<: *midnight_endpoints
+      # ── the seven mandatory boundaries of `bun run start.solver.ts` ────────
+      # MIDNIGHT_NETWORK_ID and ZSWAP_API arrive above. All of them are stated explicitly even
+      # where a default exists, because every one of those defaults is a developer convenience
+      # that would be wrong in a deployment. Omitting any is a deterministic exit 1 listing
+      # all of them — this profile's fail-fast negative control, which nothing here softens.
+      SOLVER_RELAY_WS_URL: 'ws://relay:9001'
+      SOLVER_RELAY_HTTP_URL: 'http://relay:3000'
+      SOLVER_RELAY_AUTH_TOKEN: '${SOLVER_AUTH_TOKEN:-demo-midnight-1-offers-solver-token-0000}'
+      # Durable wallet-operation journal. The solver fails CLOSED at startup if this is
+      # missing, unwritable, corrupt, locked or schema-incompatible — a deployment
+      # requirement, not a nicety. One volume per solver instance; never shared.
+      SOLVER_JOURNAL_PATH: '/var/lib/cow-solver/operations.sqlite'
+      # ITS OWN, DEDICATED, NON-GENESIS seed (wallets/wallets.json). It collides with no other
+      # wallet on this stack, and solver-provision is what funds it.
+      SOLVER_SEED: '${SOLVER_SEED:-0000000000000000000000000000000000000000000000000000000000000021}'
+      MIDNIGHT_STORAGE_PASSWORD: '${MIDNIGHT_STORAGE_PASSWORD:-YourPasswordMy1!}'
+      # ── mode ───────────────────────────────────────────────────────────────
+      # Strictly "true"/"false"; a typo is a startup failure, never a silent "enabled".
+      SOLVER_ENABLED: '${SOLVER_ENABLED:-true}'
+      # false, deliberately: dry-run skips the relay client entirely, i.e. turns off the very
+      # lane this profile exists to demonstrate. Safety comes from the `undeployed` network
+      # gate above, not from this flag.
+      SOLVER_DRY_RUN: '${SOLVER_DRY_RUN:-false}'
+      SOLVER_LADDER_CONFIG: '/srv/solver-config/ladders.dev.json'
+      # Read ONLY by the healthcheck below, to decide how strict it may be.
+      MAKER_OFFER_ENABLED: '${MAKER_OFFER_ENABLED:-true}'
+      SOLVER_PROVISION_ENABLED: '${SOLVER_PROVISION_ENABLED:-true}'
+    volumes:
+      - 'offerfiles-deploy:/srv/offerfiles-deploy:ro'
+      - 'solver-config:/srv/solver-config:ro'
+      # Per-instance and chain-keyed: a journal that outlives the genesis it was written
+      # against is worse than no journal.
+      - 'solver-journal:/var/lib/cow-solver'
+    healthcheck:
+      # RUNTIME READINESS, not process existence. The relay's /tokens is the union of what
+      # every connected solver advertises, so a non-empty list proves this solver connected,
+      # authenticated, mirrored a book and published capabilities — the whole chain, from
+      # outside. An empty list is the exact silent failure the two one-shots exist to prevent,
+      # so it is UNHEALTHY rather than quietly fine.
+      #
+      # TWO conditions relax that, and both are states where an empty ladder is CORRECT rather
+      # than broken:
+      #
+      #   1. the operator turned a seeding one-shot off, i.e. said the inventory or the book
+      #      comes from somewhere this stack cannot see;
+      #   2. the kernel book has no live offer at all. The ladder is DERIVED from the book, so
+      #      with nothing to quote an empty publication is the honest answer — and this is
+      #      exactly the state a successful demo LEAVES BEHIND, because a settled take consumes
+      #      the offer it filled. Without this clause the solver would go unhealthy minutes
+      #      after the stack did precisely what it was built to do.
+      test:
+        - 'CMD'
+        - 'bun'
+        - '-e'
+        # NO `${…}` ANYWHERE IN THIS SCRIPT, not even inside a JavaScript template literal:
+        # compose interpolates `${…}` in every value it renders, and `${process.env.X}` is not
+        # a variable name it can resolve — the whole file then fails to render, which up.sh
+        # sees as "this profile declares no services". String concatenation instead.
+        - 'const strict = (process.env.MAKER_OFFER_ENABLED ?? "true") === "true" && (process.env.SOLVER_PROVISION_ENABLED ?? "true") === "true"; const r = await fetch("http://relay:3000/tokens").catch(() => null); if (!r || !r.ok) process.exit(1); const j = await r.json().catch(() => ({})); const n = Array.isArray(j.tokens) ? j.tokens.length : 0; if (!strict || n > 0) process.exit(0); const b = await fetch(process.env.ZSWAP_API + "/v1/offers?limit=1").catch(() => null); if (!b || !b.ok) process.exit(1); const book = await b.json().catch(() => ({})); process.exit((Array.isArray(book.offers) ? book.offers.length : 0) > 0 ? 1 : 0)'
+      interval: 10s
+      timeout: 10s
+      # The first ladder cannot appear before the solver has synced its wallet and mirrored
+      # the book, which is minutes on a cold stack.
+      retries: 30
+      start_period: 180s
+    depends_on:
+      kernel: { condition: service_healthy }
+      relay: { condition: service_healthy }
+      offerfiles-deploy: { condition: service_completed_successfully }
+      # NOT merely ordering: solver-provision drives a wallet on SOLVER_SEED, and it writes
+      # the ladder config this service reads.
+      solver-provision: { condition: service_completed_successfully }
+    # on-failure, NOT unless-stopped: a solver that exits 1 because its configuration is
+    # incomplete must stay down and visible. Its launch check reports every problem at once,
+    # so one restart shows the whole list — a perpetual loop would bury it. SOLVER_ENABLED=
+    # false exits 0 and is therefore not restarted at all.
+    restart: 'on-failure:3'
+
+  # ── intents-ui ─────────────────────────────────────────────────────────────
+  # The browser app, with nginx as its edge: the page calls same-origin /api/v1/* and nginx
+  # proxies to the relay inside the compose network. NO COMPOSE-INTERNAL HOSTNAME EVER
+  # REACHES THE BROWSER — see images/intents-ui/nginx.conf.
+  intents-ui:
+    image: '${INTENTS_UI_IMAGE:-midnight-1-offers/intents-ui:local}'
+    build:
+      context: '../images/intents-ui'
+      args:
+        RELAY_REF: '${RELAY_REF:-061f4d3258e25b9f3a451b4b4358ed232349d96b}'
+      additional_contexts:
+        reference: '${RELAY_SOURCE_DIR:-../local/relay-source-is-not-configured}'
+    ports:
+      - '${BIND_ADDR:-127.0.0.1}:${INTENTS_UI_HOST_PORT:-10700}:8080'
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -q -O /dev/null -T 5 http://127.0.0.1:8080/ || exit 1']
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+    depends_on:
+      # Not optional ordering: nginx resolves `relay` ONCE, when it loads its configuration,
+      # and exits with "host not found in upstream" if the name does not resolve yet.
+      relay: { condition: service_healthy }
+    restart: 'unless-stopped'
+
+volumes:
+  # Declared here rather than created ad hoc: only a compose-created volume carries the
+  # com.docker.compose.project label that `down.sh -v` filters on, so a volume made any other
+  # way survives teardown and silently feeds stale state to the next bring-up.
+  #
+  # ALL FOUR BELONG TO THE WIPE GROUP — each is keyed to a chain genesis:
+  relay-wallet-cache: # a wallet sync cache for a chain that no longer exists is worse than a
+                      # cold start: it replays state whose nullifiers and coins are gone.
+  solver-journal:     # wallet operations keyed to a chain state that `./down.sh -v` destroys.
+  solver-config:      # the ladder generated against THIS chain's contract address; carried
+                      # across a reset it points the solver at token colours that do not exist.
+  maker-offer-state:  # the marker recording that this chain's book was already seeded.

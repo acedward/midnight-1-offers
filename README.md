@@ -54,7 +54,18 @@ The relay and the intents UI come from **`shieldedtech/midnight-intents-swaps`**
 **private** repository. This one is public, so their source is never fetched, vendored or
 mirrored here. Instead:
 
-- you clone the private repository yourself and point `RELAY_SOURCE_DIR` at your clone;
+- you clone the private repository yourself and point `RELAY_SOURCE_DIR` at the **workspace
+  directory inside** that clone — the build context, not the clone's root:
+
+  ```sh
+  git clone git@github.com:shieldedtech/midnight-intents-swaps.git ./local/intents-swaps
+  git -C ./local/intents-swaps checkout 061f4d3258e25b9f3a451b4b4358ed232349d96b
+  echo 'RELAY_SOURCE_DIR=./local/intents-swaps/phase1-native-swaps' >> .env
+  ```
+
+  (The subdirectory is spelled out here and in `.env.example` rather than appended for you by
+  a script: the leak scan below treats that directory's name as source content anywhere
+  outside prose or a comment, so nothing in this repository is allowed to compose the path.)
 - `up.sh` verifies your clone is at the pinned commit and has a clean tree **before** any
   build starts, and fails with a clear message when the variable is unset;
 - the build reads it as a named build context; the `Dockerfile`s committed here are our own

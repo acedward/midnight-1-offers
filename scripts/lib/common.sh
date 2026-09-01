@@ -167,8 +167,13 @@ load_env() {
   : "${PROOF_VERSION:=8.1.0}"
 
   # ── source pins (full 40-hex commit SHAs; see config/artifact-decisions.json) ─
+  # KERNEL_REF is on `feat/cow-solver`, NOT on `main`, and deliberately (Q13): the solver
+  # profile's two kernel routes — the websocket book-update stream and the exact-files read —
+  # exist only there, and without them the intents lane publishes nothing and settles nothing.
+  # It is a strict descendant of main and exactly one commit past SOLVER_REF, so the kernel and
+  # the solver in this stack are two views of ONE tree. Re-pin to main when kernel PR #48 lands.
   : "${KERNEL_REPO:=https://github.com/effectstream/zswap-offerfiles-kernel.git}"
-  : "${KERNEL_REF:=6c5ebabc3533147d9a5cd73a57c16175b2974266}"
+  : "${KERNEL_REF:=773e70cb2f9d9583a01b8540231ae393ed8db207}"
   : "${FRONTEND_REPO:=https://github.com/effectstream/effectstream.git}"
   : "${FRONTEND_REF:=332503c8f9216143a8c805f2a0acbcfd39e5a21d}"
   : "${SOLVER_REPO:=https://github.com/effectstream/zswap-offerfiles-kernel.git}"
@@ -268,6 +273,14 @@ load_env() {
 # clones it themselves and points RELAY_SOURCE_DIR at their clone, which compose passes in
 # as a named build context.
 #
+# RELAY_SOURCE_DIR names the WORKSPACE DIRECTORY INSIDE that clone — the build context —
+# rather than the clone's root. That is not a style choice: this repository's own leak gate
+# (scripts/lib/leak_scan.py) treats the private subtree's NAME as source content anywhere
+# outside a comment, so `${RELAY_SOURCE_DIR}/<subtree>` cannot be written in a compose file
+# or a script here at all. Composing that path is therefore the operator's job, and
+# .env.example spells it out. Verification is unaffected: git resolves the enclosing
+# repository from any subdirectory, so both checks below still cover the whole checkout.
+#
 # Fetching by SHA would have verified identity for free. A local directory does not, so it
 # is verified HERE, before a single build starts: the clone must be a git checkout, sitting
 # at exactly RELAY_REF, with no uncommitted changes. Otherwise the image silently becomes
@@ -290,7 +303,10 @@ assert_relay_source() {
     info ""
     info "    git clone git@github.com:shieldedtech/midnight-intents-swaps.git ./local/intents-swaps"
     info "    git -C ./local/intents-swaps checkout ${RELAY_REF}"
-    info "    echo 'RELAY_SOURCE_DIR=./local/intents-swaps' >> .env"
+    info ""
+    info "then point RELAY_SOURCE_DIR at the WORKSPACE DIRECTORY inside that clone — not at"
+    info "the clone's root. .env.example gives the exact path; it is also recorded as"
+    info "sources[intents-relay].subtree in config/artifact-decisions.json."
     info ""
     info "'local/' is gitignored for exactly this. Every other profile builds without it:"
     info "    ./up.sh --with offerfiles --with frontend"
@@ -299,6 +315,15 @@ assert_relay_source() {
 
   if [[ ! -d "$dir" ]]; then
     err "RELAY_SOURCE_DIR does not exist: ${dir}"
+    return 1
+  fi
+  # The build context, not the checkout root. Caught here rather than as a `COPY failed:
+  # file not found` twenty layers into a build that has already downloaded a toolchain.
+  if [[ ! -f "$dir/package.json" ]]; then
+    err "RELAY_SOURCE_DIR has no package.json, so it is not the build context: ${dir}"
+    info "It must name the WORKSPACE DIRECTORY inside your clone — the one holding"
+    info "package.json, packages/ and infra/ — rather than the repository root."
+    info "The exact path is in .env.example."
     return 1
   fi
   if ! head="$(git -C "$dir" rev-parse HEAD 2>/dev/null)"; then
@@ -351,7 +376,6 @@ FUTURE_PROFILES_BLOCKER=""
 # services; a note that outlives the gap it described is worse than none.
 partial_profile_note() {
   case "$1" in
-    solver)     echo "placeholder — relay, COW solver, provisioning and the intents UI land in P4" ;;
     *) return 1 ;;
   esac
 }
@@ -384,10 +408,64 @@ pending_profiles() {
 # right now", and that means mapping a container's compose SERVICE label back to the fragment
 # that declares it.
 #
-# The mapping is asked of compose itself rather than parsed out of the YAML, because a
-# fragment cannot be validated on its own — a service in solver.yml may depend on one in
-# core.yml. So each fragment is read TOGETHER with core.yml and core's own services are
-# subtracted.
+# The mapping is asked of compose itself rather than parsed out of the YAML, because YAML
+# parsed by hand is YAML parsed wrongly. But compose can only answer about a set of fragments
+# it can RENDER, and a fragment does not render alone:
+#
+#     $ docker compose -f compose/core.yml -f compose/solver.yml config --services
+#     service "solver-provision" declares unknown service "kernel" as additional contexts
+#
+# PROFILES ARE LAYERS, and that is the fix. `solver` builds on `offerfiles`, which builds on
+# `core`, so a fragment is rendered together with every layer BENEATH it and the layers below
+# are subtracted. Rendering `core + solver` alone — the obvious implementation, and the one
+# this file shipped until P4 — fails, and a failed render is an EMPTY service list, which is
+# indistinguishable from "this fragment is still a placeholder". That mistake was not
+# theoretical: it silently disarmed relay_source_required() (so the private clone was never
+# verified) and it made every solver container an unattributed ORPHAN, which
+# `up.sh --with offerfiles` would then have removed mid-command.
+#
+# PROFILE_LAYER_ORDER is therefore load-bearing, not documentation: it must stay a valid
+# dependency order. A fragment not named in it is treated as the topmost layer, which is the
+# safe assumption for one this file has not been told about.
+PROFILE_LAYER_ORDER="core offerfiles frontend solver"
+
+# _layer_files <profile> [--below] — the `-f <fragment>` arguments for every layer up to and
+# including <profile>, or strictly below it, one word per line.
+_layer_files() {
+  local target="$1" mode="${2:-}" p
+  for p in $PROFILE_LAYER_ORDER; do
+    if [[ "$p" == "$target" ]]; then
+      [[ "$mode" == "--below" ]] && return 0
+      [[ -f "$REPO_ROOT/compose/$p.yml" ]] && printf -- '-f\n%s\n' "$REPO_ROOT/compose/$p.yml"
+      return 0
+    fi
+    [[ -f "$REPO_ROOT/compose/$p.yml" ]] && printf -- '-f\n%s\n' "$REPO_ROOT/compose/$p.yml"
+  done
+  # Not in PROFILE_LAYER_ORDER: every known layer is beneath it.
+  [[ "$mode" == "--below" ]] && return 0
+  [[ -f "$REPO_ROOT/compose/$target.yml" ]] && printf -- '-f\n%s\n' "$REPO_ROOT/compose/$target.yml"
+  return 0
+}
+
+# _render_services <profile> [--below] — sorted service names for that layer stack. Cached,
+# because up.sh asks for the same prefixes once per profile.
+_render_services() {
+  local target="$1" mode="${2:-}" key var files=() f out
+  key="$(printf '%s%s' "$target" "$mode" | tr -c '[:alnum:]' '_')"
+  var="_LAYER_SERVICES_${key}"
+  if [[ -n "${!var-}" ]]; then
+    printf '%s\n' "${!var}"
+    return 0
+  fi
+  while IFS= read -r f; do files+=("$f"); done < <(_layer_files "$target" "$mode")
+  if (( ${#files[@]} == 0 )); then
+    eval "$var=' '"     # a space, not empty: the cache must be able to hold "nothing here"
+    return 0
+  fi
+  out="$(docker compose ${files[@]+"${files[@]}"} config --services 2>/dev/null | sort)"
+  eval "$var=\$out"
+  printf '%s\n' "$out"
+}
 
 _CORE_SERVICES_CACHE=""
 core_services() {
@@ -397,14 +475,16 @@ core_services() {
   printf '%s\n' "$_CORE_SERVICES_CACHE"
 }
 
-# profile_services <profile> — the services a fragment adds on top of core.yml, one per line.
+# profile_services <profile> — the services this fragment adds to the layers beneath it, one
+# per line.
 profile_services() {
-  local p="$1" all
+  local p="$1" all base
   [[ -f "$REPO_ROOT/compose/$p.yml" ]] || return 0
-  all="$(docker compose -f "$REPO_ROOT/compose/core.yml" -f "$REPO_ROOT/compose/$p.yml" \
-           config --services 2>/dev/null | sort)"
-  [[ -n "$all" ]] || return 0
-  comm -13 <(core_services) <(printf '%s\n' "$all")
+  all="$(_render_services "$p")"
+  [[ -n "${all//[[:space:]]/}" ]] || return 0
+  base="$(_render_services "$p" --below)"
+  comm -13 <(printf '%s\n' "$base" | grep -v '^[[:space:]]*$' | sort) \
+           <(printf '%s\n' "$all"  | grep -v '^[[:space:]]*$' | sort)
 }
 
 # project_services — the compose service name of every container of this project, running or
