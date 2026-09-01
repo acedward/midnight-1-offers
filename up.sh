@@ -294,7 +294,13 @@ if (( ! FAILED )) && [[ " $PROFILES " == *" offerfiles "* ]] && service_present 
   wait_compose_healthy celestia "$CELESTIA_WAIT_TIMEOUT" || FAILED=1
 fi
 if (( ! FAILED )) && [[ " $PROFILES " == *" offerfiles "* ]] && service_present kernel; then
+  # The kernel's healthcheck asserts `synced`, not merely that the API answers, so this is
+  # "the order book is current" rather than "the process started". It also implicitly covers
+  # the offerfiles-deploy one-shot: compose will not start the kernel until that has exited 0.
   wait_compose_healthy kernel "$KERNEL_WAIT_TIMEOUT" || FAILED=1
+fi
+if (( ! FAILED )) && [[ " $PROFILES " == *" offerfiles "* ]] && service_present batcher; then
+  wait_compose_healthy batcher "$KERNEL_WAIT_TIMEOUT" || FAILED=1
 fi
 if (( ! FAILED )) && [[ " $PROFILES " == *" frontend "* ]] && service_present frontend; then
   wait_compose_healthy frontend "$FRONTEND_WAIT_TIMEOUT" || FAILED=1
