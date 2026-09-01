@@ -242,6 +242,14 @@ load_env() {
 # clones it themselves and points RELAY_SOURCE_DIR at their clone, which compose passes in
 # as a named build context.
 #
+# RELAY_SOURCE_DIR names the WORKSPACE DIRECTORY INSIDE that clone — the build context —
+# rather than the clone's root. That is not a style choice: this repository's own leak gate
+# (scripts/lib/leak_scan.py) treats the private subtree's NAME as source content anywhere
+# outside a comment, so `${RELAY_SOURCE_DIR}/<subtree>` cannot be written in a compose file
+# or a script here at all. Composing that path is therefore the operator's job, and
+# .env.example spells it out. Verification is unaffected: git resolves the enclosing
+# repository from any subdirectory, so both checks below still cover the whole checkout.
+#
 # Fetching by SHA would have verified identity for free. A local directory does not, so it
 # is verified HERE, before a single build starts: the clone must be a git checkout, sitting
 # at exactly RELAY_REF, with no uncommitted changes. Otherwise the image silently becomes
@@ -264,7 +272,10 @@ assert_relay_source() {
     info ""
     info "    git clone git@github.com:shieldedtech/midnight-intents-swaps.git ./local/intents-swaps"
     info "    git -C ./local/intents-swaps checkout ${RELAY_REF}"
-    info "    echo 'RELAY_SOURCE_DIR=./local/intents-swaps' >> .env"
+    info ""
+    info "then point RELAY_SOURCE_DIR at the WORKSPACE DIRECTORY inside that clone — not at"
+    info "the clone's root. .env.example gives the exact path; it is also recorded as"
+    info "sources[intents-relay].subtree in config/artifact-decisions.json."
     info ""
     info "'local/' is gitignored for exactly this. Every other profile builds without it:"
     info "    ./up.sh --with offerfiles --with frontend"
@@ -273,6 +284,15 @@ assert_relay_source() {
 
   if [[ ! -d "$dir" ]]; then
     err "RELAY_SOURCE_DIR does not exist: ${dir}"
+    return 1
+  fi
+  # The build context, not the checkout root. Caught here rather than as a `COPY failed:
+  # file not found` twenty layers into a build that has already downloaded a toolchain.
+  if [[ ! -f "$dir/package.json" ]]; then
+    err "RELAY_SOURCE_DIR has no package.json, so it is not the build context: ${dir}"
+    info "It must name the WORKSPACE DIRECTORY inside your clone — the one holding"
+    info "package.json, packages/ and infra/ — rather than the repository root."
+    info "The exact path is in .env.example."
     return 1
   fi
   if ! head="$(git -C "$dir" rev-parse HEAD 2>/dev/null)"; then
@@ -328,7 +348,6 @@ partial_profile_note() {
     core)       echo "placeholder — node, indexer, proof-server and postgres land in P1" ;;
     offerfiles) echo "placeholder — celestia, contract deploy, kernel and batcher land in P2" ;;
     frontend)   echo "placeholder — the zswap-da SPA lands in P3" ;;
-    solver)     echo "placeholder — relay, COW solver, provisioning and the intents UI land in P4" ;;
     *) return 1 ;;
   esac
 }
