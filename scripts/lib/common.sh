@@ -191,6 +191,21 @@ load_env() {
   : "${RELAY_WS_HOST_PORT:=19001}"
   : "${INTENTS_UI_HOST_PORT:=10700}"
 
+  # ── the shared PostgreSQL (Q7) ─────────────────────────────────────────────
+  # The role/database the offer-files kernel authenticates as. Defaulted here as well as in
+  # compose because verify.sh probes the REAL database with psql, not just the container's
+  # health status — a healthy server with no `offerfiles` database in it is exactly the
+  # failure the probe exists to catch. Postgres publishes no host port, so these are only
+  # ever used through `docker compose exec`.
+  : "${OFFERFILES_PG_USER:=offerfiles}"
+  : "${OFFERFILES_PG_DB:=offerfiles}"
+
+  # ── proof-data pre-warm ────────────────────────────────────────────────────
+  # How long the one-shot may spend letting the proof server fetch and verify its startup
+  # working set. Measured cold on a warm network: ~4s for 32.6 MB. The default is generous
+  # because a cold cache on a slow link is the one case this budget exists for.
+  : "${PROOF_WARM_TIMEOUT:=900}"
+
   # Indexer 4.3.3 serves an IDENTICAL GraphQL schema at /api/v3/graphql and /api/v4/graphql
   # (measured, not assumed). v3 is the 1.x-native path the ledger-v8 wallet SDK uses, so it
   # is the default; the variable exists so a consumer that needs v4 can be moved without a
@@ -201,6 +216,10 @@ load_env() {
   : "${NODE_WAIT_TIMEOUT:=180}"
   : "${INDEXER_WAIT_TIMEOUT:=420}"
   : "${PROOF_WAIT_TIMEOUT:=120}"
+  # Postgres' own healthcheck allows initdb three minutes before it starts consuming
+  # retries (compiling pg_ivm and running initdb on a loaded host is not instant), so the
+  # host-side wait has to be at least as patient or it gives up on a healthy bring-up.
+  : "${POSTGRES_WAIT_TIMEOUT:=300}"
   : "${CELESTIA_WAIT_TIMEOUT:=300}"
   : "${KERNEL_WAIT_TIMEOUT:=600}"
   : "${FRONTEND_WAIT_TIMEOUT:=300}"
@@ -216,8 +235,8 @@ load_env() {
          BIND_ADDR NODE_HOST_PORT INDEXER_HOST_PORT PROOF_HOST_PORT \
          KERNEL_HOST_PORT BATCHER_HOST_PORT CELESTIA_HOST_PORT FRONTEND_HOST_PORT \
          RELAY_HTTP_HOST_PORT RELAY_WS_HOST_PORT INTENTS_UI_HOST_PORT \
-         INDEXER_API_PATH \
-         NODE_WAIT_TIMEOUT INDEXER_WAIT_TIMEOUT PROOF_WAIT_TIMEOUT \
+         INDEXER_API_PATH OFFERFILES_PG_USER OFFERFILES_PG_DB PROOF_WARM_TIMEOUT \
+         NODE_WAIT_TIMEOUT INDEXER_WAIT_TIMEOUT PROOF_WAIT_TIMEOUT POSTGRES_WAIT_TIMEOUT \
          CELESTIA_WAIT_TIMEOUT KERNEL_WAIT_TIMEOUT FRONTEND_WAIT_TIMEOUT \
          SOLVER_WAIT_TIMEOUT RELAY_WAIT_TIMEOUT
 
@@ -325,7 +344,6 @@ FUTURE_PROFILES_BLOCKER=""
 # services; a note that outlives the gap it described is worse than none.
 partial_profile_note() {
   case "$1" in
-    core)       echo "placeholder — node, indexer, proof-server and postgres land in P1" ;;
     offerfiles) echo "placeholder — celestia, contract deploy, kernel and batcher land in P2" ;;
     frontend)   echo "placeholder — the zswap-da SPA lands in P3" ;;
     solver)     echo "placeholder — relay, COW solver, provisioning and the intents UI land in P4" ;;
