@@ -380,10 +380,64 @@ pending_profiles() {
 # right now", and that means mapping a container's compose SERVICE label back to the fragment
 # that declares it.
 #
-# The mapping is asked of compose itself rather than parsed out of the YAML, because a
-# fragment cannot be validated on its own — a service in solver.yml may depend on one in
-# core.yml. So each fragment is read TOGETHER with core.yml and core's own services are
-# subtracted.
+# The mapping is asked of compose itself rather than parsed out of the YAML, because YAML
+# parsed by hand is YAML parsed wrongly. But compose can only answer about a set of fragments
+# it can RENDER, and a fragment does not render alone:
+#
+#     $ docker compose -f compose/core.yml -f compose/solver.yml config --services
+#     service "solver-provision" declares unknown service "kernel" as additional contexts
+#
+# PROFILES ARE LAYERS, and that is the fix. `solver` builds on `offerfiles`, which builds on
+# `core`, so a fragment is rendered together with every layer BENEATH it and the layers below
+# are subtracted. Rendering `core + solver` alone — the obvious implementation, and the one
+# this file shipped until P4 — fails, and a failed render is an EMPTY service list, which is
+# indistinguishable from "this fragment is still a placeholder". That mistake was not
+# theoretical: it silently disarmed relay_source_required() (so the private clone was never
+# verified) and it made every solver container an unattributed ORPHAN, which
+# `up.sh --with offerfiles` would then have removed mid-command.
+#
+# PROFILE_LAYER_ORDER is therefore load-bearing, not documentation: it must stay a valid
+# dependency order. A fragment not named in it is treated as the topmost layer, which is the
+# safe assumption for one this file has not been told about.
+PROFILE_LAYER_ORDER="core offerfiles frontend solver"
+
+# _layer_files <profile> [--below] — the `-f <fragment>` arguments for every layer up to and
+# including <profile>, or strictly below it, one word per line.
+_layer_files() {
+  local target="$1" mode="${2:-}" p
+  for p in $PROFILE_LAYER_ORDER; do
+    if [[ "$p" == "$target" ]]; then
+      [[ "$mode" == "--below" ]] && return 0
+      [[ -f "$REPO_ROOT/compose/$p.yml" ]] && printf -- '-f\n%s\n' "$REPO_ROOT/compose/$p.yml"
+      return 0
+    fi
+    [[ -f "$REPO_ROOT/compose/$p.yml" ]] && printf -- '-f\n%s\n' "$REPO_ROOT/compose/$p.yml"
+  done
+  # Not in PROFILE_LAYER_ORDER: every known layer is beneath it.
+  [[ "$mode" == "--below" ]] && return 0
+  [[ -f "$REPO_ROOT/compose/$target.yml" ]] && printf -- '-f\n%s\n' "$REPO_ROOT/compose/$target.yml"
+  return 0
+}
+
+# _render_services <profile> [--below] — sorted service names for that layer stack. Cached,
+# because up.sh asks for the same prefixes once per profile.
+_render_services() {
+  local target="$1" mode="${2:-}" key var files=() f out
+  key="$(printf '%s%s' "$target" "$mode" | tr -c '[:alnum:]' '_')"
+  var="_LAYER_SERVICES_${key}"
+  if [[ -n "${!var-}" ]]; then
+    printf '%s\n' "${!var}"
+    return 0
+  fi
+  while IFS= read -r f; do files+=("$f"); done < <(_layer_files "$target" "$mode")
+  if (( ${#files[@]} == 0 )); then
+    eval "$var=' '"     # a space, not empty: the cache must be able to hold "nothing here"
+    return 0
+  fi
+  out="$(docker compose ${files[@]+"${files[@]}"} config --services 2>/dev/null | sort)"
+  eval "$var=\$out"
+  printf '%s\n' "$out"
+}
 
 _CORE_SERVICES_CACHE=""
 core_services() {
@@ -393,14 +447,16 @@ core_services() {
   printf '%s\n' "$_CORE_SERVICES_CACHE"
 }
 
-# profile_services <profile> — the services a fragment adds on top of core.yml, one per line.
+# profile_services <profile> — the services this fragment adds to the layers beneath it, one
+# per line.
 profile_services() {
-  local p="$1" all
+  local p="$1" all base
   [[ -f "$REPO_ROOT/compose/$p.yml" ]] || return 0
-  all="$(docker compose -f "$REPO_ROOT/compose/core.yml" -f "$REPO_ROOT/compose/$p.yml" \
-           config --services 2>/dev/null | sort)"
-  [[ -n "$all" ]] || return 0
-  comm -13 <(core_services) <(printf '%s\n' "$all")
+  all="$(_render_services "$p")"
+  [[ -n "${all//[[:space:]]/}" ]] || return 0
+  base="$(_render_services "$p" --below)"
+  comm -13 <(printf '%s\n' "$base" | grep -v '^[[:space:]]*$' | sort) \
+           <(printf '%s\n' "$all"  | grep -v '^[[:space:]]*$' | sort)
 }
 
 # project_services — the compose service name of every container of this project, running or
