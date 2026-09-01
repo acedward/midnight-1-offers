@@ -4,25 +4,43 @@
 
 The image fetches `templates/zswap-da` directly from
 [`effectstream/effectstream`](https://github.com/effectstream/effectstream) at the immutable
-commit `332503c8f9216143a8c805f2a0acbcfd39e5a21d`, whose template subtree is
-`1f63d7eedc9a8aff729b7fe026486cb89cb618de`. BOTH identities are verified before checkout —
+commit `9474871185fd1b2704a9487718eee9d88c4f8edc` — the head of the
+[`midnight-1`](https://github.com/effectstream/effectstream/tree/midnight-1) branch, the line
+maintained for midnight-node 1.x / ledger-v8 / `@effectstream` 0.1xx — whose template subtree
+is `af6023edf0d79269457adfaf17d09c9ebd301698`. BOTH identities are verified before checkout —
 the commit alone does not prove which bytes of it were extracted — and the resolved commit is
 recorded as `/.zswap-da-commit` inside the runtime image, so "what is in here?" never depends
 on remembering which tag it was built as. No third-party SPA source is stored in this
 repository, and no generated `managed/` contract output is committed.
 
-Upstream `templates/**` is FROZEN by effectstream 00016 FR-10. Nothing here may push to it.
+Upstream `templates/**` on `main` is FROZEN by effectstream 00016 FR-10, and `midnight-1` is
+the 1.x line's own branch. Nothing here pushes to either; the pin is read-only.
 
-## What is NOT applied: the ledger adaptation
+### History of this pin (Q14)
+
+The repository first pinned the frozen ref `332503c8` that midnight-2-offers also uses, and
+found (measured at P3) that its template is v8-native in the CONTRACT lane but on the 2.x
+line in the WALLET lane (`@effectstream/{midnight-contracts,wallets}` 0.200.1 → ledger-v9), so
+the in-page wallet could not sync. It carried upstream's own reverse diff as
+`effectstream-1x-line.patch`. The `midnight-1` branch forked upstream at `b267fa2e` (the
+0.104.0 bump), BEFORE the 0.200.1 bump, so its template is natively on the 1.x line — and
+its subtree is **byte-identical** to the patched frozen ref (`package.json` blob `822bd218…`,
+`bun.lock` blob `1099e6f6…` on both sides). The owner chose to pin that branch and retire the
+patch (2026-09-01).
+
+## What is NOT applied: any ledger or dependency adaptation
 
 The 2.x sibling repository (`midnight-2-offers`) carries a 55 KB `ledger-v9.patch` that
 migrates this same template from ledger-v8 to ledger-v9. **This repository ships no such
-patch and no such stage**: at this ref the template is already v8-native — `@midnight-ntwrk/`
-`ledger-v8` 8.1.0, midnight-js 4.1.1, compact-js 2.5.1, compact-runtime 0.16.0 — which is
-exactly the line the 1.x kernel runs. That is asserted in the build rather than assumed: the
-source stage requires `"@midnight-ntwrk/ledger-v8": "8.1.0"` in `package.json` and requires
-that no `ledger-v9` dependency appears anywhere in it. If upstream ever moved the frozen ref,
-the build fails there instead of producing a silently mismatched bundle.
+patch and no such stage**, and since Q14 no dependency patch either: at this ref the template
+is v8-native in both lanes — `@midnight-ntwrk/ledger-v8` 8.1.0, midnight-js 4.1.1, compact-js
+2.5.1, compact-runtime 0.16.0 for the contract lane; `@effectstream/{midnight-contracts,`
+`wallets}` 0.104.0 (ledger-v8, wallet-sdk-facade 4.1.0) for the wallet lane — which is exactly
+the line the 1.x kernel runs. That is asserted in the build rather than assumed: the source
+stage requires `"@midnight-ntwrk/ledger-v8": "8.1.0"` and the 0.104.0 pair in `package.json`,
+refuses any `0.200.x` entry, and requires that no `ledger-v9` appears anywhere in the resolved
+`bun.lock`. If the pinned ref ever drifts, the build fails there instead of producing a
+silently mismatched bundle.
 
 ## What IS applied: `browser-network-urls.patch`
 
