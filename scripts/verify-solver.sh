@@ -138,6 +138,19 @@ info "maker gives ${GIVE_AMOUNT} of ${GIVE_TOKEN:0:16}…"
 info "maker wants ${WANT_AMOUNT} of ${WANT_TOKEN:0:16}…"
 info "=> the solver's pair is tokenIn=${WANT_TOKEN:0:8}… tokenOut=${GIVE_TOKEN:0:8}…"
 
+# A LADDER IS DERIVED FROM THE BOOK, so an empty book means an empty ladder is correct rather
+# than broken — and an empty book is exactly what a successful demo LEAVES BEHIND, because a
+# settled take consumes the offer it filled. Asserting a ladder against a consumed book would
+# turn "the stack did its job" into a red verify run, so the book is checked first and the
+# assertions that depend on it are skipped, loudly, when there is nothing to quote.
+BOOK="$(curl -fsS --max-time 10 "http://${BIND}:${KERNEL_HOST_PORT:-9999}/v1/offers?limit=5" 2>/dev/null || true)"
+if [[ "$SEEDED" == "yes" && "$BOOK" == '{"offers":[]'* ]]; then
+  SEEDED="consumed"
+  warn "the kernel book holds no live offer, so there is nothing for the solver to quote"
+  info "that is the state a SETTLED take leaves behind — the ladder and quote assertions are"
+  info "skipped rather than failed. './down.sh -v' for a fresh book, or post another offer."
+fi
+
 if [[ "$SEEDED" == "yes" ]]; then
   for colour in "$GIVE_TOKEN" "$WANT_TOKEN"; do
     if [[ "$TOKENS" == *"$colour"* ]]; then
@@ -146,7 +159,7 @@ if [[ "$SEEDED" == "yes" ]]; then
       fail "the relay does not advertise ${colour:0:16}… — the solver published an EMPTY ladder"
     fi
   done
-else
+elif [[ "$SEEDED" == "no" ]]; then
   warn "SOLVER_PROVISION_ENABLED/MAKER_OFFER_ENABLED are not both true"
   info "the seeding one-shots were skipped, so an empty ladder is a legitimate state here"
   info "and the quote assertions below are skipped with it"

@@ -252,17 +252,27 @@ services:
       # every connected solver advertises, so a non-empty list proves this solver connected,
       # authenticated, mirrored a book and published capabilities — the whole chain, from
       # outside. An empty list is the exact silent failure the two one-shots exist to prevent,
-      # so on the default path it is UNHEALTHY rather than quietly fine.
+      # so it is UNHEALTHY rather than quietly fine.
       #
-      # The strictness is conditional on the deployment actually seeding both halves: with
-      # SOLVER_PROVISION_ENABLED=false or MAKER_OFFER_ENABLED=false the operator has said the
-      # book and the inventory come from elsewhere, and an empty ladder is then a legitimate
-      # state rather than a fault. In that mode only relay reachability is asserted.
+      # TWO conditions relax that, and both are states where an empty ladder is CORRECT rather
+      # than broken:
+      #
+      #   1. the operator turned a seeding one-shot off, i.e. said the inventory or the book
+      #      comes from somewhere this stack cannot see;
+      #   2. the kernel book has no live offer at all. The ladder is DERIVED from the book, so
+      #      with nothing to quote an empty publication is the honest answer — and this is
+      #      exactly the state a successful demo LEAVES BEHIND, because a settled take consumes
+      #      the offer it filled. Without this clause the solver would go unhealthy minutes
+      #      after the stack did precisely what it was built to do.
       test:
         - 'CMD'
         - 'bun'
         - '-e'
-        - 'const strict = (process.env.MAKER_OFFER_ENABLED ?? "true") === "true" && (process.env.SOLVER_PROVISION_ENABLED ?? "true") === "true"; const r = await fetch("http://relay:3000/tokens").catch(() => null); if (!r || !r.ok) process.exit(1); const j = await r.json().catch(() => ({})); const n = Array.isArray(j.tokens) ? j.tokens.length : 0; process.exit(strict ? (n > 0 ? 0 : 1) : 0)'
+        # NO `${…}` ANYWHERE IN THIS SCRIPT, not even inside a JavaScript template literal:
+        # compose interpolates `${…}` in every value it renders, and `${process.env.X}` is not
+        # a variable name it can resolve — the whole file then fails to render, which up.sh
+        # sees as "this profile declares no services". String concatenation instead.
+        - 'const strict = (process.env.MAKER_OFFER_ENABLED ?? "true") === "true" && (process.env.SOLVER_PROVISION_ENABLED ?? "true") === "true"; const r = await fetch("http://relay:3000/tokens").catch(() => null); if (!r || !r.ok) process.exit(1); const j = await r.json().catch(() => ({})); const n = Array.isArray(j.tokens) ? j.tokens.length : 0; if (!strict || n > 0) process.exit(0); const b = await fetch(process.env.ZSWAP_API + "/v1/offers?limit=1").catch(() => null); if (!b || !b.ok) process.exit(1); const book = await b.json().catch(() => ({})); process.exit((Array.isArray(book.offers) ? book.offers.length : 0) > 0 ? 1 : 0)'
       interval: 10s
       timeout: 10s
       # The first ladder cannot appear before the solver has synced its wallet and mirrored

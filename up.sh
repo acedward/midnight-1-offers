@@ -226,9 +226,21 @@ if (( DO_BUILD )); then
   fi
 fi
 
+# A RENDER FAILURE AND AN EMPTY RENDER ARE DIFFERENT THINGS, and conflating them cost real
+# time: a `${…}` sequence inside a healthcheck script made compose refuse the whole file, and
+# because the old form here discarded stderr, up.sh reported "this repository is at its P0
+# scaffold" and exited 0 — a broken fragment presented as a design state. Compose's own error
+# names the file and the line; it must be shown, not swallowed.
+if ! RENDERED_SERVICES="$(dc config --services 2>&1)"; then
+  echo
+  err "docker compose could not render this profile set (core${PROFILES// /, }):"
+  printf '%s\n' "$RENDERED_SERVICES" | sed 's/^/      /' >&2
+  info "nothing was started."
+  exit 1
+fi
 # While every fragment is still a placeholder there is nothing to start, and `docker compose
 # up` on an empty service set is a no-op that reads as success. Say what actually happened.
-if [[ -z "$(dc config --services 2>/dev/null | tr -d '[:space:]')" ]]; then
+if [[ -z "${RENDERED_SERVICES//[[:space:]]/}" ]]; then
   echo
   warn "no services are declared yet — this repository is at its P0 scaffold"
   info "the compose fragments are valid placeholders; services land in P1 (core), P2"
