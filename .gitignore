@@ -1,0 +1,39 @@
+# Local, per-machine configuration (never committed — .env.example is the template)
+.env
+.env.*
+!.env.example
+
+# ── PRIVATE-SOURCE GUARD (spec FR-11 / plan Q4) ──────────────────────────────
+#
+# This repository is PUBLIC. The Midnight Intents relay and its browser UI are built
+# from `shieldedtech/midnight-intents-swaps`, which is PRIVATE, and NOT ONE BYTE of
+# that source may ever be committed here — no vendored files, no patch files whose
+# context lines quote it, no copied lockfiles, no build outputs.
+#
+# `local/` is the conventional in-repo place for the operator's own clone of it, i.e.
+# what RELAY_SOURCE_DIR points at. It is ignored so a clone dropped there cannot be
+# staged by accident. `scripts/verify-no-private-source.sh` (wired into ci-check.sh)
+# is the belt-and-braces gate that fails if something slips past this file anyway.
+local/
+
+# Local test artifacts — the workspace rule is "do not commit docker artifacts for testing"
+.test/
+*.log
+logs/
+
+# Per-compose-project host caches. Wiped by ./down.sh -v.
+.cache/
+
+# Generated wallet material (dev-only, but regenerate rather than commit)
+wallets/generated/
+
+# Build output / deps of the locally built app images
+node_modules/
+dist/
+build/
+
+# Python bytecode from the helper modules under scripts/lib/
+__pycache__/
+*.py[cod]
+
+.DS_Store
