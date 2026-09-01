@@ -72,17 +72,53 @@ COPY --from=reference src/ ./src/
 # FILES from the project directory, which is the behaviour that is specified rather than
 # incidental.
 #
-# Only the network id is set. Everything else the app needs has a same-origin default that is
-# already correct for this deployment: the relay API base is `/api/v1` (nginx strips it), and
-# the token list comes from the relay at runtime rather than from configuration — which is
+# The network id is always set. Everything else the app needs has a same-origin default that
+# is already correct for this deployment: the relay API base is `/api/v1` (nginx strips it),
+# and the token LIST comes from the relay at runtime rather than from configuration — which is
 # what makes this image independent of a chain whose token colours are minted fresh on every
 # `./down.sh -v`.
 ARG UI_NETWORK_ID=undeployed
 RUN printf 'VITE_NETWORK_ID=%s\n' "${UI_NETWORK_ID}" > /app/.env
 
+# Token NAMES are the one thing the relay cannot supply: `/tokens` carries raw colours, and the
+# app's `tokenNames` module labels a colour by the `TOKEN_<NAME>` config key it finds in the
+# baked config block (a `VITE_TOKEN_<NAME>=<64-hex>` line here), falling back to the colour's
+# last 8 hex chars. So this is a BUILD-time knob, and because colours are minted per chain the
+# value lives in each stack's `.env` (INTENTS_UI_TOKEN_NAMES), never in a committed default.
+# The label the app shows is the whole key, `TOKEN_<NAME>` — that is upstream's convention
+# (its own preprod config names tokens TOKEN_A…TOKEN_J) and not something this image changes.
+# Malformed entries fail the build rather than silently producing an unlabeled token.
+ARG UI_TOKEN_NAMES=
+RUN set -eu; \
+    IFS=','; for pair in ${UI_TOKEN_NAMES}; do \
+      [ -n "${pair}" ] || continue; \
+      name="${pair%%=*}"; hex="${pair#*=}"; \
+      case "${name}" in \
+        ""|*[!A-Z0-9_]*) echo "FAIL: UI_TOKEN_NAMES entry '${pair}': name must be A-Z, 0-9 or _" >&2; exit 1 ;; \
+      esac; \
+      case "${hex}" in \
+        ????????????????????????????????????????????????????????????????) : ;; \
+        *) echo "FAIL: UI_TOKEN_NAMES entry '${pair}': colour must be exactly 64 hex chars" >&2; exit 1 ;; \
+      esac; \
+      case "${hex}" in \
+        *[!0-9a-f]*) echo "FAIL: UI_TOKEN_NAMES entry '${pair}': colour must be lowercase hex" >&2; exit 1 ;; \
+      esac; \
+      printf 'VITE_TOKEN_%s=%s\n' "${name}" "${hex}" >> /app/.env; \
+    done; \
+    cat /app/.env
+
 RUN npx vite build --outDir dist-ui \
  && test -f /app/dist-ui/index.html \
  && grep -q 'id="config"' /app/dist-ui/index.html
+
+# Every configured name must have reached the baked config block — the plugin reads env FILES
+# and a silently ignored line would ship a UI that shows hex tails again.
+RUN set -eu; \
+    IFS=','; for pair in ${UI_TOKEN_NAMES}; do \
+      [ -n "${pair}" ] || continue; \
+      grep -q "\"TOKEN_${pair%%=*}\":\"${pair#*=}\"" /app/dist-ui/index.html \
+        || { echo "FAIL: TOKEN_${pair%%=*} did not reach the baked config block" >&2; exit 1; }; \
+    done
 
 # ── 2. serve it ──────────────────────────────────────────────────────────────
 FROM ${NGINX_BASE}

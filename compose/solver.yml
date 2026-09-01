@@ -302,6 +302,9 @@ services:
       context: '../images/intents-ui'
       args:
         RELAY_REF: '${RELAY_REF:-061f4d3258e25b9f3a451b4b4358ed232349d96b}'
+        # Friendly names for the UI, baked at build time (see .env.example). Empty by default:
+        # colours are per chain, so a committed value would name the wrong tokens.
+        UI_TOKEN_NAMES: '${INTENTS_UI_TOKEN_NAMES:-}'
       additional_contexts:
         reference: '${RELAY_SOURCE_DIR:-../local/relay-source-is-not-configured}'
     ports:
