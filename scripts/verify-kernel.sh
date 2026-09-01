@@ -13,7 +13,7 @@
 #   * `POST /v1/offers/files`      — absent. There is no exact-files read on main at all; the
 #                                    write path is `POST /v1/offers` with `{"offer":"swapoffer1…"}`.
 #                                    The spec's Celestia byte-round-trip assertion depends on
-#                                    this route and cannot be made as written — plan question Q11.
+#                                    this route and cannot be made as written — plan question Q12.
 #   * `requireCurrentBackend`      — absent, along with `MAX_CELESTIA_LAG_BLOCKS` and
 #                                    `deriveSyncStatus`. Nothing on main refuses a request for
 #                                    being behind, so "is the backend current?" is a question this
@@ -103,9 +103,16 @@ else
   # REPORTED, not asserted. main has no lag gate, and the absolute numbers depend on how long
   # the stack has been up — but a Celestia lag that keeps growing is the symptom the 3s cadence
   # exists to prevent, and an operator reading this output should be able to see it.
+  #
+  # `celestia.lag_blocks` is legitimately NULL on this devnet: the kernel derives it from a DA
+  # `tip` it does not always resolve, and reports `{current, fetched, tip: null, lag_blocks:
+  # null}`. That is the kernel saying "unknown", not this script failing to parse — so the two
+  # cases are printed differently, and `current` is shown, which IS always populated.
+  CEL_CUR="$(printf '%s' "$SYNC" | sed -nE 's/.*"celestia"[^}]*"current"[[:space:]]*:[[:space:]]*"?([0-9]+)"?.*/\1/p' | head -1)"
   CEL_LAG="$(printf '%s' "$SYNC" | sed -nE 's/.*"celestia"[^}]*"lag_blocks"[[:space:]]*:[[:space:]]*([0-9]+).*/\1/p' | head -1)"
   MID_LAG="$(printf '%s' "$SYNC" | sed -nE 's/.*"midnight"[^}]*"lag_blocks"[[:space:]]*:[[:space:]]*([0-9]+).*/\1/p' | head -1)"
-  info "lag_blocks: celestia=${CEL_LAG:-?} midnight=${MID_LAG:-?}"
+  info "celestia: height=${CEL_CUR:-?} lag_blocks=${CEL_LAG:-null (the kernel could not resolve a DA tip)}"
+  info "midnight: lag_blocks=${MID_LAG:-?}"
 fi
 
 # ── the contract identity ────────────────────────────────────────────────────
@@ -186,13 +193,18 @@ fi
 # ── ZK assets ────────────────────────────────────────────────────────────────
 echo
 log "kernel: zk assets"
-# One mounted route is enough to prove the router is up; which keys exist is the contract
-# build's concern, not this script's. Anything but a connection failure or a 5xx counts.
-KEYS_CODE="$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' "$API/keys/" 2>/dev/null || echo 000)"
-case "$KEYS_CODE" in
-  000|5??) fail "the /keys/ route is not mounted (HTTP ${KEYS_CODE}) — the browser prover fetches from there" ;;
-  *) ok "/keys/ route mounted (HTTP ${KEYS_CODE})" ;;
-esac
+# A REAL asset, not the bare `/keys/` prefix. `/keys/*` 404s on anything it cannot resolve to
+# a file, and an unmounted route 404s too — so probing `/keys/` proves nothing at all. Naming
+# a file that the image's compact stage actually produced turns this into an end-to-end check
+# of build -> image -> served bytes, which is what the browser prover depends on.
+for asset in "/keys/mint_shielded.prover" "/keys/mint_shielded.verifier" "/zkir/mint_shielded.bzkir"; do
+  read -r code size <<<"$(curl -s --max-time 20 -o /dev/null -w '%{http_code} %{size_download}' "${API}${asset}" 2>/dev/null || echo '000 0')"
+  if [[ "$code" == "200" ]] && (( size > 0 )); then
+    ok "${asset} served (${size} bytes)"
+  else
+    fail "${asset} not served (HTTP ${code}, ${size} bytes) — the browser prover fetches from here"
+  fi
+done
 
 # ── the batcher ──────────────────────────────────────────────────────────────
 echo

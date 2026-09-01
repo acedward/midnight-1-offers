@@ -136,6 +136,13 @@ else
     # A payload that is unmistakably ours, so reading it back cannot be confused with somebody
     # else's blob at the same height. base64 is done on the host (a plain-ASCII payload, so no
     # binary handling is involved); the namespace expansion is the only part that needed bytes.
+    #
+    # EXPECTED SIDE EFFECT, so nobody chases it later: this blob goes into the SAME namespace
+    # the kernel reads, so the kernel's sync node picks it up, fails to parse it as an offer,
+    # and records a `BAD_DESERIALIZE` row at this height in `/v1/health/sync`'s
+    # `recent_rejections`. That is the sync layer working correctly — rejecting a non-offer —
+    # and it is exactly what makes this a real round trip through the shared namespace rather
+    # than an isolated one nothing reads.
     PAYLOAD="midnight-1-offers verify.sh $(date -u +%Y-%m-%dT%H:%M:%SZ) $$"
     PAYLOAD_B64="$(printf '%s' "$PAYLOAD" | base64 | tr -d '\n')"
 
