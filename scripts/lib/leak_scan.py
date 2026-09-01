@@ -99,11 +99,28 @@ ALLOWED_JSON_KEYS = frozenset({
     "warning",
 })
 
-# The scanner and its wrapper necessarily spell the markers out. They are the only files
-# exempt from their own rules, and the exemption is by exact path.
-SELF_EXEMPT = frozenset({
+# ── gate files: the ones whose JOB is to name these markers ──────────────────
+#
+# A checker cannot detect a string it is forbidden to contain. Two tiers, deliberately, so
+# the exemption is as narrow as it can be:
+#
+#   FULL_EXEMPT   defines the markers themselves, including the hard one. Exactly two files.
+#   SOFT_EXEMPT   other gates that must recognise the repository's NAMES to reject them —
+#                 compose_pins.py rejects a build context pointing at the private subtree,
+#                 artifact_decisions.py rejects a private source handed a fetchable URL.
+#                 They stay subject to the HARD marker rule: no gate needs the private
+#                 package scope spelled out, so a hit there is still copied source.
+#
+# The honest cost: a leak hidden inside one of these four files would not be caught by this
+# scanner. They are short, they are pure gate logic, and they are the files a reviewer looks
+# at hardest — which is the trade being made, not an oversight.
+FULL_EXEMPT = frozenset({
     "scripts/lib/leak_scan.py",
     "scripts/verify-no-private-source.sh",
+})
+SOFT_EXEMPT = frozenset({
+    "scripts/lib/compose_pins.py",
+    "scripts/lib/artifact_decisions.py",
 })
 
 # Reviewed non-comment lines that must name the private repository to be useful — an
@@ -180,9 +197,10 @@ def scan_text(path: str, text: str) -> tuple[Findings, set[int]]:
     findings = Findings()
     used: set[int] = set()
 
-    if path in SELF_EXEMPT:
+    if path in FULL_EXEMPT:
         return findings, used
 
+    soft_exempt = path in SOFT_EXEMPT
     allows = _explicit_allows(path)
     prose = Path(path).suffix in PROSE_SUFFIXES
     commentable = _is_commentable(path)
@@ -223,7 +241,7 @@ def scan_text(path: str, text: str) -> tuple[Findings, set[int]]:
         soft_hit = next((m for m in SOFT_MARKERS if m in low), None)
         if soft_hit is None:
             continue
-        if prose or line_no in json_allowed_lines:
+        if soft_exempt or prose or line_no in json_allowed_lines:
             continue
         if commentable and COMMENT_RE.match(line):
             continue
@@ -327,6 +345,10 @@ SELF_TESTS = [
      DECISIONS_PATH, '{"components":[{"buildCommand":"cd phase1-native-swaps && npm ci"}]}\n'),
     ("an unparseable decision matrix (pins could not be audited)",
      DECISIONS_PATH, "{not json\n"),
+    # A soft-exempt gate file may NAME the private repository (that is its job) but may
+    # never carry the package scope — no checker needs that spelled out, so a hit is source.
+    ("the private package scope inside a soft-exempt gate file",
+     "scripts/lib/compose_pins.py", 'import x from "@phase1-native-swaps/common";\n'),
 ]
 
 PATH_SELF_TESTS = [
@@ -344,6 +366,9 @@ POSITIVE_TESTS = [
      "# relay: built from the phase1-native-swaps subtree of the private repo\nservices: {}\n"),
     ("an allowlisted identity key in the decision matrix", DECISIONS_PATH,
      '{"sources":[{"id":"relay","repository":"shieldedtech/midnight-intents-swaps"}]}\n'),
+    ("a soft-exempt gate file naming the markers it must detect",
+     "scripts/lib/compose_pins.py",
+     'PRIVATE_MARKERS = ("phase1-native-swaps", "midnight-intents-swaps", "shieldedtech")\n'),
 ]
 
 

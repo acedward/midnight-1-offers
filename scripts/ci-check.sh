@@ -125,12 +125,30 @@ step() {  # step <n> <label> <command...>
 # shellcheck disable=SC2329  # invoked indirectly, as `step 1 <label> static_gates`
 static_gates() {
   local rc=0
-  "$REPO_ROOT/scripts/verify-no-private-source.sh" --self-test  >/dev/null || { rc=1; \
-    "$REPO_ROOT/scripts/verify-no-private-source.sh" || true; }
-  "$REPO_ROOT/scripts/verify-artifact-decisions.sh" --self-test >/dev/null && \
-    ok "artifact decision matrix verified (with negative fixtures)" || rc=1
-  "$REPO_ROOT/scripts/verify-compose-pins.sh" --self-test        >/dev/null && \
-    ok "rendered compose pins verified (with negative fixtures)" || rc=1
+
+  # gate <label> <script> [args…] — run one gate quietly, and on failure re-run it loudly so
+  # the operator sees the actual findings rather than just a red line. Each gate prints its
+  # own OK on success, including the leak scan: a security gate that says nothing when it
+  # passes teaches people it is not running.
+  gate() {
+    local label="$1"; shift
+    if "$@" >/dev/null 2>&1; then
+      ok "$label"
+      return 0
+    fi
+    err "$label"
+    "$@" || true
+    rc=1
+    return 1
+  }
+
+  gate "no private source committed (with negative fixtures)" \
+    "$REPO_ROOT/scripts/verify-no-private-source.sh" --self-test
+  gate "artifact decision matrix verified (with negative fixtures)" \
+    "$REPO_ROOT/scripts/verify-artifact-decisions.sh" --self-test
+  gate "rendered compose pins verified (with negative fixtures)" \
+    "$REPO_ROOT/scripts/verify-compose-pins.sh" --self-test
+
   return "$rc"
 }
 

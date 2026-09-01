@@ -1,0 +1,219 @@
+{
+  "$comment": [
+    "The wallets this demo stack knows about. DEV ONLY.",
+    "",
+    "Every seed below is PUBLIC: the first three are the well-known Midnight CFG_PRESET=dev",
+    "genesis seeds, `lace-test` is the seed Lace uses for its own testing, and the rest are",
+    "placeholders invented for this repository. They control value only on a throwaway local",
+    "`undeployed` chain. NEVER reuse any of them anywhere else, and never fund one with real",
+    "value on any network.",
+    "",
+    "── EACH FACADE NEEDS ITS OWN SEED ───────────────────────────────────────────────────",
+    "Two wallet facades built on ONE seed, connected to ONE node, FORCE EACH OTHER'S",
+    "CONNECTION DOWN. The second to connect wins and the first silently stops syncing. There",
+    "is no error naming the cause: it presents as 'the batcher stopped submitting' or 'the",
+    "solver went quiet', hours later, and looks like a node or network fault.",
+    "",
+    "That is why the batcher, the solver, the e2e maker and the e2e taker are FOUR DIFFERENT",
+    "seeds here, and why the solver's is dedicated rather than borrowed from the genesis set.",
+    "Adding a new long-lived wallet facade to this stack means adding a new seed to this file,",
+    "never reusing one that is already assigned a role."
+  ],
+  "networkId": "undeployed",
+  "$verification": {
+    "addressesDerivedWith": {
+      "image": "docker.io/midnightntwrk/midnight-node-toolkit",
+      "readableTag": "1.0.0",
+      "indexDigest": "sha256:8d7dbd84da5934d7d0e3192f385571601dd0dae0ab0098f9fbf14ae7d2d603de",
+      "command": "show-address --network undeployed --seed <seed>",
+      "reports": {
+        "Node": "1.0.1",
+        "Ledger": "=7.0.3",
+        "Compactc": "0.30.0"
+      },
+      "derivedOn": "2026-09-01"
+    },
+    "addressStability": [
+      "Addresses depend only on the seed and the network id — not on chain state — so they",
+      "stay valid across a `./down.sh -v` reset and across a redeploy.",
+      "",
+      "CROSS-CHECKED: the four seeds this roster shares with midnight-2-offers (genesis-1,",
+      "genesis-2, genesis-3, lace-test) derive BYTE-IDENTICAL unshielded, shielded, dust and",
+      "userAddress values under the 1.x toolkit here and under the 2.x toolkit there. So the",
+      "address encoding is stable across the two version lines, and these values were really",
+      "derived on 1.x rather than copied across."
+    ],
+    "genesisFundingIsUNVERIFIED": [
+      "`expect` is null on every wallet ON PURPOSE. The 2.x sibling records concrete genesis",
+      "balances (5 UTXOs, 250,000,000,000,000 stars, DUST registered at genesis) measured",
+      "against node 2.0.0-rc.4. Those are facts about THAT node's dev preset, and copying them",
+      "here would assert something about midnight-node 1.0.0 that nobody has measured.",
+      "",
+      "P1/T1.1 brings up node 1.0.0 with CFG_PRESET=dev and verifies which of these wallets it",
+      "actually funds and whether DUST is registered at genesis; the measured values are filled",
+      "in then, and scripts/verify-wallets.sh starts asserting them. Until then `funding` says",
+      "'genesis-unverified' rather than 'genesis' — an unmeasured claim is worse than none."
+    ]
+  },
+  "wallets": [
+    {
+      "name": "genesis-1",
+      "role": "faucet / funding source — the seed MIDNIGHT_GENESIS_SEED points at",
+      "envVar": "MIDNIGHT_GENESIS_SEED",
+      "seed": "0000000000000000000000000000000000000000000000000000000000000001",
+      "seedBytes": 32,
+      "funding": "genesis-unverified",
+      "expect": null,
+      "addresses": {
+        "unshielded": "mn_addr_undeployed1h3ssm5ru2t6eqy4g3she78zlxn96e36ms6pq996aduvmateh9p9sk96u7s",
+        "shielded": "mn_shield-addr_undeployed1r020sfa7jllsz0z2wqhykz8npmphsu5223nsea7vjt9ekxs5almtvtnrpgpszud4uyd0yjrlqyp7v5xvwqljsng2g79j5w4al9c4kuqy0xtw4",
+        "dust": "mn_dust_undeployed1w0l54txthpu8q05j9j9ttk3j5dyu5766dc9zkz2s435vdglzwdr35dw790y",
+        "userAddress": "bc610dd07c52f59012a88c2f9f1c5f34cbacc75b868202975d6f19beaf37284b",
+        "coinPublic": "1bd4f827be97ff013c4a702e4b08f30ec378728a54670cf7cc92cb9b1a14eff6"
+      }
+    },
+    {
+      "name": "genesis-2",
+      "role": "spare prefunded actor — a second demo party, deliberately unassigned",
+      "envVar": null,
+      "seed": "0000000000000000000000000000000000000000000000000000000000000002",
+      "seedBytes": 32,
+      "funding": "genesis-unverified",
+      "expect": null,
+      "addresses": {
+        "unshielded": "mn_addr_undeployed1gkasr3z3vwyscy2jpp53nzr37v7n4r3lsfgj6v5g584dakjzt0xqun4d4r",
+        "shielded": "mn_shield-addr_undeployed1tth9g6jf8he6cmhgtme6arty0jde7wnypsg53qc3x5navl9za355jqqvfftm8asg986dx9puzwkmedeune9nfkuqvtmccmxtjwvlrvccwypcs",
+        "dust": "mn_dust_undeployed1wdvvhux7luy22g5w6qsr3qerf49h0curwzfa2fv7acx9x258gmpzz2mtpt2",
+        "userAddress": "45bb01c45163890c11520869198871f33d3a8e3f82512d3288a1eadeda425bcc",
+        "coinPublic": "5aee546a493df3ac6ee85ef3ae8d647c9b9f3a640c114883113527d67ca2ec69"
+      }
+    },
+    {
+      "name": "batcher",
+      "role": "THE OFFER-FILES BATCHER wallet — signs and submits gasless batches",
+      "envVar": "BATCHER_WALLET_SEED",
+      "$comment": [
+        "Genesis seed 3, matching the proven 1.x deploy prototype (00005-D1/E1). It is a",
+        "long-lived facade: the batcher holds this wallet open for the whole life of the",
+        "stack. Nothing else may use this seed — see the facade hazard at the top of this",
+        "file. The 2.x sibling assigns the batcher role to genesis-2 instead; the two",
+        "repositories differ here on purpose and neither should be 'corrected' to match."
+      ],
+      "seed": "0000000000000000000000000000000000000000000000000000000000000003",
+      "seedBytes": 32,
+      "funding": "genesis-unverified",
+      "expect": null,
+      "addresses": {
+        "unshielded": "mn_addr_undeployed1g9nr3mvjcey7ca8shcs5d4yjndcnmczf90rhv4nju7qqqlfg4ygs0t4ngm",
+        "shielded": "mn_shield-addr_undeployed1ngp7ce7cqclgucattj5kuw68v3s4826e9zwalhhmurymwet3v7psvrs4gtpv5p2zx8rd3jxpgjr4m8mxh7js7u3l33g23gcty67uq9cug4xep",
+        "dust": "mn_dust_undeployed1wvkuqlvn6ks5ygxcwqu46qhmrlyrvkj58r9c3j4xrt7epg78hr9kxea6gam",
+        "userAddress": "416638ed92c649ec74f0be2146d4929b713de0492bc7765672e780007d28a911",
+        "coinPublic": "9a03ec67d8063e8e63ab5ca96e3b47646153ab59289ddfdefbe0c9b765716783"
+      }
+    },
+    {
+      "name": "lace-test",
+      "role": "THE wallet to import into Lace — Midnight's own canonical test wallet",
+      "$comment": [
+        "Reachable from three directions that all agree:",
+        "  * midnight-node's Earthfile genesis-seeds block lists this 64-byte seed as",
+        "    'wallet-seed-3' with the comment 'wallet-seed-3 is the wallet Lace uses for",
+        "    testing';",
+        "  * @midnight-ntwrk/testkit-js defines TEST_MNEMONIC as exactly the mnemonic below",
+        "    (23x 'abandon' + 'diesel');",
+        "  * the BIP-39 master seed of that mnemonic (empty passphrase) IS this seed, byte for",
+        "    byte — which is why it is 64 bytes rather than 32.",
+        "Whether midnight-node 1.0.0's dev preset funds it is a P1 measurement, not an",
+        "assumption: see $verification.genesisFundingIsUNVERIFIED."
+      ],
+      "mnemonic": "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon diesel",
+      "derivation": {
+        "kind": "bip39+bip32",
+        "passphrase": "",
+        "path": "m/44'/2400'/0'/<role>'/0'",
+        "account": 0,
+        "index": 0,
+        "roles": { "zswap": 3, "nightExternal": 0, "dust": 2 }
+      },
+      "envVar": null,
+      "seed": "a51c86de32d0791f7cffc3bdff1abd9bb54987f0ed5effc30c936dddbb9afd9d530c8db445e4f2d3ea42a321b260e022aadf05987c9a67ec7b6b6ca1d0593ec9",
+      "seedBytes": 64,
+      "funding": "genesis-unverified",
+      "expect": null,
+      "addresses": {
+        "unshielded": "mn_addr_undeployed1nqhdatus5d6tvye57q854kdrs6ur2ytsl8yaygzfsdy2e3tvtmesdcgp8m",
+        "shielded": "mn_shield-addr_undeployed1qpc63v0np98f86ycsx0jn6letdrr9gdf92rpkgae43dd2etsv58x3zypyz9t39lq38zr0kxx4v6fug7wack76gkjrqdsgtsxf7800kg208t0p",
+        "dust": "mn_dust_undeployed1ww6dfltk3kc6shrqcsk48ldzmjedszata6rthu4h3ywgxaak70vxzvugm87",
+        "userAddress": "982edeaf90a374b61334f00f4ad9a386b8351170f9c9d220498348acc56c5ef3",
+        "coinPublic": "0071a8b1f3094e93e898819f29ebf95b4632a1a92a861b23b9ac5ad56570650e"
+      }
+    },
+    {
+      "name": "solver",
+      "role": "THE COW SOLVER's wallet — holds swap-token inventory and settles relay intents",
+      "envVar": "SOLVER_SEED",
+      "$comment": [
+        "A DEDICATED, NON-GENESIS seed. Two things make this non-negotiable:",
+        "",
+        "  1. The facade hazard at the top of this file. The solver holds a wallet open for the",
+        "     whole life of the stack, exactly like the batcher does. Sharing a seed between",
+        "     them would silently kill one of the two connections, and the symptom — an empty",
+        "     ladder, or batches that stop landing — points nowhere near the cause.",
+        "",
+        "  2. It is NOT funded at genesis, and must not be. The pinned PR #52 solver publishes",
+        "     NOTHING for a pair it holds no tokenIn inventory for, so its balance is a",
+        "     deliberate, observable input to the demo: the `solver-provision` one-shot funds",
+        "     it with both dev tokens through the kernel's own bootstrap, and fails loudly if",
+        "     it cannot. A silently unfunded solver yields an empty ladder with no error, which",
+        "     is the worst failure this stack has."
+      ],
+      "seed": "0000000000000000000000000000000000000000000000000000000000000021",
+      "seedBytes": 32,
+      "funding": "provisioned",
+      "provisionedBy": "solver-provision (compose/solver.yml, profile `solver`)",
+      "expect": null,
+      "addresses": {
+        "unshielded": "mn_addr_undeployed132d9fc9d4vzyajfztghdk5rj2u703f8pawj28v0uyz8mpj508x2qev82lf",
+        "shielded": "mn_shield-addr_undeployed1c8nre3r5gpvaymfvk0403u4vm2tc92frkd6p8dcr844u2awwsk3ydf5nt2er2k7sttnsy798j6gk0ewq9pguq23r4tdpxmdlmc0afns27tpqh",
+        "dust": "mn_dust_undeployed1ww5037sl8fye5h5s7lm9najl0jj3x2lar3nmlpp2ch4j3dlj6g99vfnwqdw",
+        "userAddress": "8a9a54e0adab044ec9225a2edb5072573cf8a4e1eba4a3b1fc208fb0ca8f3994",
+        "coinPublic": "c1e63cc4744059d26d2cb3eaf8f2acda9782a923b37413b7033d6bc575ce85a2"
+      }
+    },
+    {
+      "name": "e2e-maker",
+      "role": "the canonical e2e driver's MAKER — posts the signed zswap offer to POST /v1/offers",
+      "envVar": "MAKER_SEED",
+      "seed": "0000000000000000000000000000000000000000000000000000000000000031",
+      "seedBytes": 32,
+      "funding": "provisioned",
+      "provisionedBy": "the e2e driver (P5/T5.2), from genesis-1",
+      "expect": null,
+      "addresses": {
+        "unshielded": "mn_addr_undeployed1jvpe7c7lfzjtfkzh9rec0z9utfkm6nvp5ggm4gw5rlmdlr8frjwsuj9nhu",
+        "shielded": "mn_shield-addr_undeployed1fqeqysmtfq55kq04a8xwf6t2jdepqdhtktj80hlse2y2jkz0j0tf70cfxq2e4v5pjgl3zvxp5du69a3zmmgsc855mmdzx0ehx2l2h3g3eqpem",
+        "dust": "mn_dust_undeployed1w0wklcakf759sfrye8yn92jvt0tey8vx7q970n2tjfq2knev9f0xgcn6t39",
+        "userAddress": "93039f63df48a4b4d85728f38788bc5a6dbd4d81a211baa1d41ff6df8ce91c9d",
+        "coinPublic": "483202436b48294b01f5e9cce4e96a93721036ebb2e477dff0ca88a9584f93d6"
+      }
+    },
+    {
+      "name": "e2e-taker",
+      "role": "the canonical e2e driver's TAKER — submits the intent at the relay and is credited",
+      "envVar": "TAKER_SEED",
+      "$comment": "Its credit is asserted for EXACT EQUALITY with the demanded amount, not a bound, so this wallet must start empty of the demanded token and be used by nothing else.",
+      "seed": "0000000000000000000000000000000000000000000000000000000000000032",
+      "seedBytes": 32,
+      "funding": "provisioned",
+      "provisionedBy": "the e2e driver (P5/T5.2), from genesis-1",
+      "expect": null,
+      "addresses": {
+        "unshielded": "mn_addr_undeployed1zecc6agn6xqspgkvd3gn83yp86gyw0aw0kev24542d3ay74wa9uqp4xxen",
+        "shielded": "mn_shield-addr_undeployed1qs9u9p08xpk3cgypyndvy748mnp35l929vpeqarqg9x2ygqs3f8uggt2rfx3e7a9td0spql05l0t00cc30adf25psvfm55cdxycxmhsq9udvc",
+        "dust": "mn_dust_undeployed1w02hhsvyyuwwada98hhafugw0s86see8789nfqlcfkc5qnv5lzv9w4zn0cg",
+        "userAddress": "16718d7513d18100a2cc6c5133c4813e90473fae7db2c556955363d27aaee978",
+        "coinPublic": "040bc285e7306d1c208124dac27aa7dcc31a7caa2b03907460414ca220108a4f"
+      }
+    }
+  ]
+}
