@@ -2,29 +2,360 @@
 #
 # A profile IS this file's basename. up.sh never passes `--profile`, so NO service in this
 # repository may ever carry a compose `profiles:` key — it would be declared and then
-# silently never start.
+# silently never start. scripts/verify-compose-pins.sh rejects one.
 #
-# ── PLACEHOLDER (P0 scaffold) ────────────────────────────────────────────────
-# This fragment renders cleanly and declares no services yet. P1 fills it with:
+# Never invoked directly; `./up.sh` / `./down.sh` assemble the `docker compose -f …` command
+# and load `.env`. To drive compose by hand:
 #
-#   node           docker.io/midnightntwrk/midnight-node@sha256:ede01da3…  (1.0.0, official
-#                  multiarch, digest-pinned). CFG_PRESET=dev, THRESHOLD=0, loopback-published
-#                  on ${NODE_HOST_PORT}. Its data volume must be mounted at the image's own
-#                  BASE_PATH — mounting it anywhere else loses chain state silently.
-#   indexer        docker.io/midnightntwrk/indexer-standalone@sha256:03afd079…  (4.3.3,
-#                  official multiarch). Points at ws://node:9944, network id `undeployed`.
-#                  Serves an identical schema on /api/v3/graphql and /api/v4/graphql.
-#   proof-server   docker.io/midnightntwrk/proof-server@sha256:801bbc03…  (8.1.0, official
-#                  multiarch), reading a pre-warmed proof-data volume.
-#   proof-warm     one-shot: fills that volume before the stack reports ready, so a clean
-#                  bring-up pays the SRS download once, up front, instead of mid-demo. Built
-#                  so the audited v8 proof-data initializer can replace it as a drop-in
-#                  writer of the same volume without touching any consumer.
-#   postgres       locally built, pg_ivm compiled in. ONE shared database, no host port; the
-#                  offer-files kernel is its only consumer. There is no PGLite anywhere in
-#                  this repository.
+#   docker compose --env-file .env -f compose/core.yml up -d
 #
-# WIPE GROUP: the node, indexer and postgres volumes are wiped together by `./down.sh -v`
-# because each is keyed to a chain genesis. The proof-data volume is the exception and
-# survives a plain `./down.sh` — see the reasoning in down.sh.
-services: {}
+# EVERY host port is parameterized: the defaults are the Midnight-standard 9944 / 8088 / 6300
+# that Lace's `undeployed` preset hardcodes; a shared machine overrides them with a free block
+# above 10000 (scripts/pick-ports.sh generates one). No service addresses another by a host
+# port — they talk over the compose network on container ports, which never change.
+#
+# ── EVERY EXTERNAL RUNTIME IMAGE IS PINNED BY DIGEST, NEVER BY TAG ───────────
+# `<repository>@sha256:<64 hex>` is the whole identity. The readable version lives in a
+# comment beside it and in *_VERSION, which nothing resolves an image from — a tag can be
+# repointed at different bytes without any change here, a digest cannot. All three digests
+# come from config/artifact-decisions.json and are re-checked offline by
+# ./scripts/verify-compose-pins.sh, which also REJECTS a tag-only override rather than
+# silently accepting the weaker identity.
+#
+# Unlike the 2.x sibling this repository needs no warehouse indexer build and no proof-server
+# mirror: all three upstreams publish good official multiarch indexes (linux/amd64 +
+# linux/arm64, both verified), so there is no `platform:` pin anywhere and Apple Silicon runs
+# every core service natively.
+#
+# WIPE GROUP: node, indexer and postgres are wiped together by `./down.sh -v` because each is
+# keyed to a chain genesis. The proof-data volume is the deliberate exception and survives a
+# plain `./down.sh` — see the reasoning in down.sh and on the volume itself below.
+
+services:
+  # ── postgres (shared; Q7) ──────────────────────────────────────────────────
+  # ONE PostgreSQL for the whole stack, with exactly one consumer: the offer-files
+  # kernel's offer book + STM, in the `offerfiles` database (profile `offerfiles`).
+  # The 2.x sibling also served umbra-evm from this server; there is no EVM profile
+  # here, so there is one database and one role. images/postgres/initdb/ creates them
+  # once, on first boot.
+  #
+  # It lives in CORE even though its only consumer is an optional profile: an idle
+  # Postgres costs almost nothing, and the alternative — a server per profile — is two
+  # sets of volumes, healthchecks and teardown rules to keep straight.
+  #
+  # NOT a stock postgres:17-alpine. Q7 chose this over the PGLite sidecar kernel main
+  # was developed against, and PGLite SHIPS pg_ivm — so a stock image would have been a
+  # silent demotion of the kernel to its degraded read path (ALLOW_NO_PG_IVM). The
+  # extension is compiled in; see images/postgres/Dockerfile.
+  #
+  # NO HOST PORT, deliberately: nothing outside the stack talks to it, and one
+  # unpublished port is one less collision on a shared machine. Reach it with
+  #   docker compose ... exec postgres psql -U offerfiles offerfiles
+  postgres:
+    image: '${POSTGRES_IMAGE:-midnight-1-offers/postgres:local}'
+    build:
+      context: '../images/postgres'
+      args:
+        PG_TAG: '${POSTGRES_TAG:-17-alpine}'
+        PG_IVM_VERSION: '${PG_IVM_VERSION:-1.11}'
+    environment:
+      # The superuser. Only initdb and an operator's `exec psql` use it; the kernel
+      # authenticates as its own per-database role.
+      POSTGRES_PASSWORD: '${POSTGRES_SUPERUSER_PASSWORD:-postgres}'
+      # Consumed by the initdb script (first boot only). P2's kernel reads the same three
+      # variables to build its connection string, so they are the contract between the two
+      # profiles and must not be renamed on one side alone.
+      OFFERFILES_PG_USER: '${OFFERFILES_PG_USER:-offerfiles}'
+      OFFERFILES_PG_PASSWORD: '${OFFERFILES_PG_PASSWORD:-offerfiles}'
+      OFFERFILES_PG_DB: '${OFFERFILES_PG_DB:-offerfiles}'
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      # Probe a REAL consumer database, not `postgres`: the default database exists before
+      # initdb has created anything, so `pg_isready` against it reports healthy while the
+      # database the stack needs is still absent.
+      #
+      # Also require PID 1 to be the final server. The image starts a TEMPORARY Postgres
+      # during init, and reporting that process healthy lets a dependent migration race its
+      # shutdown on a slow or heavily loaded host.
+      test: ['CMD-SHELL', 'grep -qx postgres /proc/1/comm && pg_isready -U ${OFFERFILES_PG_USER:-offerfiles} -d ${OFFERFILES_PG_DB:-offerfiles} -q']
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      # Concurrent image builds can leave a shared Docker host under sustained I/O pressure.
+      # Allow initdb three minutes without consuming retries, then two more minutes of
+      # probes (~300s total budget).
+      start_period: 180s
+    restart: 'unless-stopped'
+
+  # ── node ───────────────────────────────────────────────────────────────────
+  node:
+    # midnight-node 1.0.0 — the official multiarch image, kept as-is and pinned by its
+    # complete index digest (linux/amd64 + linux/arm64). Repacking a good official image
+    # under another registry owner would add risk and no value, so we do not.
+    image: '${NODE_IMAGE:-docker.io/midnightntwrk/midnight-node@sha256:ede01da35e982b6a4b85461ad8492ae2753ef14246fba33c8039b782aa8e39fb}'
+    cap_drop:
+      - ALL
+    cap_add:
+      # DAC_OVERRIDE and nothing else, and the reason is measured rather than inherited.
+      #
+      # The image runs as ROOT (Config.User=root) and its /entrypoint.sh only does
+      # `mkdir -p $BASE_PATH` before `exec /midnight-node` — it never chowns and never drops
+      # privileges, despite a stale "Now run as appuser" comment inside it. But /node is
+      # baked into the image owned appuser:appuser mode 0755, and a fresh named volume
+      # inherits that ownership — so root, stripped of ALL capabilities, cannot create
+      # /node/chain inside it. DAC_OVERRIDE is exactly the capability that mkdir needs.
+      #
+      # The 2.x sibling also grants CHOWN and FOWNER. Nothing in the 1.0.0 entrypoint chowns
+      # or manipulates file ownership, so carrying those here would be cargo-culted
+      # privilege. They are deliberately not granted.
+      - DAC_OVERRIDE
+    security_opt:
+      - 'no-new-privileges:true'
+    ports:
+      - '${BIND_ADDR:-127.0.0.1}:${NODE_HOST_PORT:-9944}:9944'
+    volumes:
+      # MUST be /node, not /data: the image sets BASE_PATH=/node/chain (verified by
+      # inspecting the 1.0.0 image config — same convention as 2.0.0-rc.4). A volume
+      # mounted anywhere else leaves the chain database on the container's writable layer,
+      # where `docker compose down` destroys it with no warning and no error.
+      - node-data:/node
+    environment:
+      # CFG_PRESET=dev gives the `undeployed` genesis whose dev seeds hold NIGHT and have
+      # registered DUST addresses. The measured 1.0.0 balances are in wallets/wallets.json —
+      # they were MEASURED on this node, not copied from the 2.x roster.
+      CFG_PRESET: 'dev'
+      # Storage monitor: the node gracefully terminates when free space on the db volume
+      # drops below `threshold` MiB (default 512). On a laptop with a full disk that kills a
+      # long-running demo mid-flow; 0 disables the monitor.
+      THRESHOLD: '0'
+      RUST_BACKTRACE: '1'
+    healthcheck:
+      # Block #1 exists only once the chain has ACTUALLY STARTED PRODUCING, so this is a
+      # readiness probe and not just "the RPC socket is open".
+      #
+      # It runs in-container because the 1.0.0 image ships curl at /usr/bin/curl and grep at
+      # /usr/bin/grep (both verified). The host-side wait in up.sh is kept as well, and is
+      # the stricter of the two: it also waits for finality to move off genesis, which is
+      # what anything building a transaction actually needs.
+      test:
+        - 'CMD-SHELL'
+        - >
+          curl -fs -H 'Content-Type: application/json' -d
+          '{"id":1,"jsonrpc":"2.0","method":"chain_getBlockHash","params":[1]}' http://localhost:9944 | grep -q
+          '"result":"0x'
+      interval: 2s
+      timeout: 5s
+      retries: 45
+      start_period: 60s
+
+  # ── indexer ────────────────────────────────────────────────────────────────
+  indexer:
+    # indexer-standalone 4.3.3 — official multiarch, digest-pinned. The 2.x sibling had to
+    # build its 4.4.0-rc.3 from a warehouse binary because no public image existed; 4.3.3 IS
+    # published, so this repository neither compiles it nor repacks it.
+    image: '${INDEXER_IMAGE:-docker.io/midnightntwrk/indexer-standalone@sha256:03afd079b00bcd229df29a24771439c5e7695c339cd89216d0763ce40731cc4b}'
+    cap_drop:
+      - ALL
+    security_opt:
+      - 'no-new-privileges:true'
+    ports:
+      - '${BIND_ADDR:-127.0.0.1}:${INDEXER_HOST_PORT:-8088}:8088'
+    volumes:
+      # The image's own /opt/indexer-standalone/config.yaml puts both SQLite files under
+      # /data (storage.cnn_url = /data/indexer.sqlite, ledger_db.cnn_url =
+      # /data/ledger-db.sqlite), so that is where the volume goes.
+      - indexer-data:/data
+    environment:
+      RUST_LOG: 'indexer=info,chain_indexer=info,indexer_api=info,wallet_indexer=info,indexer_common=info,fastrace_opentelemetry=off,info'
+      # Already the default in 4.3.3's config.yaml. Set explicitly anyway: a network id
+      # inherited from an image default is invisible in review, and this one is load-bearing.
+      APP__APPLICATION__NETWORK_ID: 'undeployed'
+      # config.yaml documents this as "1 by default" but leaves it commented out. Pinned so
+      # a future image default cannot quietly raise fan-out on a laptop devnet.
+      APP__APPLICATION__CONCURRENCY_LIMIT: '1'
+      APP__INFRA__NODE__URL: 'ws://node:9944'
+      # ── the SPO second connection ───────────────────────────────────────────
+      # indexer >= 4.3 opens a SECOND (SPO) connection with its own URL, and 4.3.3's
+      # config.yaml really does carry all three of these keys (verified by reading the file
+      # out of this exact image). Left at the config defaults it dials ws://localhost:9944
+      # INSIDE this container, never connects, burns its 30-attempt reconnect budget and the
+      # WHOLE indexer exits after roughly five minutes.
+      APP__INFRA__SPO_NODE__URL: 'ws://node:9944'
+      # Must be a non-empty string or startup fails outright — 4.3.3's config.yaml says so
+      # in a comment of its own. SPO features are unused on a local devnet, so any
+      # placeholder is accepted.
+      APP__INFRA__SPO_NODE__BLOCKFROST_ID: 'demo-infra-not-using-spo'
+      # Belt and braces for the same failure mode: cap the backoff so high that the
+      # reconnect budget can never be exhausted during a demo.
+      APP__INFRA__SPO_NODE__RECONNECT_MAX_DELAY: '24h'
+      #
+      # NOT SET, deliberately: APP__INFRA__STORAGE__MAX_CONNECTIONS. The 2.x sibling pins it
+      # to hold a 4.4.0-rc.3 pool-size fix in place, but 4.3.3's `storage` block has only
+      # `cnn_url` — the key does not exist in this version's schema. Setting envs for keys a
+      # config does not define is how a silent no-op (or a hard startup failure) ships.
+      #
+      # No default in the image's config.yaml — must be supplied. Dev value from .env.
+      APP__INFRA__SECRET: '${INDEXER_SECRET:-303132333435363738393031323334353637383930313233343536373839303132}'
+    restart: 'unless-stopped'
+    logging:
+      options:
+        max-size: '25m'
+        max-file: '3'
+    healthcheck:
+      # The official 4.3.3 image ships NEITHER curl NOR wget NOR nc (verified), so an HTTP
+      # /ready probe can never pass and the container would sit "unhealthy" forever. It does
+      # ship the same supervisor entrypoint as the 2.x warehouse image — entrypoint.sh
+      # touches this file before launching indexer-standalone and traps its removal on exit
+      # — so the file is the probe.
+      #
+      # CAVEAT, unchanged from 2.x: "healthy" here means "the supervisor is alive", NOT "the
+      # API serves GraphQL". Real readiness is asserted from the host by up.sh and
+      # verify.sh, which query the GraphQL endpoint itself.
+      test: ['CMD-SHELL', 'cat /var/run/indexer-standalone/running']
+      interval: 5s
+      timeout: 5s
+      retries: 60
+      start_period: 30s
+    depends_on:
+      node:
+        condition: service_healthy
+
+  # ── proof-data pre-warm (one-shot; Q6) ─────────────────────────────────────
+  # THE ONLY WRITER of the `proof-data` volume, and a MANDATORY startup dependency of the
+  # proof server below. It runs the OFFICIAL PROOF-SERVER IMAGE — the same digest as the
+  # server, so this adds no image and no pin — points it at the shared volume, lets the
+  # binary perform its own fetch, waits for it to report ready, then exits 0.
+  #
+  # WHY THE SERVER AND NOT curl (measured at P1/T1.3): everything the binary downloads is
+  # HASH-VERIFIED against values compiled into ledger-8.1.0 — SRS payloads included. The
+  # server logs "this is not a trusted service, the data will be verified" and then
+  # "verified correct" per payload. A curl-based pre-fill would write bytes NOTHING
+  # verifies, and the server only verifies on download, never on a file it finds already
+  # present. So the obvious implementation of a pre-warm would have been a strict integrity
+  # DOWNGRADE. Here every warmed byte is fetched and verified by the code that consumes it.
+  #
+  # NOT OPTIONAL. Because the reader below mounts this volume read-only, a proof server
+  # pointed at an empty cache does not degrade — it exits 1 in under a second with
+  # `Os { code: 30, kind: ReadOnlyFilesystem }`. This one-shot is what makes it startable.
+  #
+  # KNOWN GAP (Q11): this warms what the binary fetches at startup — measured 32.6 MB in
+  # ~4 s, SRS bls_midnight_2p10…2p15 plus the zswap/dust key material. A contract-sized
+  # circuit needing a larger k would hit EROFS at prove time instead of fetching it. The k
+  # the offer-files contract needs cannot be known until a contract exists (P2/P3).
+  #
+  # DROP-IN SEAM: when the audited v8 proof-data generation lands, its initializer replaces
+  # THIS SERVICE as the writer of the same volume at the same mount point, and no consumer
+  # changes. That is the whole reason the warm is a separate service rather than something
+  # folded into the server's own boot.
+  proof-warm:
+    image: '${PROOF_IMAGE:-docker.io/midnightntwrk/proof-server@sha256:801bbc0340e9e96f16735f77b523f23c7459e3359842f7c79c2c53f4e994d531}'
+    # Overriding the entrypoint is correct HERE and wrong on the server below: this service
+    # exists to drive the binary, not to be it. /bin/bash is a stable path in this image on
+    # BOTH architectures (verified) — unlike the /nix/store/<hash>-bash… path the image's own
+    # entrypoint uses, whose hash differs per architecture and per digest.
+    entrypoint: ['/bin/bash']
+    command: ['/proof-warm.sh']
+    environment:
+      MIDNIGHT_PP: '/proof-data'
+      MIDNIGHT_PARAM_SOURCE: '${MIDNIGHT_PARAM_SOURCE:-https://srs.midnight.network/}'
+      PROOF_WARM_TIMEOUT: '${PROOF_WARM_TIMEOUT:-900}'
+      RUST_BACKTRACE: 'full'
+    volumes:
+      # The ONE read-write mount of this volume anywhere in the stack.
+      - 'proof-data:/proof-data'
+      - '../scripts/proof-warm.sh:/proof-warm.sh:ro'
+    restart: 'no'
+
+  # ── proof-server ───────────────────────────────────────────────────────────
+  proof-server:
+    # proof-server 8.1.0 — the ledger-v8 / zkir-v2 lane the offer-files kernel and the wallet
+    # standard lane prove against. There is exactly ONE proof server in this repository: the
+    # second, experimental (zkir-v3) build the 2.x sibling mirrors exists only for its AA
+    # profile, which does not exist here.
+    image: '${PROOF_IMAGE:-docker.io/midnightntwrk/proof-server@sha256:801bbc0340e9e96f16735f77b523f23c7459e3359842f7c79c2c53f4e994d531}'
+    cap_drop:
+      - ALL
+    security_opt:
+      - 'no-new-privileges:true'
+    ports:
+      - '${BIND_ADDR:-127.0.0.1}:${PROOF_HOST_PORT:-6300}:6300'
+    # NEITHER `command:` NOR `entrypoint:` — deliberately. This image's Entrypoint is
+    # `[<nix>/bash, -c]` and its Cmd is a SINGLE argv element containing `--port $PORT`, so
+    # ANY override changes how the process is launched. Everything is configured through
+    # `environment:` and `volumes:` only.
+    environment:
+      RUST_BACKTRACE: 'full'
+      PORT: '6300'
+      # NOTE for anyone porting from the 2.x fragment: `EXTRA_ARGS` is NOT honoured here.
+      # 8.1.0's Cmd interpolates only $PORT, so an EXTRA_ARGS value would be silently
+      # ignored. Verbosity has its own env instead, read by the binary's own clap parser.
+      MIDNIGHT_PROOF_SERVER_VERBOSE: '${PROOF_VERBOSE:-false}'
+      # Where the ledger-8.1.0 data provider looks for proof data (MIDNIGHT_PP, else
+      # $XDG_CACHE_HOME/…, else $HOME/.cache/midnight/zk-params). Pointed at the volume the
+      # one-shot above populated and verified.
+      MIDNIGHT_PP: '/proof-data'
+      # The image default, stated out loud. It is the fallback for anything the cache does
+      # not cover, and it is NEVER a GitHub release: the warehouse is a development-only
+      # mutable store and is not an admissible MIDNIGHT_PARAM_SOURCE (verify-compose-pins.sh
+      # rejects one). With the cache warm this endpoint is not contacted at startup.
+      MIDNIGHT_PARAM_SOURCE: '${MIDNIGHT_PARAM_SOURCE:-https://srs.midnight.network/}'
+    volumes:
+      # READ-ONLY. The server must not be able to mutate the cache the one-shot verified,
+      # and a write attempt fails with EROFS rather than silently corrupting a shared tree.
+      # This is also what makes proof-warm mandatory rather than advisory — see Q11.
+      - 'proof-data:/proof-data:ro'
+    depends_on:
+      proof-warm:
+        # Not `service_started`: the cache must be populated and verified BEFORE any reader
+        # looks at it — and with a read-only mount, a reader that starts first does not wait,
+        # it exits 1.
+        condition: 'service_completed_successfully'
+    healthcheck:
+      # A REAL healthcheck, unlike the 2.x sibling's `disable: true`.
+      #
+      # 2.x concluded these images have no probe-capable shell because their bash sits behind
+      # an unstable /nix/store/<hash>-bash-interactive-<arch>… path. That is not true of
+      # 8.1.0: it ships /bin/bash, /bin/sh and a full GNU coreutils at STABLE /bin paths on
+      # both linux/amd64 and linux/arm64 (verified on each). What misleads is that the image
+      # sets PATH to the ledger bin directory only, so /bin is not on it — hence the
+      # absolute path here.
+      #
+      # /dev/tcp is a bash BUILTIN, so this needs no curl and no wget. And because the server
+      # binds its port only AFTER its startup fetch-and-verify completes, a 200 from /ready
+      # means the proof data is present, not merely that a process is alive.
+      test:
+        - 'CMD'
+        - '/bin/bash'
+        - '-c'
+        - 'exec 3<>/dev/tcp/127.0.0.1/6300; printf "GET /ready HTTP/1.0\r\n\r\n" >&3; read -r l <&3; case "$$l" in *" 200 "*) exit 0;; *) exit 1;; esac'
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+volumes:
+  # ── the chain wipe group ───────────────────────────────────────────────────
+  # Wiped TOGETHER by `./down.sh -v`, and that is a correctness requirement rather than a
+  # convenience: each of these is keyed to a chain genesis. A fresh node genesis beside a
+  # surviving indexer database gives an indexer serving data for a chain that no longer
+  # exists, and a kernel book that describes offers against a dead genesis is worse than no
+  # book at all.
+  node-data:
+  indexer-data:
+  # The shared Postgres holds the offer-files kernel's BOOK, which is a projection of this
+  # chain's Celestia + Midnight history — so it belongs in the same wipe group as the chain
+  # it is derived from.
+  postgres-data:
+
+  # ── the proof-data cache ───────────────────────────────────────────────────
+  # Read-write in `proof-warm` alone; read-only in `proof-server`. Proof data is
+  # architecture-neutral, so one cache serves amd64 and arm64 alike and it is deliberately
+  # NOT baked into any OCI layer.
+  #
+  # NOT CHAIN-KEYED — unlike every volume above, its contents are published SRS and ledger
+  # key material that have nothing to do with this genesis. `./down.sh` (no -v) therefore
+  # KEEPS it and the next bring-up reuses it for free. `./down.sh -v` is a project-wide wipe
+  # and does remove it, because a teardown that leaves things behind is not a teardown; the
+  # only cost is one ~33 MB re-fetch (a few seconds) on the next `up`.
+  proof-data:

@@ -1,6 +1,6 @@
 {
   "schemaVersion": "artifact-decision-matrix-v2",
-  "pinsDigest": "45a98fbf36fe1ce376884bd8b9c401a4d7bae8e4275dd205219703bea447d2ef",
+  "pinsDigest": "2cf96c7c3441ef05af7e87ab6cffd9158e6facd0dc1be845613f3aa3c98ae6a8",
   "frozenOn": "2026-09-01",
   "note": "Frozen artifact-selection contract for every external dependency of this Midnight 1.x demo. Each field was re-derived from a live source on the freeze date. scripts/verify-artifact-decisions.sh enforces it offline. Do not edit a digest, SHA or hash to make a build pass: re-verify against the source first, then regenerate pinsDigest with --update-pins so the change is visible in review. Schema v2 differs from the 2.x sibling's v1 by adding `sources` (git-pinned source builds) and `toolchains`, and by replacing the warehouse proof-data generation with a pre-warm strategy.",
   "selectionOrder": [
@@ -338,8 +338,21 @@
     "strategy": "prewarm-one-shot",
     "volume": "proof-data",
     "generation": null,
-    "integrityLevel": "fetch-time-trust",
-    "integrityCaveat": "HONEST LIMITATION: unlike the 2.x generation, these are not offline-verified bytes. The pre-warm trusts srs.midnight.network at fetch time. That is a real downgrade and is recorded here rather than implied by the absence of a hash.",
+    "integrityLevel": "binary-anchored-verification",
+    "integrityCaveat": "CORRECTED AT P1/T1.3 AFTER MEASUREMENT — the earlier text here read 'these are not offline-verified bytes; the pre-warm trusts srs.midnight.network at fetch time'. That was wrong in BOTH directions and is replaced by what was actually observed. (1) The proof-server binary HASH-VERIFIES everything it downloads, SRS public parameters included: it logs 'this is not a trusted service, the data will be verified' and then 'verified correct' for every payload, against expected hashes compiled into ledger-8.1.0. So the warmed bytes are cryptographically checked, and the trust root is this repository's digest-pinned official image rather than a committed manifest — weaker than the 2.x audited generation's reviewable hash list, but very far from 'fetch-time trust'. (2) The corresponding real hazard is the opposite of the one previously recorded: a pre-warm that fetched payloads ITSELF (curl, wget) would write bytes NOTHING verifies, because the server only verifies on download and never re-checks a file it finds already present. Pre-filling this volume by URL would therefore REMOVE a property the stack has today. That is precisely why the warm one-shot runs the official proof-server binary against the volume instead of downloading anything of its own.",
+    "integrityMeasurement": {
+      "measuredOn": "2026-09-01",
+      "measuredAt": "P1/T1.3",
+      "coldWarmSeconds": 4,
+      "coldWarmBytes": 34177024,
+      "coldWarmFileCount": 18,
+      "warmRerunSeconds": 2,
+      "warmRerunDownloads": 0,
+      "payloads": "SRS bls_midnight_2p10..2p15, zswap/9/{spend,output,sign}.{prover,verifier,bzkir}, dust/9/spend.{prover,verifier,bzkir}",
+      "coverageGap": "The binary fetches only its startup working set. A contract-sized circuit needing a larger SRS k (k16+) is NOT warmed, and because the reader mounts this volume read-only that is an EROFS failure at prove time rather than a slow prove — measured: a proof server on an empty read-only MIDNIGHT_PP exits 1 with `Os { code: 30, kind: ReadOnlyFilesystem }`. Which k the offer-files contract needs cannot be known until a contract exists (P2/P3). Tracked as open question Q11.",
+      "readerIsReadOnly": true,
+      "writerService": "proof-warm"
+    },
     "supersededBy": {
       "plannedDecision": "warehouse-data-generation",
       "note": "The user is preparing an audited v8 proof-data mirror/generation in parallel. When it lands, its initializer replaces this one-shot as a drop-in WRITER OF THE SAME VOLUME, so no consumer changes. At that point `generation` becomes a 64-hex content digest and `decision` becomes warehouse-data-generation; the verifier enforces that pairing in both directions so a half-migration cannot pass."
