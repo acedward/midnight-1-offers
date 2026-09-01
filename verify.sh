@@ -65,6 +65,11 @@ done
 
 require_docker
 load_env
+# This script reaches into containers with `dc exec` (postgres, proof-server). `dc` passes
+# exactly the fragments named in PROFILES, and compose calls any container it has no
+# definition for an ORPHAN — so naming only core would print "Found orphan containers (…)"
+# on every exec as soon as a second profile is up. Name them all; nothing is started here.
+use_all_profiles
 
 FAILURES=0
 
@@ -136,7 +141,36 @@ info "best=${BEST:-?}  finalized=${FINAL:-?}"
 if service_present proof-server; then
   echo
   log "core: proof-server"
+  # Reachable from the host on the published port…
   wait_tcp "$HOST_ADDR" "$PROOF_HOST_PORT" "proof-server" 30 || FAILURES=$(( FAILURES + 1 ))
+  # …and actually READY, not merely listening. 8.1.0 serves /ready and /health; it binds its
+  # port only after its proof-data fetch-and-verify completes, so a 200 here also means the
+  # `proof-data` cache the pre-warm one-shot populated is present and usable.
+  if [[ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 \
+             "http://${HOST_ADDR}:${PROOF_HOST_PORT}/ready" 2>/dev/null)" == "200" ]]; then
+    ok "proof-server /ready answers 200"
+  else
+    err "proof-server does not answer 200 on /ready"
+    FAILURES=$(( FAILURES + 1 ))
+  fi
+  # The pre-warm is the ONLY writer of the cache, and the server mounts it read-only — so an
+  # empty cache is not a slow first proof, it is an EROFS failure at prove time. Assert the
+  # cache is non-empty rather than inferring it.
+  # Counted with bash's globstar rather than `find`: this image ships GNU coreutils in /bin
+  # but NOT findutils, so `find` is absent (calling it exits 127). Everything used here is a
+  # bash builtin. `|| true` because a failed exec must be reported by the assertion below
+  # rather than killing the whole verify run through errexit.
+  # shellcheck disable=SC2016  # single quotes are REQUIRED: $p and $n must be expanded by
+  # the container's bash, not by this one. Double quotes would expand them here, to nothing.
+  PP_FILES=$(dc exec -T proof-server /bin/bash -c \
+    'shopt -s globstar nullglob dotglob; n=0; for p in /proof-data/**; do [[ -f "$p" ]] && n=$((n+1)); done; echo "$n"' \
+    2>/dev/null | tr -dc '0-9' || true)
+  if [[ -n "${PP_FILES:-}" ]] && (( PP_FILES > 0 )); then
+    ok "proof-data cache holds ${PP_FILES} file(s)"
+  else
+    err "proof-data cache is empty or unreadable — the pre-warm one-shot did not populate it"
+    FAILURES=$(( FAILURES + 1 ))
+  fi
 fi
 
 if service_present postgres; then
@@ -149,6 +183,28 @@ if service_present postgres; then
     ok "postgres healthy"
   else
     err "postgres is not healthy"
+    FAILURES=$(( FAILURES + 1 ))
+  fi
+
+  # Container health is not the same as a usable database. Query the REAL consumer database
+  # as the REAL consumer role — this is what P2's kernel will do, and it is the difference
+  # between "a server is running" and "the offer book has somewhere to live".
+  if [[ "$(dc exec -T postgres psql -U "$OFFERFILES_PG_USER" -d "$OFFERFILES_PG_DB" \
+             -tAc 'select 1' 2>/dev/null | tr -d '[:space:]')" == "1" ]]; then
+    ok "database '${OFFERFILES_PG_DB}' answers as role '${OFFERFILES_PG_USER}'"
+  else
+    err "cannot query database '${OFFERFILES_PG_DB}' as role '${OFFERFILES_PG_USER}'"
+    FAILURES=$(( FAILURES + 1 ))
+  fi
+
+  # pg_ivm is the whole reason this is not a stock postgres image. Without it the kernel
+  # either refuses to start or (with ALLOW_NO_PG_IVM=true) silently drops to a read path its
+  # own docs call sharply degraded — so its absence must fail here, loudly, not at P2.
+  if [[ "$(dc exec -T postgres psql -U "$OFFERFILES_PG_USER" -d "$OFFERFILES_PG_DB" \
+             -tAc "select extversion from pg_extension where extname='pg_ivm'" 2>/dev/null | tr -d '[:space:]')" != "" ]]; then
+    ok "pg_ivm extension installed in '${OFFERFILES_PG_DB}'"
+  else
+    err "pg_ivm is NOT installed in '${OFFERFILES_PG_DB}' — the kernel needs it (see images/postgres)"
     FAILURES=$(( FAILURES + 1 ))
   fi
 fi

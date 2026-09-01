@@ -1,6 +1,6 @@
 {
   "schemaVersion": "artifact-decision-matrix-v2",
-  "pinsDigest": "f77bc59a510f606ea5f34ba6c083feb0e9fcbcffc248c178d15b7c6fa55cb9de",
+  "pinsDigest": "b6b68f71c58581f126395116b59976386f5138e982fa9b8d29d5709d7cf09d3c",
   "frozenOn": "2026-09-01",
   "note": "Frozen artifact-selection contract for every external dependency of this Midnight 1.x demo. Each field was re-derived from a live source on the freeze date. scripts/verify-artifact-decisions.sh enforces it offline. Do not edit a digest, SHA or hash to make a build pass: re-verify against the source first, then regenerate pinsDigest with --update-pins so the change is visible in review. Schema v2 differs from the 2.x sibling's v1 by adding `sources` (git-pinned source builds) and `toolchains`, and by replacing the warehouse proof-data generation with a pre-warm strategy.",
   "selectionOrder": [
@@ -335,6 +335,42 @@
         }
       },
       "$comment": "The same releases also ship aarch64-darwin and x86_64-darwin zips. Those must never enter a Linux build stage, which is why forbiddenAssetSubstrings is applied to toolchain assets too and not only to warehouse components."
+    },
+    {
+      "id": "compact-kernel",
+      "version": "0.30.0",
+      "decision": "official-upstream-direct",
+      "resolved": true,
+      "requiredBy": "images/offerfiles-kernel — kernel main's own contract pragma `compact compile +0.30.0` in packages/contracts-midnight/contract-offer-files/package.json",
+      "repository": "midnightntwrk/compact",
+      "releaseTag": "compactc-v0.30.0",
+      "releaseId": 298133014,
+      "reason": "THERE ARE TWO COMPACT TOOLCHAINS IN THIS STACK, ON PURPOSE, and conflating them is the mistake this separate entry exists to prevent. The kernel deploys a contract compiled at +0.30.0 (its package.json pragma, paired with compact-runtime 0.15.0); the frontend template compiles ITS copy at 0.31.0 because the template's own manifest.json records compilerVersion 0.31.0 and fails the build on any mismatch (see the `compact` entry above and Q9). Same contract source on both sides, two compilers, one deliberate split. This entry pins the kernel half. It is `official-upstream-direct` from midnightntwrk/compact (repo id 967499978) rather than LFDT-Minokawa/compact (repo id 1115336329): those are DIFFERENT repositories, and only the former publishes a FINAL compactc-v0.30.0 — it is also where the `compact` toolchain manager itself is published, so it is what `compact update 0.30.0` resolves against. The asset is fetched and sha256-verified in the image rather than through the version manager, whose resolution is an unpinnable network lookup. NOT passed as a compose build arg: it is a Dockerfile ARG, like the celestia warehouse hashes, so it cannot collide with the frontend's COMPACT_VERSION.",
+      "assets": {
+        "linux/amd64": {
+          "name": "compactc_v0.30.0_x86_64-unknown-linux-musl.zip",
+          "assetId": 375958333,
+          "outerSize": 27315372,
+          "outerSha256": "06641b55befd35384ece539f7b12b65cb2cf6fb49996d27ef17a02fcacad4d2d"
+        },
+        "linux/arm64": {
+          "name": "compactc_v0.30.0_aarch64-unknown-linux-musl.zip",
+          "assetId": 375958332,
+          "outerSize": 26638736,
+          "outerSha256": "e4f36268ee652f1415d253d9fabd64a92b5eb0dc7cf28f40fa68c2445c7b3341"
+        }
+      },
+      "verifiedOn": "2026-09-01",
+      "$comment": [
+        "VERIFIED BY BUILD, not by inspection (P2, 2026-09-01): the image's compact stage matched",
+        "the arm64 sha256, found the `zkir` sibling the compiler shells out to, and `compactc",
+        "--version` printed exactly 0.30.0. All four are build-time assertions, so a re-uploaded",
+        "asset fails the build instead of silently producing artifacts the kernel would reject at",
+        "runtime as a bad verifier key.",
+        "",
+        "The same release also ships aarch64-darwin and x86_64-darwin zips; the build refuses any",
+        "asset name carrying a forbiddenAssetSubstrings marker."
+      ]
     }
   ],
   "proofData": {
@@ -343,8 +379,21 @@
     "strategy": "prewarm-one-shot",
     "volume": "proof-data",
     "generation": null,
-    "integrityLevel": "fetch-time-trust",
-    "integrityCaveat": "HONEST LIMITATION: unlike the 2.x generation, these are not offline-verified bytes. The pre-warm trusts srs.midnight.network at fetch time. That is a real downgrade and is recorded here rather than implied by the absence of a hash.",
+    "integrityLevel": "binary-anchored-verification",
+    "integrityCaveat": "CORRECTED AT P1/T1.3 AFTER MEASUREMENT — the earlier text here read 'these are not offline-verified bytes; the pre-warm trusts srs.midnight.network at fetch time'. That was wrong in BOTH directions and is replaced by what was actually observed. (1) The proof-server binary HASH-VERIFIES everything it downloads, SRS public parameters included: it logs 'this is not a trusted service, the data will be verified' and then 'verified correct' for every payload, against expected hashes compiled into ledger-8.1.0. So the warmed bytes are cryptographically checked, and the trust root is this repository's digest-pinned official image rather than a committed manifest — weaker than the 2.x audited generation's reviewable hash list, but very far from 'fetch-time trust'. (2) The corresponding real hazard is the opposite of the one previously recorded: a pre-warm that fetched payloads ITSELF (curl, wget) would write bytes NOTHING verifies, because the server only verifies on download and never re-checks a file it finds already present. Pre-filling this volume by URL would therefore REMOVE a property the stack has today. That is precisely why the warm one-shot runs the official proof-server binary against the volume instead of downloading anything of its own.",
+    "integrityMeasurement": {
+      "measuredOn": "2026-09-01",
+      "measuredAt": "P1/T1.3",
+      "coldWarmSeconds": 4,
+      "coldWarmBytes": 34177024,
+      "coldWarmFileCount": 18,
+      "warmRerunSeconds": 2,
+      "warmRerunDownloads": 0,
+      "payloads": "SRS bls_midnight_2p10..2p15, zswap/9/{spend,output,sign}.{prover,verifier,bzkir}, dust/9/spend.{prover,verifier,bzkir}",
+      "coverageGap": "The binary fetches only its startup working set. A contract-sized circuit needing a larger SRS k (k16+) is NOT warmed, and because the reader mounts this volume read-only that is an EROFS failure at prove time rather than a slow prove — measured: a proof server on an empty read-only MIDNIGHT_PP exits 1 with `Os { code: 30, kind: ReadOnlyFilesystem }`. Which k the offer-files contract needs cannot be known until a contract exists (P2/P3). Tracked as open question Q11.",
+      "readerIsReadOnly": true,
+      "writerService": "proof-warm"
+    },
     "supersededBy": {
       "plannedDecision": "warehouse-data-generation",
       "note": "The user is preparing an audited v8 proof-data mirror/generation in parallel. When it lands, its initializer replaces this one-shot as a drop-in WRITER OF THE SAME VOLUME, so no consumer changes. At that point `generation` becomes a 64-hex content digest and `decision` becomes warehouse-data-generation; the verifier enforces that pairing in both directions so a half-migration cannot pass."

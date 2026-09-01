@@ -262,9 +262,17 @@ if ! dc up -d --remove-orphans; then
 fi
 
 log "waiting for services"
-# Node first: the indexer cannot make progress before the chain produces blocks, and a node
+# Postgres first, and cheaply: it has no dependencies, its healthcheck already proves the
+# consumer database exists (not merely that a server answers), and P2's kernel cannot start
+# without it. A database failure found here costs seconds; found after the chain is up it
+# costs the whole bring-up.
+if service_present postgres; then
+  wait_compose_healthy postgres "$POSTGRES_WAIT_TIMEOUT" || FAILED=1
+fi
+
+# Node next: the indexer cannot make progress before the chain produces blocks, and a node
 # failure is the cheapest one to diagnose.
-if service_present node; then
+if (( ! FAILED )) && service_present node; then
   wait_compose_healthy node "$NODE_WAIT_TIMEOUT" || FAILED=1
   (( FAILED )) || wait_node_rpc "$NODE_RPC_URL" "$NODE_WAIT_TIMEOUT" || FAILED=1
   # Answering RPC is not the same as being transactable. Until finality moves off genesis a
@@ -274,8 +282,16 @@ if service_present node; then
 fi
 
 # The proof-server is independent of the chain, so probe it while the indexer catches up.
+#
+# BOTH probes, because they prove different things. The container healthcheck asks the server
+# itself (`GET /ready` over bash's /dev/tcp) and — since 8.1.0 binds its port only after its
+# proof-data fetch-and-verify completes — a healthy container means the cache is warm. The
+# host-side TCP wait then proves the PUBLISHED PORT MAPPING works, which nothing inside the
+# container can tell us. A stack whose proof server is ready but unreachable from the host is
+# a stack where every browser proof fails.
 if (( ! FAILED )) && service_present proof-server; then
-  wait_tcp "$HOST_ADDR" "$PROOF_HOST_PORT" "proof-server" "$PROOF_WAIT_TIMEOUT" || FAILED=1
+  wait_compose_healthy proof-server "$PROOF_WAIT_TIMEOUT" || FAILED=1
+  (( FAILED )) || wait_tcp "$HOST_ADDR" "$PROOF_HOST_PORT" "proof-server" "$PROOF_WAIT_TIMEOUT" || FAILED=1
 fi
 
 if (( ! FAILED )) && service_present indexer; then
@@ -290,7 +306,13 @@ if (( ! FAILED )) && [[ " $PROFILES " == *" offerfiles "* ]] && service_present 
   wait_compose_healthy celestia "$CELESTIA_WAIT_TIMEOUT" || FAILED=1
 fi
 if (( ! FAILED )) && [[ " $PROFILES " == *" offerfiles "* ]] && service_present kernel; then
+  # The kernel's healthcheck asserts `synced`, not merely that the API answers, so this is
+  # "the order book is current" rather than "the process started". It also implicitly covers
+  # the offerfiles-deploy one-shot: compose will not start the kernel until that has exited 0.
   wait_compose_healthy kernel "$KERNEL_WAIT_TIMEOUT" || FAILED=1
+fi
+if (( ! FAILED )) && [[ " $PROFILES " == *" offerfiles "* ]] && service_present batcher; then
+  wait_compose_healthy batcher "$KERNEL_WAIT_TIMEOUT" || FAILED=1
 fi
 if (( ! FAILED )) && [[ " $PROFILES " == *" frontend "* ]] && service_present frontend; then
   wait_compose_healthy frontend "$FRONTEND_WAIT_TIMEOUT" || FAILED=1
