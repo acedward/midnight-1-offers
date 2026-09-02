@@ -175,7 +175,7 @@ load_env() {
   : "${KERNEL_REPO:=https://github.com/effectstream/zswap-offerfiles-kernel.git}"
   : "${KERNEL_REF:=773e70cb2f9d9583a01b8540231ae393ed8db207}"
   : "${FRONTEND_REPO:=https://github.com/effectstream/effectstream.git}"
-  : "${FRONTEND_REF:=332503c8f9216143a8c805f2a0acbcfd39e5a21d}"
+  : "${FRONTEND_REF:=9474871185fd1b2704a9487718eee9d88c4f8edc}"
   : "${SOLVER_REPO:=https://github.com/effectstream/zswap-offerfiles-kernel.git}"
   : "${SOLVER_REF:=c37bfa68cb944d883f52af7fa8ea533896a34654}"
   # The relay/intents-UI pin. There is deliberately no *_REPO for it: the source is private

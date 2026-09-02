@@ -42,8 +42,11 @@ ARG BUN_BASE=oven/bun:1.3.11@sha256:0733e50325078969732ebe3b15ce4c4be5082f18c4ac
 ARG NGINX_BASE=nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10
 
 ARG FRONTEND_REPO=https://github.com/effectstream/effectstream.git
-ARG FRONTEND_REF=332503c8f9216143a8c805f2a0acbcfd39e5a21d
-ARG FRONTEND_SUBTREE_SHA=1f63d7eedc9a8aff729b7fe026486cb89cb618de
+# The head of effectstream's `midnight-1` branch — the line maintained for midnight-node 1.x /
+# ledger-v8 / @effectstream 0.1xx (Q14). Its templates/zswap-da subtree is byte-identical to the
+# formerly pinned frozen ref 332503c8 plus the 1.x-line dependency patch this image used to carry.
+ARG FRONTEND_REF=9474871185fd1b2704a9487718eee9d88c4f8edc
+ARG FRONTEND_SUBTREE_SHA=af6023edf0d79269457adfaf17d09c9ebd301698
 ARG COMPACT_VERSION=0.31.0
 
 # ── stage 0: the exact upstream subtree, plus the one adaptation patch ───────
@@ -100,40 +103,29 @@ RUN set -eux; \
 
 # ── the OTHER half of "v8-native", which package.json alone does not show ────
 #
-# "The template is v8-native at this ref" is true of its CONTRACT lane and FALSE of its WALLET
-# lane. At the frozen ref `@effectstream/{midnight-contracts,wallets}` are 0.200.1 — the
-# Midnight 2.x line — whose closure is `@midnightntwrk/ledger-v9` 1.0.0-rc.3 plus the v9
-# wallet SDK. MEASURED CONSEQUENCE on a live 1.x stack: the in-page JS wallet connects, then
-# its sync loop fails every event with `Wallet.Sync: … Failed to decode ledger event payload`,
-# so its balance stays 0 forever and offer create/take die with "Insufficient <token>". The
-# faucet mint still works, because it is gasless — the batcher balances and submits, and the
-# browser only proves the contract call with midnight-js 4.1.1 / ledger-v8.
+# "v8-native" has to hold for the template's WALLET lane, not just its contract lane. On
+# effectstream `main` it does not: from commit 98b2b78b ("bump @effectstream/* 0.104.0 ->
+# 0.200.1") `@effectstream/{midnight-contracts,wallets}` pull `@midnightntwrk/ledger-v9` and the
+# v9 wallet SDK, and on a live 1.x stack the in-page JS wallet then fails every sync event with
+# `Wallet.Sync: … Failed to decode ledger event payload`, its balance stays 0 and offer
+# create/take die with "Insufficient <token>" (measured at P3; the gasless faucet mint still
+# worked). This image used to carry upstream's own reverse diff as a patch. It no longer needs
+# to: FRONTEND_REF is the `midnight-1` branch, whose template is on the 0.104.0 (1.x) line
+# natively — the same bytes the patch produced (verified blob-for-blob, Q14).
 #
-# This patch is UPSTREAM'S OWN DIFF, not our invention: it is exactly
-# `git diff 332503c8 02a04de3 -- templates/zswap-da`, i.e. the reverse of effectstream commit
-# 98b2b78b ("bump @effectstream/* 0.104.0 -> 0.200.1"). Between those two commits the template
-# subtree differs ONLY in package.json (2 lines) and bun.lock — no source file changes at all.
-# 0.104.0 is the 1.x line: `@effectstream/midnight-contracts@0.104.0` depends on
-# `@midnight-ntwrk/ledger-v8@8.1.0` and `wallet-sdk-facade@4.1.0`, and the resulting lockfile
-# contains ZERO references to ledger-v9 — which also collapses the bundle to ONE wasm ledger
-# instead of two.
-#
-# See plan question Q14 for the alternative (moving FRONTEND_REF to 02a04de3 instead of
-# patching), which is cleaner but changes an identity the spec names.
-COPY effectstream-1x-line.patch /tmp/effectstream-1x-line.patch
+# The guards stay, because they are what turns "we pinned the right branch" into something the
+# build proves: 0.104.0 present, no 0.200.x, and — the decisive one — nothing in the RESOLVED
+# lockfile pulls ledger-v9. If the pinned ref ever drifts to the 2.x line, the build fails here
+# instead of producing a bundle with two wasm ledgers and a wallet that cannot sync.
 RUN set -eux; \
     cd /src; \
-    git apply --check /tmp/effectstream-1x-line.patch; \
-    git apply /tmp/effectstream-1x-line.patch; \
     grep -q '"@effectstream/midnight-contracts": "0.104.0"' package.json; \
     grep -q '"@effectstream/wallets": "0.104.0"' package.json; \
     if grep -q '0\.200\.' package.json; then \
-      echo "FAIL: a 0.200.x @effectstream dependency survived the 1.x-line patch" >&2; exit 1; \
+      echo "FAIL: a 0.200.x @effectstream dependency is present; this ref is not on the 1.x line" >&2; exit 1; \
     fi; \
-    # The decisive one. The wallet lane is v8-only if and only if nothing in the resolved
-    # dependency graph pulls ledger-v9 — and the lockfile is where that is visible.
     if grep -q 'ledger-v9' bun.lock; then \
-      echo "FAIL: the resolved lockfile still contains ledger-v9; the wallet lane is not v8" >&2; exit 1; \
+      echo "FAIL: the resolved lockfile contains ledger-v9; the wallet lane is not v8" >&2; exit 1; \
     fi
 
 # The kernel's GET /v1/midnight/config reports the URIs the KERNEL dials — inside compose

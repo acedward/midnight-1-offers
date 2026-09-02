@@ -1,6 +1,6 @@
 {
   "schemaVersion": "artifact-decision-matrix-v2",
-  "pinsDigest": "4eedfbfd51f3d15c9eb5f32e21cb79b2aab7a843b4b1fcc472e85dd0afc7ad17",
+  "pinsDigest": "978f2ffc51219e5c5fa18ba5f387c569398d084ef3251a46fdd8da7ba7cd790e",
   "frozenOn": "2026-09-01",
   "note": "Frozen artifact-selection contract for every external dependency of this Midnight 1.x demo. Each field was re-derived from a live source on the freeze date. scripts/verify-artifact-decisions.sh enforces it offline. Do not edit a digest, SHA or hash to make a build pass: re-verify against the source first, then regenerate pinsDigest with --update-pins so the change is visible in review. Schema v2 differs from the 2.x sibling's v1 by adding `sources` (git-pinned source builds) and `toolchains`, and by replacing the warehouse proof-data generation with a pre-warm strategy.",
   "selectionOrder": [
@@ -265,13 +265,20 @@
       "role": "the zswap-da trading SPA, built from a frozen upstream template subtree",
       "acquisition": "anonymous-git-fetch",
       "repository": "https://github.com/effectstream/effectstream.git",
-      "ref": "332503c8f9216143a8c805f2a0acbcfd39e5a21d",
+      "ref": "9474871185fd1b2704a9487718eee9d88c4f8edc",
       "subtree": "templates/zswap-da",
-      "subtreeSha": "1f63d7eedc9a8aff729b7fe026486cb89cb618de",
+      "subtreeSha": "af6023edf0d79269457adfaf17d09c9ebd301698",
       "envVar": "FRONTEND_REF",
       "verifiedOn": "2026-09-01",
-      "reason": "The same frozen ref midnight-2-offers uses, but consumed UNPATCHED for ledger: at this ref the template is already v8-native (ledger-v8 8.1.0, midnight-js 4.1.1, compact-js 2.5.1), so this repository ships no ledger-v9.patch stage. The subtree SHA is recorded separately and verified during the build, because the commit alone does not prove which bytes of it were extracted.",
-      "$comment": "Upstream templates/** is FROZEN by effectstream 00016 FR-10. Nothing in this repository may push to it."
+      "reason": "The head of effectstream's `midnight-1` branch — the line the owner maintains for midnight-node 1.x / ledger-v8 / @effectstream 0.1xx (Q14, user decision 2026-09-01). At this ref the template is v8-native in BOTH lanes: contract (ledger-v8 8.1.0, midnight-js 4.1.1, compact-js 2.5.1) and wallet (@effectstream/{midnight-contracts,wallets} 0.104.0, whose closure carries no ledger-v9), so this repository ships neither a ledger-v9.patch stage nor the effectstream-1x-line dependency patch it carried before. The subtree SHA is recorded separately and verified during the build, because the commit alone does not prove which bytes of it were extracted.",
+      "provenance": {
+        "branch": "midnight-1",
+        "supersededRef": "332503c8f9216143a8c805f2a0acbcfd39e5a21d",
+        "supersededSubtreeSha": "1f63d7eedc9a8aff729b7fe026486cb89cb618de",
+        "forkPoint": "b267fa2e795fcd1bd8e295d4d9b8eb65814b11ee",
+        "identityProof": "templates/zswap-da at this ref (subtree af6023ed) is byte-identical to the superseded frozen ref plus the effectstream-1x-line.patch this image applied — package.json blob 822bd218…, bun.lock blob 1099e6f6… on both sides, verified 2026-09-01. It is also the exact subtree Q14's option A named (commit 02a04de3), which is not on midnight-1 but carries the same tree."
+      },
+      "$comment": "Upstream templates/** on main is FROZEN by effectstream 00016 FR-10; the midnight-1 branch is the 1.x line's own. Nothing in this repository pushes to either — the pin is read-only."
     },
     {
       "id": "cow-solver",
