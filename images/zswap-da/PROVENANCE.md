@@ -4,10 +4,10 @@
 
 The image fetches `templates/zswap-da` directly from
 [`effectstream/effectstream`](https://github.com/effectstream/effectstream) at the immutable
-commit `9474871185fd1b2704a9487718eee9d88c4f8edc` — the head of the
+commit `8d21ebe12c3e9b03da629b3eb486c381c33505a0` — the head of the
 [`midnight-1`](https://github.com/effectstream/effectstream/tree/midnight-1) branch, the line
 maintained for midnight-node 1.x / ledger-v8 / `@effectstream` 0.1xx — whose template subtree
-is `af6023edf0d79269457adfaf17d09c9ebd301698`. BOTH identities are verified before checkout —
+is `b22cf08d7d7e9f9b9e794a085c3e50fe342dde4d`. BOTH identities are verified before checkout —
 the commit alone does not prove which bytes of it were extracted — and the resolved commit is
 recorded as `/.zswap-da-commit` inside the runtime image, so "what is in here?" never depends
 on remembering which tag it was built as. No third-party SPA source is stored in this
@@ -42,11 +42,14 @@ refuses any `0.200.x` entry, and requires that no `ledger-v9` appears anywhere i
 `bun.lock`. If the pinned ref ever drifts, the build fails there instead of producing a
 silently mismatched bundle.
 
-## What IS applied: `browser-network-urls.patch`
+## What used to be applied, and is now upstream: the browser-network URIs
 
-One patch, one function: `api.getMidnightConfig` in `src/services/api.ts`. It applies
-fail-closed (`git apply --check` first, then two guard greps) — a patch that stops applying
-must break the build, never quietly no-op.
+One function, `api.getMidnightConfig` in `src/services/api.ts`, was carried here as
+`browser-network-urls.patch` until it landed on `midnight-1` as
+[effectstream#912](https://github.com/effectstream/effectstream/pull/912) (merged 2026-09-02).
+**This image now applies no patch of any kind.** It asserts the pinned tree carries the fix
+(one marker per half, in the source and again in the emitted bundle) so a re-pin to a tree
+without it fails the build. The description below is of that upstream change.
 
 The kernel's `GET /v1/midnight/config` reports the URIs **the kernel itself dials**. Inside
 Docker Compose those are service hostnames (`indexer`, `proof-server`) on a network no browser

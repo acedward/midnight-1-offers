@@ -11,7 +11,7 @@
 #   NODE_URI          -> window.NODE_URI           }
 #   INDEXER_URI       -> window.INDEXER_URI        } overrides applied to the kernel's
 #   INDEXER_WS_URI    -> window.INDEXER_WS_URI     } GET /v1/midnight/config
-#   PROOF_SERVER_URI  -> window.PROOF_SERVER_URI   }   (browser-network-urls.patch)
+#   PROOF_SERVER_URI  -> window.PROOF_SERVER_URI   }   (upstream api.getMidnightConfig, effectstream#912)
 #
 # An EMPTY value is skipped, not written as an empty string: `window.X = ""` would defeat the
 # template's `??` fallbacks, and the fallbacks are correct on the default port block.

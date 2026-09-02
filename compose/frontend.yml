@@ -13,8 +13,8 @@
 # machine, not on the compose network. It talks to four things directly — the kernel API, the
 # batcher, the indexer (HTTP + WS) and the proof server — and the kernel's own
 # GET /v1/midnight/config reports the last two as `indexer:8088` / `proof-server:6300`, which
-# resolve nowhere in a browser. images/zswap-da/browser-network-urls.patch rewrites them at
-# the single api.ts chokepoint, and the FRONTEND_*_URI variables below are what make that
+# resolve nowhere in a browser. Upstream's api.ts chokepoint (effectstream#912, on the pinned
+# midnight-1 tree) rewrites them, and the FRONTEND_*_URI variables below are what make that
 # rewrite correct on a NON-DEFAULT port block: the fallback rewrite keeps the container port,
 # which only the default block publishes unchanged. scripts/pick-ports.sh emits all six.
 
@@ -34,10 +34,10 @@ services:
       args:
         FRONTEND_REPO: '${FRONTEND_REPO:-https://github.com/effectstream/effectstream.git}'
         # effectstream `midnight-1` head — the branch maintained for the 1.x line (Q14).
-        FRONTEND_REF: '${FRONTEND_REF:-9474871185fd1b2704a9487718eee9d88c4f8edc}'
+        FRONTEND_REF: '${FRONTEND_REF:-8d21ebe12c3e9b03da629b3eb486c381c33505a0}'
         # The commit says WHICH history; the subtree SHA says which BYTES of it were
         # extracted. scripts/verify-compose-pins.sh binds both to config/artifact-decisions.json.
-        FRONTEND_SUBTREE_SHA: '${FRONTEND_SUBTREE_SHA:-af6023edf0d79269457adfaf17d09c9ebd301698}'
+        FRONTEND_SUBTREE_SHA: '${FRONTEND_SUBTREE_SHA:-b22cf08d7d7e9f9b9e794a085c3e50fe342dde4d}'
         # DELIBERATELY NOT OVERRIDABLE from the environment. The template's own
         # scripts/build-contract.ts pins 0.31.0 and its committed manifest.json verifies all
         # 16 outputs byte-for-byte, so any other compiler simply fails the build — but it
@@ -58,7 +58,7 @@ services:
       # string would satisfy the template's `??` and defeat the fallback it is meant to keep.
       API_BASE: '${FRONTEND_API_BASE:-}'
       BATCHER_URL: '${FRONTEND_BATCHER_URL:-}'
-      # Overrides folded into GET /v1/midnight/config by browser-network-urls.patch.
+      # Overrides folded into GET /v1/midnight/config by upstream's api.getMidnightConfig (#912).
       # NODE_URI has no counterpart in that response at all: the kernel never reports one, and
       # without this the in-page JS wallet falls back to http://<pageHost>:9944.
       NODE_URI: '${FRONTEND_NODE_URI:-}'
