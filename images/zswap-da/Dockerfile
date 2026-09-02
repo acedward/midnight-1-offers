@@ -21,8 +21,8 @@
 #
 # RUNTIME CONFIG: src/config.ts resolves the API/batcher endpoints as
 # window.API_BASE ?? VITE_API_BASE ?? http://<hostname>:9999 (and :3334), and
-# browser-network-urls.patch adds window.{NODE,INDEXER,INDEXER_WS,PROOF_SERVER}_URI overrides
-# on top of GET /v1/midnight/config. entrypoint.sh writes all six into /config.js from the
+# upstream's api.getMidnightConfig (effectstream#912) adds window.{NODE,INDEXER,INDEXER_WS,
+# PROOF_SERVER}_URI overrides on top of GET /v1/midnight/config. entrypoint.sh writes all six into /config.js from the
 # container environment; each is skipped when empty, which leaves the template's
 # hostname-relative defaults in charge (correct only on the default port block).
 
@@ -43,10 +43,11 @@ ARG NGINX_BASE=nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2
 
 ARG FRONTEND_REPO=https://github.com/effectstream/effectstream.git
 # The head of effectstream's `midnight-1` branch — the line maintained for midnight-node 1.x /
-# ledger-v8 / @effectstream 0.1xx (Q14). Its templates/zswap-da subtree is byte-identical to the
-# formerly pinned frozen ref 332503c8 plus the 1.x-line dependency patch this image used to carry.
-ARG FRONTEND_REF=9474871185fd1b2704a9487718eee9d88c4f8edc
-ARG FRONTEND_SUBTREE_SHA=af6023edf0d79269457adfaf17d09c9ebd301698
+# ledger-v8 / @effectstream 0.1xx (Q14). Since effectstream#912 the branch also carries the
+# browser-network change this image used to apply as a patch, so the tree is built UNMODIFIED:
+# no ledger patch, no dependency patch, no URI patch.
+ARG FRONTEND_REF=8d21ebe12c3e9b03da629b3eb486c381c33505a0
+ARG FRONTEND_SUBTREE_SHA=b22cf08d7d7e9f9b9e794a085c3e50fe342dde4d
 ARG COMPACT_VERSION=0.31.0
 
 # ── stage 0: the exact upstream subtree, plus the one adaptation patch ───────
@@ -129,15 +130,13 @@ RUN set -eux; \
     fi
 
 # The kernel's GET /v1/midnight/config reports the URIs the KERNEL dials — inside compose
-# those are service hostnames (indexer, proof-server) on container ports. The patch fixes both
-# halves at api.getMidnightConfig, the single chokepoint every consumer goes through. Applied
-# fail-closed: --check first, then guard greps for one marker of each half, so a patch that
-# stops applying breaks the build instead of quietly no-opping.
-COPY browser-network-urls.patch /tmp/browser-network-urls.patch
+# those are service hostnames (indexer, proof-server) on container ports. Upstream fixes both
+# halves at api.getMidnightConfig, the single chokepoint every consumer goes through
+# (effectstream#912, on midnight-1). This image no longer patches anything; it ASSERTS the
+# pinned tree carries the fix — one marker per half — so a re-pin to a tree without it fails
+# the build instead of shipping a SPA that dials compose hostnames.
 RUN set -eux; \
     cd /src; \
-    git apply --check /tmp/browser-network-urls.patch; \
-    git apply /tmp/browser-network-urls.patch; \
     grep -q 'pageHost' src/services/api.ts; \
     grep -q "'proofServerUri'" src/services/api.ts
 
@@ -239,8 +238,8 @@ RUN bun run scripts/build-contract.ts --verify-only
 # (and skips the compile, because managed/ is already present).
 RUN bun run build
 
-# THE PATCH MUST SURVIVE INTO THE BUNDLE, not merely into the source tree. Two markers, one
-# per half of browser-network-urls.patch, greped out of the emitted assets: `([A-Z])` is the
+# THE FIX MUST SURVIVE INTO THE BUNDLE, not merely into the source tree. Two markers, one
+# per half of upstream's browser-network change (effectstream#912), greped out of the emitted assets: `([A-Z])` is the
 # camelCase→SCREAMING_SNAKE regex of the override lane, `[^/:]+` the hostname-rewrite regex.
 # Both are regex literals, which esbuild emits verbatim. Without this, a future bundler change
 # that dropped dead-looking code would ship a SPA that silently dials compose hostnames.

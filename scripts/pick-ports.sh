@@ -106,7 +106,7 @@ INTENTS_UI_HOST_PORT=$(( BASE + 9 ))
 # hostname rewrite both keep the DEFAULT/CONTAINER port, which a generated block by definition
 # does not publish — so a random-port stack MUST inject all six or the browser fetches from
 # ports nothing is listening on. The last four are folded into GET /v1/midnight/config by
-# images/zswap-da/browser-network-urls.patch; FRONTEND_NODE_URI has no counterpart there at
+# the template's api.getMidnightConfig (upstream effectstream#912); FRONTEND_NODE_URI has no counterpart there at
 # all (the kernel reports no node URI) and is what the in-page JS wallet dials.
 FRONTEND_API_BASE=http://127.0.0.1:$(( BASE + 3 ))
 FRONTEND_BATCHER_URL=http://127.0.0.1:$(( BASE + 4 ))

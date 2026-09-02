@@ -1,6 +1,6 @@
 {
   "schemaVersion": "artifact-decision-matrix-v2",
-  "pinsDigest": "978f2ffc51219e5c5fa18ba5f387c569398d084ef3251a46fdd8da7ba7cd790e",
+  "pinsDigest": "333b6351273b45132c5a31bddc569b6f2f145a7c9b14426b138c101208105def",
   "frozenOn": "2026-09-01",
   "note": "Frozen artifact-selection contract for every external dependency of this Midnight 1.x demo. Each field was re-derived from a live source on the freeze date. scripts/verify-artifact-decisions.sh enforces it offline. Do not edit a digest, SHA or hash to make a build pass: re-verify against the source first, then regenerate pinsDigest with --update-pins so the change is visible in review. Schema v2 differs from the 2.x sibling's v1 by adding `sources` (git-pinned source builds) and `toolchains`, and by replacing the warehouse proof-data generation with a pre-warm strategy.",
   "selectionOrder": [
@@ -265,18 +265,25 @@
       "role": "the zswap-da trading SPA, built from a frozen upstream template subtree",
       "acquisition": "anonymous-git-fetch",
       "repository": "https://github.com/effectstream/effectstream.git",
-      "ref": "9474871185fd1b2704a9487718eee9d88c4f8edc",
+      "ref": "8d21ebe12c3e9b03da629b3eb486c381c33505a0",
       "subtree": "templates/zswap-da",
-      "subtreeSha": "af6023edf0d79269457adfaf17d09c9ebd301698",
+      "subtreeSha": "b22cf08d7d7e9f9b9e794a085c3e50fe342dde4d",
       "envVar": "FRONTEND_REF",
       "verifiedOn": "2026-09-01",
-      "reason": "The head of effectstream's `midnight-1` branch — the line the owner maintains for midnight-node 1.x / ledger-v8 / @effectstream 0.1xx (Q14, user decision 2026-09-01). At this ref the template is v8-native in BOTH lanes: contract (ledger-v8 8.1.0, midnight-js 4.1.1, compact-js 2.5.1) and wallet (@effectstream/{midnight-contracts,wallets} 0.104.0, whose closure carries no ledger-v9), so this repository ships neither a ledger-v9.patch stage nor the effectstream-1x-line dependency patch it carried before. The subtree SHA is recorded separately and verified during the build, because the commit alone does not prove which bytes of it were extracted.",
+      "reason": "The head of effectstream's `midnight-1` branch — the line the owner maintains for midnight-node 1.x / ledger-v8 / @effectstream 0.1xx (Q14, user decision 2026-09-01). At this ref the template is v8-native in BOTH lanes: contract (ledger-v8 8.1.0, midnight-js 4.1.1, compact-js 2.5.1) and wallet (@effectstream/{midnight-contracts,wallets} 0.104.0, whose closure carries no ledger-v9), and since effectstream#912 (merged 2026-09-02) it also carries the browser-network URI fix at api.getMidnightConfig — so this repository applies NO patch at all: no ledger-v9.patch stage, no dependency patch, no URI patch; the build only asserts the fix is present. The subtree SHA is recorded separately and verified during the build, because the commit alone does not prove which bytes of it were extracted.",
       "provenance": {
         "branch": "midnight-1",
-        "supersededRef": "332503c8f9216143a8c805f2a0acbcfd39e5a21d",
-        "supersededSubtreeSha": "1f63d7eedc9a8aff729b7fe026486cb89cb618de",
+        "supersededRefs": [
+          "9474871185fd1b2704a9487718eee9d88c4f8edc",
+          "332503c8f9216143a8c805f2a0acbcfd39e5a21d"
+        ],
+        "supersededSubtreeShas": [
+          "af6023edf0d79269457adfaf17d09c9ebd301698",
+          "1f63d7eedc9a8aff729b7fe026486cb89cb618de"
+        ],
+        "upstreamedFix": "effectstream/effectstream#912 — browser-network URIs (api.getMidnightConfig), merged 2026-09-02, the last patch this image carried",
         "forkPoint": "b267fa2e795fcd1bd8e295d4d9b8eb65814b11ee",
-        "identityProof": "templates/zswap-da at this ref (subtree af6023ed) is byte-identical to the superseded frozen ref plus the effectstream-1x-line.patch this image applied — package.json blob 822bd218…, bun.lock blob 1099e6f6… on both sides, verified 2026-09-01. It is also the exact subtree Q14's option A named (commit 02a04de3), which is not on midnight-1 but carries the same tree."
+        "identityProof": "Subtree b22cf08d = af6023ed (9474871, byte-identical to the frozen ref 332503c8 plus the retired effectstream-1x-line.patch: package.json blob 822bd218…, bun.lock blob 1099e6f6…) + effectstream#912, which changes only src/services/api.ts by the same +32 lines the retired browser-network-urls.patch applied. Verified 2026-09-01/02."
       },
       "$comment": "Upstream templates/** on main is FROZEN by effectstream 00016 FR-10; the midnight-1 branch is the 1.x line's own. Nothing in this repository pushes to either — the pin is read-only."
     },

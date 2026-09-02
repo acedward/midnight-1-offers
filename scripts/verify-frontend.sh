@@ -18,7 +18,7 @@
 #               file set. It is written at container start, not baked into the image, so a 404
 #               means the entrypoint never ran.
 #   wired       index.html loads config.js BEFORE the module bundle, or every override is dead.
-#   bundle      both halves of browser-network-urls.patch are present in the SERVED javascript,
+#   bundle      both halves of the browser-network URI fix (effectstream#912) are in the SERVED javascript,
 #               not merely in the source tree a build stage saw.
 #   endpoints   the config the page would actually receive is RESOLVED here exactly the way the
 #               patch resolves it (overrides first, then the dot-less-hostname rewrite), and
@@ -232,7 +232,7 @@ else
     fail "kernel reports no contract address — the browser cannot connect to a contract"
   fi
 
-  # Resolve each URI exactly as browser-network-urls.patch does: an explicit override wins,
+  # Resolve each URI exactly as upstream's api.getMidnightConfig (effectstream#912) does: an explicit override wins,
   # otherwise a dot-less non-localhost hostname is re-pointed at the page's own host. nodeUri
   # is in the list although the kernel never reports one — the in-page JS wallet needs it, and
   # the patch injects the override even when the key is absent.
