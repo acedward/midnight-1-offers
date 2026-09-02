@@ -140,12 +140,13 @@ load_env() {
       warn "${retired} is IGNORED — this repository has no AA/EVM profile, no PGLite and no solver sink"
     fi
   done
-  # There are TWO Compact toolchains here (kernel 0.30.0, frontend 0.31.0), so one variable
-  # could never have configured both. Each is pinned where it is enforced — a Dockerfile ARG
-  # in images/offerfiles-kernel, a literal in compose/frontend.yml that
-  # scripts/verify-compose-pins.sh binds to the matrix — and neither reads the environment.
+  # There are THREE Compact toolchains here (kernel 0.30.0, zswap-da 0.31.0, shielded-night
+  # 0.31.1), so one variable could never have configured them. Each is pinned where it is
+  # enforced — a Dockerfile ARG in images/offerfiles-kernel, a literal in compose/frontend.yml
+  # and one in compose/shielded-night.yml, both of which scripts/verify-compose-pins.sh binds
+  # to their OWN matrix entry — and none of them reads the environment.
   if [[ -n "${COMPACT_VERSION-}" ]]; then
-    warn "COMPACT_VERSION is IGNORED — the kernel compiles at 0.30.0 and the frontend at 0.31.0, both pinned in-build"
+    warn "COMPACT_VERSION is IGNORED — kernel 0.30.0, zswap-da 0.31.0, shielded-night 0.31.1, all pinned in-build"
   fi
 
   # ── external runtime images: repository + IMMUTABLE DIGEST, never a tag ─────
@@ -178,6 +179,11 @@ load_env() {
   : "${FRONTEND_REF:=8d21ebe12c3e9b03da629b3eb486c381c33505a0}"
   : "${SOLVER_REPO:=https://github.com/effectstream/zswap-offerfiles-kernel.git}"
   : "${SOLVER_REF:=c37bfa68cb944d883f52af7fa8ea533896a34654}"
+  # The Shielded NIGHT dApp. A first-party public repository already on this stack's 1.x line
+  # (ledger-v8 8.1.0 / midnight-js 4.1.1 / compact-runtime 0.16.0), so nothing here is
+  # patched — see config/artifact-decisions.json -> sources[shielded-night].
+  : "${SHIELDED_NIGHT_REPO:=https://github.com/effectstream/shielded-night.git}"
+  : "${SHIELDED_NIGHT_REF:=0b0a3580e2645c37dd0bc7987b0f3c244f63c145}"
   # The relay/intents-UI pin. There is deliberately no *_REPO for it: the source is private
   # and is never fetched by this repository. RELAY_SOURCE_DIR names the operator's own
   # clone, and assert_relay_source() below verifies that clone is at exactly this commit.
@@ -202,6 +208,7 @@ load_env() {
   : "${RELAY_HTTP_HOST_PORT:=13000}"
   : "${RELAY_WS_HOST_PORT:=19001}"
   : "${INTENTS_UI_HOST_PORT:=10700}"
+  : "${SHIELDED_NIGHT_HOST_PORT:=10900}"
 
   # ── the shared PostgreSQL (Q7) ─────────────────────────────────────────────
   # The role/database the offer-files kernel authenticates as. Defaulted here as well as in
@@ -224,6 +231,29 @@ load_env() {
   # code change, and verify.sh asserts BOTH paths answer.
   : "${INDEXER_API_PATH:=/api/v3/graphql}"
 
+  # ── the shielded-night profile ─────────────────────────────────────────────
+  # The DEPLOYER is genesis-2 and never genesis-1: on this stack genesis-1 is the faucet, the
+  # offer-files deploy/mint wallet AND the kernel's own MIDNIGHT_WALLET_SEED, and two wallet
+  # facades on one seed silently force each other's connection down (wallets/wallets.json).
+  # shielded-night's own scripts default to genesis-1 on `undeployed`, so this is stated
+  # explicitly here and the deploy entrypoint REFUSES that seed rather than trusting the env.
+  : "${SHIELDED_NIGHT_WALLET_SEED:=0000000000000000000000000000000000000000000000000000000000000002}"
+  # The verify round trip's DRIVER, distinct from the deployer (spec FR-011). Defaults to the
+  # `lace-test` seed: measured genesis-funded and DUST-registered on this line, and held open
+  # by no container facade in any profile. See wallets/wallets.json and project 00007 Q6.
+  : "${SHIELDED_NIGHT_DRIVER_SEED:=a51c86de32d0791f7cffc3bdff1abd9bb54987f0ed5effc30c936dddbb9afd9d530c8db445e4f2d3ea42a321b260e022aadf05987c9a67ec7b6b6ca1d0593ec9}"
+  : "${SHIELDED_NIGHT_NAME:=Shielded Night}"
+  : "${SHIELDED_NIGHT_SYMBOL:=sNight}"
+  : "${SHIELDED_NIGHT_DECIMALS:=6}"
+  # Locking dissolves the contract's maintenance committee — a ONE-WAY door meant for hosted
+  # releases. A throwaway devnet contract gains nothing from it, so the default is off; the
+  # knob exists because the upstream repository's own release path uses it (spec FR-016).
+  : "${SHIELDED_NIGHT_LOCK:=false}"
+  # How long the web container waits for the deploy one-shot's contract.json before giving up.
+  # A deploy proves and submits a real transaction on a cold chain; 600s is the same order as
+  # KERNEL_WAIT_TIMEOUT and covers a loaded host.
+  : "${SHIELDED_NIGHT_WAIT_TIMEOUT:=600}"
+
   # ── wait timeouts (seconds) ────────────────────────────────────────────────
   : "${NODE_WAIT_TIMEOUT:=180}"
   : "${INDEXER_WAIT_TIMEOUT:=420}"
@@ -242,11 +272,16 @@ load_env() {
          NODE_IMAGE INDEXER_IMAGE PROOF_IMAGE \
          NODE_VERSION INDEXER_VERSION PROOF_VERSION \
          KERNEL_REPO KERNEL_REF FRONTEND_REPO FRONTEND_REF \
+         SHIELDED_NIGHT_REPO SHIELDED_NIGHT_REF \
+         SHIELDED_NIGHT_WALLET_SEED SHIELDED_NIGHT_DRIVER_SEED \
+         SHIELDED_NIGHT_NAME SHIELDED_NIGHT_SYMBOL SHIELDED_NIGHT_DECIMALS \
+         SHIELDED_NIGHT_LOCK SHIELDED_NIGHT_WAIT_TIMEOUT \
          SOLVER_REPO SOLVER_REF RELAY_REF RELAY_SOURCE_DIR \
          WAREHOUSE_REPO WAREHOUSE_RELEASE CELESTIA_APP_VERSION CELESTIA_NODE_VERSION \
          BIND_ADDR NODE_HOST_PORT INDEXER_HOST_PORT PROOF_HOST_PORT \
          KERNEL_HOST_PORT BATCHER_HOST_PORT CELESTIA_HOST_PORT FRONTEND_HOST_PORT \
          RELAY_HTTP_HOST_PORT RELAY_WS_HOST_PORT INTENTS_UI_HOST_PORT \
+         SHIELDED_NIGHT_HOST_PORT \
          INDEXER_API_PATH OFFERFILES_PG_USER OFFERFILES_PG_DB PROOF_WARM_TIMEOUT \
          NODE_WAIT_TIMEOUT INDEXER_WAIT_TIMEOUT PROOF_WAIT_TIMEOUT POSTGRES_WAIT_TIMEOUT \
          CELESTIA_WAIT_TIMEOUT KERNEL_WAIT_TIMEOUT FRONTEND_WAIT_TIMEOUT \
@@ -263,7 +298,8 @@ load_env() {
   KERNEL_URL="http://${HOST_ADDR}:${KERNEL_HOST_PORT}"
   BATCHER_URL="http://${HOST_ADDR}:${BATCHER_HOST_PORT}"
   RELAY_URL="http://${HOST_ADDR}:${RELAY_HTTP_HOST_PORT}"
-  export NODE_RPC_URL INDEXER_GQL_URL KERNEL_URL BATCHER_URL RELAY_URL
+  SHIELDED_NIGHT_URL="http://${HOST_ADDR}:${SHIELDED_NIGHT_HOST_PORT}"
+  export NODE_RPC_URL INDEXER_GQL_URL KERNEL_URL BATCHER_URL RELAY_URL SHIELDED_NIGHT_URL
 }
 
 # ── the PRIVATE relay source (spec FR-11, plan Q4) ───────────────────────────
@@ -356,7 +392,7 @@ assert_relay_source() {
 # `--profile`, so a service carrying one would be declared and then never start, which is a
 # uniquely quiet way to break a stack.
 #
-# There are exactly four: core, offerfiles, frontend, solver.
+# There are exactly five: core, offerfiles, frontend, shielded-night, solver.
 
 # KNOWN_FUTURE_PROFILES are profiles this stack reserves ports and documentation for but has
 # not built yet. Empty: all four fragments exist. Keep the machinery for the next one.
@@ -427,7 +463,12 @@ pending_profiles() {
 # PROFILE_LAYER_ORDER is therefore load-bearing, not documentation: it must stay a valid
 # dependency order. A fragment not named in it is treated as the topmost layer, which is the
 # safe assumption for one this file has not been told about.
-PROFILE_LAYER_ORDER="core offerfiles frontend solver"
+#
+# `shielded-night` sits immediately above `core` because that is exactly what it depends on —
+# node, indexer, proof server, and nothing else. Placing it at the END would make rendering it
+# pull in `solver`, whose services take the kernel image as a named build context, and a
+# failed render is silently indistinguishable from "this fragment declares no services".
+PROFILE_LAYER_ORDER="core shielded-night offerfiles frontend solver"
 
 # _layer_files <profile> [--below] — the `-f <fragment>` arguments for every layer up to and
 # including <profile>, or strictly below it, one word per line.

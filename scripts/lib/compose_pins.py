@@ -15,7 +15,7 @@ What it rejects, and which requirement each maps to:
   * a forced `platform:` on any service or build                            FR-2
   * a source build arg that is not the pinned full commit SHA               FR-8
   * a warehouse repo/release drifted from the matrix                        FR-4
-  * a Compact toolchain version drifted from the matrix                     FR-5
+  * a Compact toolchain version drifted from ITS OWN matrix entry           FR-5
   * a build context or volume path naming the PRIVATE relay subtree         FR-11
   * a relay/UI service fetching private source instead of taking it as a
     named build context                                                     FR-11
@@ -61,8 +61,28 @@ OFFICIAL_OCI_SERVICES = {
 BUILD_ARG_SOURCES = {
     "KERNEL_REF": "offerfiles-kernel",
     "FRONTEND_REF": "zswap-da-template",
+    "SHIELDED_NIGHT_REF": "shielded-night",
     "SOLVER_REF": "cow-solver",
     "RELAY_REF": "intents-relay",
+}
+
+# Which Compact toolchain a service's COMPACT_VERSION build arg must equal.
+#
+# THERE ARE THREE COMPILERS IN THIS STACK AND THEY ARE NOT INTERCHANGEABLE: 0.30.0 for the
+# kernel's contract (pinned as a Dockerfile ARG, deliberately not a compose build arg),
+# 0.31.0 for the zswap-da template's copy of that same source, and 0.31.1 for shielded-night's
+# entirely different contract. Each side's generated bindings are version-checked against ITS
+# OWN compact-runtime at import time, so a single check against one matrix entry would either
+# reject a correct build or — worse — bless a wrong compiler.
+#
+# The map is by SERVICE with an explicit default, not by argument name: a new service that
+# starts passing COMPACT_VERSION is then checked against `compact` rather than silently
+# unchecked, which is the safe direction to be wrong in.
+DEFAULT_COMPACT_TOOLCHAIN = "compact"
+SERVICE_COMPACT_TOOLCHAIN = {
+    "shielded-night": "compact-shielded-night",
+    "shielded-night-deploy": "compact-shielded-night",
+    "shielded-night-verify": "compact-shielded-night",
 }
 
 # Anything that looks like a source ref must be a full commit, even if it is not one of the
@@ -191,9 +211,10 @@ def _check_build_args(f: Failures, doc: dict, matrix: dict) -> None:
         if "WAREHOUSE_RELEASE" in args and args["WAREHOUSE_RELEASE"] != warehouse.get("releaseTag"):
             f.add(name, f"WAREHOUSE_RELEASE={args['WAREHOUSE_RELEASE']!r} != matrix {warehouse.get('releaseTag')!r}")
         if "COMPACT_VERSION" in args:
-            want = (toolchains.get("compact") or {}).get("version")
+            tid = SERVICE_COMPACT_TOOLCHAIN.get(name, DEFAULT_COMPACT_TOOLCHAIN)
+            want = (toolchains.get(tid) or {}).get("version")
             if args["COMPACT_VERSION"] != want:
-                f.add(name, f"COMPACT_VERSION={args['COMPACT_VERSION']!r} != matrix {want!r}")
+                f.add(name, f"COMPACT_VERSION={args['COMPACT_VERSION']!r} != matrix {want!r} (toolchain {tid!r})")
 
 
 def _check_private_source_never_on_disk(f: Failures, doc: dict) -> None:
@@ -376,6 +397,19 @@ def synthetic_base(matrix: dict) -> dict:
                                    "FRONTEND_SUBTREE_SHA": _source(matrix, "zswap-da-template")["subtreeSha"],
                                    "COMPACT_VERSION": toolchain("compact").get("version")}},
             },
+            "shielded-night-deploy": {
+                "image": LOCAL_IMAGE_PREFIX + "shielded-night-deploy:local",
+                "build": {"context": "images/shielded-night", "target": "deploy",
+                          "args": {"SHIELDED_NIGHT_REF": _source(matrix, "shielded-night")["ref"],
+                                   "COMPACT_VERSION": toolchain("compact-shielded-night").get("version")}},
+            },
+            "shielded-night": {
+                "image": LOCAL_IMAGE_PREFIX + "shielded-night:local",
+                "ports": [port(10900)],
+                "build": {"context": "images/shielded-night", "target": "web",
+                          "args": {"SHIELDED_NIGHT_REF": _source(matrix, "shielded-night")["ref"],
+                                   "COMPACT_VERSION": toolchain("compact-shielded-night").get("version")}},
+            },
             "relay": {
                 "image": LOCAL_IMAGE_PREFIX + "relay:local",
                 "ports": [port(13000)],
@@ -463,6 +497,19 @@ def _fx_compact_version_drifted(doc):
     return doc
 
 
+def _fx_shielded_night_compiled_with_the_frontend_toolchain(doc):
+    # The near-miss this per-service map exists for: 0.31.0 is a real, pinned toolchain in
+    # this matrix — it is simply the WRONG one for this contract, and the resulting artifacts
+    # would fail shielded-night's own byte-exact rebuild rather than anything obvious.
+    doc["services"]["shielded-night"]["build"]["args"]["COMPACT_VERSION"] = "0.31.0"
+    return doc
+
+
+def _fx_shielded_night_ref_drifted(doc):
+    doc["services"]["shielded-night-deploy"]["build"]["args"]["SHIELDED_NIGHT_REF"] = "2" * 40
+    return doc
+
+
 def _fx_private_source_as_a_context_path(doc):
     doc["services"]["relay"]["build"]["context"] = "./local/intents-swaps/phase1-native-swaps"
     return doc
@@ -534,6 +581,8 @@ SELF_TESTS = [
     ("frontend subtree SHA drifted", _fx_subtree_sha_drifted),
     ("warehouse release drifted from the matrix", _fx_warehouse_release_drifted),
     ("Compact toolchain version drifted from the matrix", _fx_compact_version_drifted),
+    ("shielded-night built with the FRONTEND's Compact toolchain", _fx_shielded_night_compiled_with_the_frontend_toolchain),
+    ("SHIELDED_NIGHT_REF drifted from the matrix", _fx_shielded_night_ref_drifted),
     ("PRIVATE source used as a build context path", _fx_private_source_as_a_context_path),
     ("PRIVATE source bind-mounted into a service", _fx_private_source_bind_mounted),
     ("a port published on all interfaces by default", _fx_port_on_all_interfaces),

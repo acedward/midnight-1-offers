@@ -38,6 +38,8 @@ after the file. No compose \`profiles:\` key is used anywhere in this repository
   offerfiles     Celestia DA devnet, the contract deploy one-shot, the offer-files kernel
                  (:${KERNEL_HOST_PORT}) and the batcher (:${BATCHER_HOST_PORT}).
   frontend       the zswap-da SPA (:${FRONTEND_HOST_PORT}).
+  shielded-night the Shielded NIGHT dApp (:${SHIELDED_NIGHT_HOST_PORT}) — NIGHT <-> sNight, wrapped
+                 1:1 by a contract this profile deploys ONCE per stack. Depends only on core.
   solver         the Midnight Intents relay (:${RELAY_HTTP_HOST_PORT} HTTP, :${RELAY_WS_HOST_PORT} WS), the COW solver
                  in execution mode, and the intents browser UI (:${INTENTS_UI_HOST_PORT}).
                  BUILDS FROM A PRIVATE CLONE YOU SUPPLY — see RELAY_SOURCE_DIR below.
@@ -78,6 +80,7 @@ Examples:
   ./up.sh                       # core stack, plus whatever profiles are already up
   ./up.sh --with offerfiles     # …and Celestia + kernel + batcher
   ./up.sh --with frontend       # …and the zswap-da SPA
+  ./up.sh --with shielded-night # …and the Shielded NIGHT dApp (needs nothing but core)
   ./up.sh --all                 # everything (needs RELAY_SOURCE_DIR for solver)
   ./up.sh --converge            # core ONLY: stop every optional profile that is up
   ENV_FILE=.env.ci ./up.sh      # a second, port-shifted instance
@@ -317,6 +320,27 @@ fi
 if (( ! FAILED )) && [[ " $PROFILES " == *" frontend "* ]] && service_present frontend; then
   wait_compose_healthy frontend "$FRONTEND_WAIT_TIMEOUT" || FAILED=1
 fi
+# The shielded-night profile. `service_completed_successfully` on the deploy one-shot is what
+# compose gates the web container on, and it is NOT enough on its own: it is equally satisfied
+# by a one-shot that took the JOIN path against a volume from a previous chain. So the two
+# things that actually matter are asserted here — the address really is on the volume, and the
+# page really is serving it — and the address is named in the summary so an operator can see
+# at a glance whether a `./down.sh -v` gave them a new contract.
+if (( ! FAILED )) && [[ " $PROFILES " == *" shielded-night "* ]] && service_present shielded-night; then
+  wait_compose_healthy shielded-night "$SHIELDED_NIGHT_WAIT_TIMEOUT" || FAILED=1
+  if (( ! FAILED )); then
+    # Read through the web container, which mounts the deploy volume read-only. `|| true`
+    # keeps a failed exec reportable by the assertion below instead of killing the run.
+    SHIELDED_NIGHT_CONTRACT="$(dc exec -T shielded-night \
+      cat /srv/shielded-night/contract.json 2>/dev/null \
+      | grep -o '"address"[[:space:]]*:[[:space:]]*"[^"]*"' \
+      | head -1 | sed -e 's/.*:[[:space:]]*"//' -e 's/"$//' || true)"
+    if [[ -z "${SHIELDED_NIGHT_CONTRACT:-}" ]]; then
+      err "the shielded-night-deploy one-shot published no contract address"
+      FAILED=1
+    fi
+  fi
+fi
 if (( ! FAILED )) && [[ " $PROFILES " == *" solver "* ]] && service_present relay; then
   wait_compose_healthy relay "$RELAY_WAIT_TIMEOUT" || FAILED=1
 fi
@@ -349,6 +373,7 @@ service_present proof-server && info "proof server      http://${HOST_ADDR}:${PR
 service_present kernel       && info "offer-files API   ${KERNEL_URL}"
 service_present batcher      && info "batcher           ${BATCHER_URL}"
 service_present frontend     && info "zswap-da SPA      http://${HOST_ADDR}:${FRONTEND_HOST_PORT}"
+service_present shielded-night && info "Shielded NIGHT    http://${HOST_ADDR}:${SHIELDED_NIGHT_HOST_PORT}   contract ${SHIELDED_NIGHT_CONTRACT:-unknown}"
 service_present relay        && info "intents relay     ${RELAY_URL}   (solver WS :${RELAY_WS_HOST_PORT})"
 service_present intents-ui   && info "intents UI        http://${HOST_ADDR}:${INTENTS_UI_HOST_PORT}"
 echo

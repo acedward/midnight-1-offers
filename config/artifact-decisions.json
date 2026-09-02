@@ -1,6 +1,6 @@
 {
   "schemaVersion": "artifact-decision-matrix-v2",
-  "pinsDigest": "333b6351273b45132c5a31bddc569b6f2f145a7c9b14426b138c101208105def",
+  "pinsDigest": "419f6413d818e71025869bbba05189946d4e06ff525cc42a2dfae2e6873c7450",
   "frozenOn": "2026-09-01",
   "note": "Frozen artifact-selection contract for every external dependency of this Midnight 1.x demo. Each field was re-derived from a live source on the freeze date. scripts/verify-artifact-decisions.sh enforces it offline. Do not edit a digest, SHA or hash to make a build pass: re-verify against the source first, then regenerate pinsDigest with --update-pins so the change is visible in review. Schema v2 differs from the 2.x sibling's v1 by adding `sources` (git-pinned source builds) and `toolchains`, and by replacing the warehouse proof-data generation with a pre-warm strategy.",
   "selectionOrder": [
@@ -288,6 +288,50 @@
       "$comment": "Upstream templates/** on main is FROZEN by effectstream 00016 FR-10; the midnight-1 branch is the 1.x line's own. Nothing in this repository pushes to either — the pin is read-only."
     },
     {
+      "id": "shielded-night",
+      "role": "the Shielded NIGHT dApp — the NIGHT ⇄ sNight wrapper contract, its Node-side deploy/verify harness, and the Vite/React page the `shielded-night` profile serves",
+      "acquisition": "anonymous-git-fetch",
+      "repository": "https://github.com/effectstream/shielded-night.git",
+      "branch": "00007-stack-integration",
+      "ref": "0b0a3580e2645c37dd0bc7987b0f3c244f63c145",
+      "envVar": "SHIELDED_NIGHT_REF",
+      "verifiedOn": "2026-09-02",
+      "reason": "A first-party public repository ALREADY on this stack's line, which is why this profile needed no porting: @midnight-ntwrk/ledger-v8 8.1.0 (with a tree-wide `overrides` pin), midnight-js 4.1.1, compact-js 2.5.1, compact-runtime 0.16.0, dapp-connector-api 4.0.1, and a contract whose pragma pairs with compactc 0.31.1 — the same triple this repository's core runs (node 1.0.0 / indexer 4.3.3 / proof-server 8.1.0). The image fetches this commit with `git fetch --depth 1 origin <sha>` and asserts the v8 line in BOTH directions before building. NOTHING of this source is committed here.",
+      "provenance": {
+        "branch": "00007-stack-integration",
+        "isBranchHead": true,
+        "openPullRequest": 9,
+        "pullRequestTitle": "Make the dApp deployable into a stack it did not start",
+        "descendantOfMain": "15022005136a2019bd633b55cc29501807621bcf",
+        "commitsBeyondMain": 3,
+        "repinTo": "the MERGE COMMIT of effectstream/shielded-night#9, as soon as it merges. A branch head is a temporary identity — the branch can be force-pushed and this pin would then name bytes that no longer exist on any branch."
+      },
+      "$comment": [
+        "THIS PIN IS THE ONE THING PHASE A DOES NOT OWN. The three knobs the profile is built",
+        "on — `window.SHIELDED_NIGHT.<NETWORK>_ADDRESS` (a build-time-only address cannot serve a",
+        "per-stack devnet), the `MN_*_URL` endpoint overrides (a deploy running INSIDE compose",
+        "cannot reach the hard-coded 127.0.0.1 defaults), and `MN_EXTERNAL_STACK=1` (so the",
+        "UPSTREAM integration suite is the round-trip gate rather than a transcribed copy) — land",
+        "upstream, not here (project 00007, question Q2, owner decision A). This repository",
+        "carries NO patch against shielded-night, and images/shielded-night asserts each knob is",
+        "present in the pinned tree so a re-pin to a tree without them fails the BUILD.",
+        "",
+        "PINNED ON A BRANCH, DELIBERATELY AND TEMPORARILY. The knobs above landed in",
+        "effectstream/shielded-night#9, which is OPEN at the time of this pin. The value is that",
+        "branch's head — a strict descendant of main @ 1502200 by three commits, verified",
+        "2026-09-02 — and it is re-pinned to the PR's merge commit as soon as it merges. That",
+        "re-pin is the one follow-up this profile owes; nothing else about it changes.",
+        "",
+        "The three commits, and why each matters here: 95b6bc6 adds the runtime address",
+        "override, the MN_*_URL endpoint overrides, MN_EXTERNAL_STACK and DEPLOY_OUT; 54e333d",
+        "moves a `\"//\"` note out of package.json's `overrides` block, which bun >= 1.4.0 no",
+        "longer counts as an override and which therefore broke `--frozen-lockfile` on every",
+        "root install (this image does two of them); 0b0a358 ships frontend/public/config.js and",
+        "the <script src=\"/config.js\"> tag in index.html, so THIS IMAGE PATCHES NO BUILT OUTPUT",
+        "either — it asserts the tag is there and overwrites one file at container start."
+      ]
+    },
+    {
       "id": "cow-solver",
       "role": "the COW posted-price solver, in execution mode",
       "acquisition": "anonymous-git-fetch",
@@ -371,6 +415,52 @@
         "a Linux build stage, which is why forbiddenAssetSubstrings is applied to toolchain assets",
         "and asserted again in the Dockerfile."
       ]
+    },
+    {
+      "id": "compact-shielded-night",
+      "version": "0.31.1",
+      "decision": "official-upstream-direct",
+      "resolved": true,
+      "requiredBy": "images/shielded-night — the pinned tree's package.json runs `compact compile +0.31.1` and its CI pins COMPACT_VERSION 0.31.1; the image recompiles `src/shielded-night.compact` with exactly that compiler and FAILS the build if the output is not byte-identical to the committed `src/managed/`",
+      "repository": "midnightntwrk/compact",
+      "releaseTag": "compactc-v0.31.1",
+      "releaseId": 344923756,
+      "reason": "A THIRD Compact toolchain in this repository, and like the other two it is DICTATED by the source it compiles, not chosen: shielded-night's `package.json` scripts read `compact compile +0.31.1 …` and its `.github/workflows/ci.yml` sets COMPACT_VERSION '0.31.1', with a reproducible-build job that recompiles into an emptied `src/managed/` and fails on any diff. That job IS the dApp's verifiability claim (the deployed contract's on-chain verifier keys are the committed ones), so this image reproduces it locally rather than trusting it (project 00007, question Q3, owner decision A). 0.31.1 also pairs with the tree's compact-runtime 0.16.0, which the generated bindings version-check at import time. The asset is fetched and sha256-verified in the image rather than resolved through the `compact` version manager, whose lookup cannot be pinned.",
+      "assets": {
+        "linux/amd64": {
+          "name": "compactc_v0.31.1_x86_64-unknown-linux-musl.zip",
+          "assetId": 457912387,
+          "outerSize": 27444336,
+          "outerSha256": "e291b4bab4d4e857707008f8b1c25c2b8e0c843f6c737d0ee6c0d9ac69a6bbfb"
+        },
+        "linux/arm64": {
+          "name": "compactc_v0.31.1_aarch64-unknown-linux-musl.zip",
+          "assetId": 457912389,
+          "outerSize": 26738536,
+          "outerSha256": "7c7e38581808779d2671687c3378017bcf2fb3111a192fd1253f3472012df549"
+        }
+      },
+      "verifiedOn": "2026-09-02",
+      "$comment": [
+        "THREE COMPACT TOOLCHAINS, ON PURPOSE, and this is the third: 0.30.0 compiles the",
+        "KERNEL's contract (images/offerfiles-kernel), 0.31.0 the zswap-da TEMPLATE's copy of the",
+        "same source (images/zswap-da), and 0.31.1 the entirely different ShieldedNight contract",
+        "(images/shielded-night). They are not interchangeable and must never be collapsed into",
+        "one variable: each side's generated bindings are version-checked against ITS OWN",
+        "compact-runtime at import time, and each side's committed manifest/artifacts were",
+        "produced by exactly one of them.",
+        "",
+        "midnightntwrk/compact (repo id 967499978) and LFDT-Minokawa/compact (id 1115336329) both",
+        "publish compactc-v0.31.1 and the Linux assets are BYTE-IDENTICAL: same sha256 and same",
+        "sizes on both triples (LFDT asset ids 457912432 / 457912433, release id 344923791,",
+        "verified 2026-09-02 against the release API's own `digest` field). midnightntwrk is",
+        "recorded for the same reason as the other two entries — it is where the `compact`",
+        "toolchain manager is published, and it is where this repository already pins.",
+        "",
+        "The same release ships aarch64-darwin and x86_64-darwin zips. Those must never enter a",
+        "Linux build stage: forbiddenAssetSubstrings is applied to toolchain assets and the",
+        "Dockerfile asserts it a second time."
+      ]
     }
   ],
   "proofData": {
@@ -412,6 +502,12 @@
       "decision": "source-build",
       "inArtifactNormalizationScope": false,
       "reason": "Application code with no reusable warehouse runtime artifact. Built from the `zswap-da-template` source pin above."
+    },
+    {
+      "id": "shielded-night-image",
+      "decision": "source-build",
+      "inArtifactNormalizationScope": false,
+      "reason": "Application code with no reusable warehouse runtime artifact. One image, two runtime targets (the deploy/verify one-shot on the bun base, the nginx page server), built from the `shielded-night` source pin above with the Compact artifacts recompiled in-image by `compact-shielded-night`."
     },
     {
       "id": "cow-solver-image",

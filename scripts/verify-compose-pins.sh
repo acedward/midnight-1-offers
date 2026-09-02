@@ -42,14 +42,19 @@ trap 'rm -rf "$EMPTY_ENV" "$RENDER_DIR"' EXIT
 
 # The combinations a user can actually ask for. `core` is unconditional; every other
 # fragment is additive on top of it. `solver` is always rendered together with `offerfiles`
-# because it takes the kernel image as an additional build context.
+# because it takes the kernel image as an additional build context. `shielded-night` is
+# rendered BOTH alone on core (the profile depends on nothing else, and that has to stay
+# true) and in the fullest stack, so a cross-fragment name collision cannot hide.
 COMBOS=(
   "core"
   "core offerfiles"
   "core frontend"
+  "core shielded-night"
   "core offerfiles frontend"
+  "core offerfiles shielded-night"
   "core offerfiles solver"
   "core offerfiles frontend solver"
+  "core offerfiles frontend solver shielded-night"
 )
 
 FAILURES=0

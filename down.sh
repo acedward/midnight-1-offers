@@ -5,7 +5,8 @@
 #   ./down.sh       stop and remove containers/networks, KEEP the chain + indexer volumes
 #   ./down.sh -v    also wipe every volume of this compose project (full reset)
 #
-# The -v form wipes the node, indexer, Celestia, Postgres, deploy-share and batcher volumes
+# The -v form wipes the node, indexer, Celestia, Postgres, deploy-share (offer-files AND
+# shielded-night) and batcher volumes
 # TOGETHER, and that is not a convenience — it is a correctness requirement. They are one
 # WIPE GROUP because each of them is keyed to a chain genesis:
 #

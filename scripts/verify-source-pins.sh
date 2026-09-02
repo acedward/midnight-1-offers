@@ -88,6 +88,7 @@ KERNEL_EXPECTED="${KERNEL_REF:-$(pin 'sources[offerfiles-kernel].ref')}"
 SOLVER_EXPECTED="${SOLVER_REF:-$(pin 'sources[cow-solver].ref')}"
 FRONTEND_EXPECTED="${FRONTEND_REF:-$(pin 'sources[zswap-da-template].ref')}"
 RELAY_EXPECTED="${RELAY_REF:-$(pin 'sources[intents-relay].ref')}"
+SHIELDED_NIGHT_EXPECTED="${SHIELDED_NIGHT_REF:-$(pin 'sources[shielded-night].ref')}"
 
 if service_present kernel; then
   assert_pin kernel "${KERNEL_IMAGE:-midnight-1-offers/offerfiles-kernel:local}" \
@@ -111,6 +112,18 @@ if service_present frontend; then
   SUBTREE_EXPECTED="$(pin 'sources[zswap-da-template].subtreeSha')"
   assert_pin zswap-da-subtree "${FRONTEND_IMAGE:-midnight-1-offers/zswap-da:local}" \
     /.zswap-da-subtree "$SUBTREE_EXPECTED"
+fi
+# BOTH shielded-night runtime targets carry the commit, and both are asserted. They are two
+# images from one build — the nginx page server and the bun deploy/verify one-shot — and only
+# one of them is what a browser sees. An operator answering "which revision is this page?"
+# from the deploy container's label would be answering about the wrong artifact.
+if service_present shielded-night; then
+  assert_pin shielded-night "${SHIELDED_NIGHT_IMAGE:-midnight-1-offers/shielded-night:local}" \
+    /.shielded-night-commit "$SHIELDED_NIGHT_EXPECTED"
+fi
+if service_present shielded-night-deploy; then
+  assert_pin shielded-night-deploy "${SHIELDED_NIGHT_DEPLOY_IMAGE:-midnight-1-offers/shielded-night-deploy:local}" \
+    /.shielded-night-commit "$SHIELDED_NIGHT_EXPECTED"
 fi
 # The relay and intents UI are built from the operator's own clone of a PRIVATE repository.
 # Nothing here reads that source: the build bakes the commit it was given, and this asserts

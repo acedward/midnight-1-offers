@@ -66,6 +66,11 @@ FRONTEND_IMAGE=midnight-1-offers/zswap-da:${IMAGE_TAG_SUFFIX}
 SOLVER_IMAGE=midnight-1-offers/cow-solver:${IMAGE_TAG_SUFFIX}
 RELAY_IMAGE=midnight-1-offers/relay:${IMAGE_TAG_SUFFIX}
 INTENTS_UI_IMAGE=midnight-1-offers/intents-ui:${IMAGE_TAG_SUFFIX}
+# ONE build context, TWO runtime targets (nginx page server + bun deploy/verify one-shot), so
+# two image names. Both must carry the run-specific tag or a second stack on this daemon would
+# reuse the first one's binaries.
+SHIELDED_NIGHT_IMAGE=midnight-1-offers/shielded-night:${IMAGE_TAG_SUFFIX}
+SHIELDED_NIGHT_DEPLOY_IMAGE=midnight-1-offers/shielded-night-deploy:${IMAGE_TAG_SUFFIX}
 
 # External runtime images: repository + IMMUTABLE DIGEST, never a tag. All three are good
 # official multiarch indexes (linux/amd64 + linux/arm64). Readable versions: midnight-node
@@ -100,6 +105,7 @@ FRONTEND_HOST_PORT=$(( BASE + 6 ))
 RELAY_HTTP_HOST_PORT=$(( BASE + 7 ))
 RELAY_WS_HOST_PORT=$(( BASE + 8 ))
 INTENTS_UI_HOST_PORT=$(( BASE + 9 ))
+SHIELDED_NIGHT_HOST_PORT=$(( BASE + 10 ))
 
 # THE BROWSER RUNS OUTSIDE COMPOSE, so every endpoint the page touches has to be a HOST
 # endpoint. The SPA's own fallbacks (http://<pageHost>:9999, :3334) and the kernel-config
@@ -125,4 +131,7 @@ KERNEL_WAIT_TIMEOUT=${KERNEL_WAIT_TIMEOUT:-600}
 FRONTEND_WAIT_TIMEOUT=${FRONTEND_WAIT_TIMEOUT:-300}
 RELAY_WAIT_TIMEOUT=${RELAY_WAIT_TIMEOUT:-300}
 SOLVER_WAIT_TIMEOUT=${SOLVER_WAIT_TIMEOUT:-300}
+# The shielded-night deploy one-shot proves and submits a real contract deploy on a cold
+# chain before the web container may start; this bounds the web entrypoint's wait for it.
+SHIELDED_NIGHT_WAIT_TIMEOUT=${SHIELDED_NIGHT_WAIT_TIMEOUT:-600}
 EOF
