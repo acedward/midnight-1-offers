@@ -121,6 +121,41 @@ itself, because it remembers their nonces in `localStorage`. The taker in the ch
 wrapped anything — its sNight arrived inside somebody else's offer file — and the Node-side
 driver discovers the coin from the wallet's own synced state.
 
+### sNight is a PRICED asset, and the kernel's sponsorship gate (phase G)
+
+The kernel's `main` (PR #54/#56, which `KERNEL_REF` now pins) prices offers against a
+reference-asset table and decides, per offer, whether it is worth paying the Celestia
+publishing fee for — the batcher holds the wallet that pays it and is the authoritative gate;
+the node's `POST /v1/offers` pre-check is only a mirror of the same rule.
+
+Once `offerfiles` is also up, `shielded-night-token-name` registers sNight not just with a
+name but **priced**: `POST /v1/known-tokens` carries `asset_id: "midnight-3"` — the SAME
+CoinGecko reference native NIGHT itself is seeded against — and a `decimals` value read live
+off NIGHT's own row (not hard-coded: the kernel's *pricing-table* decimals, "base units per
+priced coin", is a different number from this contract's own on-chain *display* decimals,
+`SHIELDED_NIGHT_DECIMALS=6`; using the wrong one would misprice every sNight offer by up to
+10^6). One sNight is one wrapped NIGHT, so pricing it as a second unit of the same asset is not
+an approximation — it is the actual relationship, and `GET /v1/quote` for sNight↔NIGHT answers
+`market_rate: 1` as a result. `./verify.sh`'s `kernel` section asserts both the pricing and the
+quote when `shielded-night` is up.
+
+**Defaults, and what stays true because of them:** `BATCHER_SPONSOR_POLICY=warn` and
+`BATCHER_SPONSOR_UNPRICED=allow` (upstream's own rollout defaults, kept here). Every sNight
+offer this profile's `verify.sh` posts is therefore sponsored regardless of its price — `warn`
+logs what `enforce` would have refused instead of refusing it, which is what lets the demo
+faucet colours (DEVA/DEVB/DEVU, deliberately left **unpriced** — see `.env.example`'s
+`PRICE_FEED_MAP`) keep trading at all: an `enforce` deployment with no reference price for a
+token refuses every offer that uses it unless `BATCHER_SPONSOR_UNPRICED=allow` is also set.
+
+**What `BATCHER_SPONSOR_POLICY=enforce` would need, if ever turned on for this stack:** every
+tradeable colour would need either a `PRICE_FEED_MAP` entry or a registered `asset_id`, because
+an unpriced leg under `enforce` + `BATCHER_SPONSOR_UNPRICED=reject` refuses outright — DEVA and
+DEVB have no real-world reference asset, so `enforce` here would need either accepting them as
+permanently unpriced-but-allowed (`BATCHER_SPONSOR_UNPRICED=allow` even under `enforce`, the
+narrower change), or fabricating a reference price for a token that has none (rejected as worse
+than leaving it unpriced — see `.env.example`). This repository does not turn `enforce` on; it
+documents the knob and keeps the defaults that make every existing offer keep flowing.
+
 ### What else the page offers
 
 Upstream's committed `frontend/.env` carries the live **Preview** and **PreProd** contract
