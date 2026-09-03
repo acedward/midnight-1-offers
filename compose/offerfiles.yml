@@ -127,7 +127,7 @@ services:
       context: '../images/offerfiles-kernel'
       args:
         KERNEL_REPO: '${KERNEL_REPO:-https://github.com/effectstream/zswap-offerfiles-kernel.git}'
-        KERNEL_REF: '${KERNEL_REF:-773e70cb2f9d9583a01b8540231ae393ed8db207}'
+        KERNEL_REF: '${KERNEL_REF:-f92c7cacf0588a77c518658b6d6c4836f7b97cae}'
       # NOTE: COMPACT_VERSION is deliberately NOT a build arg here. This image compiles the
       # KERNEL's contract, whose pragma is `compact compile +0.30.0`, while the frontend image
       # compiles the TEMPLATE's copy at 0.31.0 (its manifest.json enforces that byte-for-byte —
@@ -197,6 +197,16 @@ services:
       # and by the SPA's faucet. Parsed STRICTLY on main — `isTokenRegistryEnabled()` compares
       # to the literal "true", unlike ENV.getBoolean elsewhere, so "1"/"yes" do NOT work.
       ENABLE_TOKEN_REGISTRY: '${ENABLE_TOKEN_REGISTRY:-true}'
+      # ── sponsorship gate (kernel PR #56) — the node's own pre-check MIRRORS the batcher's
+      # authoritative gate below, and the two must read the SAME variable names or the two
+      # processes can disagree about what the UI promised a maker. See .env.example for what
+      # each value means; upstream's own rollout defaults (warn / allow / 250 bps) are kept.
+      BATCHER_SPONSOR_POLICY: '${BATCHER_SPONSOR_POLICY:-warn}'
+      BATCHER_SPONSOR_UNPRICED: '${BATCHER_SPONSOR_UNPRICED:-allow}'
+      SPONSOR_DISCOUNT_BPS: '${SPONSOR_DISCOUNT_BPS:-250}'
+      # Token NAME/COLOUR -> CoinGecko asset overrides (kernel PR #54). Empty by default; see
+      # .env.example for why DEVA/DEVB/DEVU are deliberately left unmapped.
+      PRICE_FEED_MAP: '${PRICE_FEED_MAP:-}'
       # How often the kernel advances its Celestia projection. main defaults this to 6000 ms on
       # a devnet — one poll per six blocks at the packaged 1s cadence, which reintroduces as a
       # sawtooth exactly the deficit CELESTIA_BLOCK_TIME=3s removes. Matching the poll to the
@@ -277,6 +287,20 @@ services:
       # BATCHER_ALLOW_CONTRACT_TX is deliberately ABSENT — see entrypoint-batcher.sh. The
       # blank-state wellFormed gate it opts out of is a v9/batcher-sdk-0.200.x feature; on
       # 0.103.1 there is nothing to opt out of, and setting it would be decoration.
+      # ── sponsorship gate (kernel PR #56) — THE AUTHORITATIVE half. The batcher holds the
+      # wallet that pays the Celestia fee, so it is the one process this rule is actually
+      # enforced by; the node's POST /v1/offers pre-check above is only a mirror of it.
+      BATCHER_SPONSOR_POLICY: '${BATCHER_SPONSOR_POLICY:-warn}'
+      BATCHER_SPONSOR_UNPRICED: '${BATCHER_SPONSOR_UNPRICED:-allow}'
+      SPONSOR_DISCOUNT_BPS: '${SPONSOR_DISCOUNT_BPS:-250}'
+      # NEW ON `main` (kernel PR #54/#56), and load-bearing: `loadSponsorshipConfig()` asks
+      # `${BATCHER_NODE_API_URL}/v1/prices` to decide whether an offer is priced well enough to
+      # sponsor. Its upstream default is `http://127.0.0.1:9999` — the one-container era's
+      # loopback, which inside THIS container (a separate process from `kernel`) means "nothing
+      # is there". Left unset, every price lookup fails, every colour reads as unpriced, and
+      # BATCHER_SPONSOR_UNPRICED=allow silently papers over it — the gate would run in name
+      # only. Same class of wire as BATCHER_SUBMIT_URL on the kernel service above.
+      BATCHER_NODE_API_URL: 'http://kernel:9999'
     healthcheck:
       # batcher-sdk 0.103.1 DOES serve GET /health (`{status:"ok", isInitialized, isRunning}`).
       # `GET /` is a plain Fastify 404, so the 2.x sibling's "any answer from /" probe would

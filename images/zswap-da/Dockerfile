@@ -46,8 +46,8 @@ ARG FRONTEND_REPO=https://github.com/effectstream/effectstream.git
 # ledger-v8 / @effectstream 0.1xx (Q14). Since effectstream#912 the branch also carries the
 # browser-network change this image used to apply as a patch, so the tree is built UNMODIFIED:
 # no ledger patch, no dependency patch, no URI patch.
-ARG FRONTEND_REF=8d21ebe12c3e9b03da629b3eb486c381c33505a0
-ARG FRONTEND_SUBTREE_SHA=b22cf08d7d7e9f9b9e794a085c3e50fe342dde4d
+ARG FRONTEND_REF=f20a38cfccd4f2dec5c886e5c8bb321712d37924
+ARG FRONTEND_SUBTREE_SHA=99b871f7aac2e8dc2b3a2172990f1a82bca13360
 ARG COMPACT_VERSION=0.31.0
 
 # ── stage 0: the exact upstream subtree, plus the one adaptation patch ───────
