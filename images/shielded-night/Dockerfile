@@ -50,7 +50,7 @@ ARG BUN_BASE=oven/bun:1.4.0@sha256:5ff609364c049b54eb0ff560ec96319729a972078ef2c
 ARG NGINX_BASE=nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10
 
 ARG SHIELDED_NIGHT_REPO=https://github.com/effectstream/shielded-night.git
-ARG SHIELDED_NIGHT_REF=6d87db4b425341931f11856b93a453ee62c6ee08
+ARG SHIELDED_NIGHT_REF=f7fcefa7921bf2c3f634871f9ad3aa3a32251af0
 # NOT a free choice: the pinned tree's package.json runs `compact compile +0.31.1` and its CI
 # pins COMPACT_VERSION 0.31.1. Stage `source` asserts the tree still says so, so this ARG and
 # the source can never drift apart silently.
@@ -92,10 +92,19 @@ RUN set -eux; \
 # This repository's core is node 1.0.0 / indexer 4.3.3 / proof-server 8.1.0, i.e. the ledger-v8
 # line. The 2.x sibling's copy of this profile pins a ledger-v9 branch of the same repository.
 # Nothing but a pin distinguishes them, so the pin is checked rather than trusted: the exact
-# v8 override must be present, compact-runtime must be 0.16.0, and NO ledger-v9 may appear
-# anywhere — not in either package.json and not in either RESOLVED lockfile, which is the half
-# a package.json grep cannot see. A tree with two ledger wasm instances fails `instanceof`
-# during proving, hours later and nowhere near the cause.
+# v8 override must be present, compact-runtime must be 0.16.0, and NO ledger-v9 PACKAGE may
+# appear anywhere — not as a DEPENDENCY in either package.json and not as a resolved entry in
+# either lockfile, which is the half a package.json grep cannot see. A tree with two ledger wasm
+# instances fails `instanceof` during proving, hours later and nowhere near the cause.
+#
+# THE PATTERN IS THE PACKAGE NAME, "@midnightntwrk/ledger-v9" (a JSON key, quoted), NOT the
+# bare substring "ledger-v9" — measured 2026-09-03 (project 00007 phase H2) against
+# main @ f7fcefa: PR #12's `//overrides` note explains IN PROSE why compact-js is pinned
+# ("...depends on an unpublished @midnight-ntwrk/ledger-v9 alpha..."), and a bare-substring grep
+# false-positives on that comment, failing every build past that commit even though no such
+# package is actually a dependency anywhere in the tree. The narrower pattern still catches the
+# real hazard (an actual ledger-v9 dependency or resolved lockfile entry) and does not fire on
+# prose that merely mentions the string.
 RUN set -eux; \
     cd /src; \
     grep -q '"@midnight-ntwrk/ledger-v8": "8.1.0"' package.json; \
@@ -103,8 +112,8 @@ RUN set -eux; \
     grep -q '"@midnight-ntwrk/compact-runtime": "0.16.0"' package.json; \
     grep -q '"@midnight-ntwrk/compact-runtime": "0.16.0"' frontend/package.json; \
     for f in package.json frontend/package.json bun.lock frontend/bun.lock; do \
-      if grep -q 'ledger-v9' "$f"; then \
-        echo "FAIL: ${f} references ledger-v9; this repository targets the 1.x/v8 line" >&2; exit 1; \
+      if grep -q '"@midnightntwrk/ledger-v9"' "$f"; then \
+        echo "FAIL: ${f} depends on @midnightntwrk/ledger-v9; this repository targets the 1.x/v8 line" >&2; exit 1; \
       fi; \
     done
 

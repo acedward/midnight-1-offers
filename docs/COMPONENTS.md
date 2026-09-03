@@ -130,14 +130,22 @@ the node's `POST /v1/offers` pre-check is only a mirror of the same rule.
 
 Once `offerfiles` is also up, `shielded-night-token-name` registers sNight not just with a
 name but **priced**: `POST /v1/known-tokens` carries `asset_id: "midnight-3"` — the SAME
-CoinGecko reference native NIGHT itself is seeded against — and a `decimals` value read live
-off NIGHT's own row (not hard-coded: the kernel's *pricing-table* decimals, "base units per
-priced coin", is a different number from this contract's own on-chain *display* decimals,
-`SHIELDED_NIGHT_DECIMALS=6`; using the wrong one would misprice every sNight offer by up to
-10^6). One sNight is one wrapped NIGHT, so pricing it as a second unit of the same asset is not
-an approximation — it is the actual relationship, and `GET /v1/quote` for sNight↔NIGHT answers
-`market_rate: 1` as a result. `./verify.sh`'s `kernel` section asserts both the pricing and the
-quote when `shielded-night` is up.
+CoinGecko reference native NIGHT itself is seeded against — and `decimals: 6`, the literal
+constant (phase H2, question Q14). Earlier (phase G) this value was read LIVE off NIGHT's own
+kernel-pricing row instead of hard-coded, because the kernel's seed was WRONG at the time
+(registered NIGHT at 0, off by 10^6 against its real value — 1 NIGHT = 10^6 Stars). Kernel PR
+#60 (this project's own upstream fix) corrected the seed, so **6 is now correct by construction
+against the fixed seed**, not a guess — and this contract's own on-chain *display* decimals
+(`SHIELDED_NIGHT_DECIMALS=6`) happens to share the same value, though it remains a DIFFERENT
+convention (the kernel's *pricing-table* decimals is "base units per priced coin"; neither is
+read here any more). The one-shot still reads NIGHT's own row live and asserts it equals 6 —
+a LOUD failure, naming the `KERNEL_REF` pin, if a kernel re-pin or re-seed ever regresses it —
+rather than silently mirroring whatever NIGHT says. One sNight is one wrapped NIGHT, so pricing
+it as a second unit of the same asset is not an approximation — it is the actual relationship,
+and `GET /v1/quote` for sNight↔NIGHT answers `market_rate: 1` as a result. `./verify.sh`'s
+`kernel` section asserts NIGHT's decimals, sNight's decimals, the quote and NIGHT's per-base-
+unit price (against its seeded USD coin price / 10^6, as an exact decimal string) when
+`shielded-night` is up.
 
 **Defaults, and what stays true because of them:** `BATCHER_SPONSOR_POLICY=warn` and
 `BATCHER_SPONSOR_UNPRICED=allow` (upstream's own rollout defaults, kept here). Every sNight

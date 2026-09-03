@@ -45,10 +45,14 @@ them fails the build instead of producing a page that can never learn its addres
 
 Those changes are [`effectstream/shielded-night#9`](https://github.com/effectstream/shielded-night/pull/9),
 merged upstream on 2026-09-03 (`5902a90`). `SHIELDED_NIGHT_REF` is `main`'s head after the
-follow-up [#11](https://github.com/effectstream/shielded-night/pull/11), which filled in the
-PreProd contract address in `frontend/.env`. The earlier branch-head pin (`0b0a358`) is retired:
-a branch head is a temporary identity — the branch can be force-pushed, and the pin would then
-name bytes that exist on no branch at all.
+follow-ups [#11](https://github.com/effectstream/shielded-night/pull/11) (filled in the PreProd
+contract address in `frontend/.env`) and [#12](https://github.com/effectstream/shielded-night/pull/12)
+("00007-lockfile-and-allow-unlocked", phase H2 re-pin: both `bun.lock` files regenerated wholesale
+on bun 1.4.0, and `scripts/verify-deployment.ts` gained `--allow-unlocked`, which
+`images/shielded-night/entrypoint-verify.sh`'s `verify_keys()` now calls instead of parsing the
+script's stdout — see that file's own header comment). The earlier branch-head pin (`0b0a358`) is
+retired: a branch head is a temporary identity — the branch can be force-pushed, and the pin would
+then name bytes that exist on no branch at all.
 
 ## The 1.x line, asserted rather than assumed
 
@@ -99,18 +103,17 @@ so they are not interchangeable. `scripts/lib/compose_pins.py` binds each servic
 | `deploy` | `oven/bun:1.4.0` (digest-pinned) | the pinned tree and its **root** `node_modules`, for `entrypoint-deploy.sh` (deploy once per stack) and `entrypoint-verify.sh` (on-chain keys + the round trips). No SPA, no frontend `node_modules`. |
 
 **`build` and `deploy` are on bun 1.4.0, NOT the 1.3.11 the kernel and zswap-da images share (phase G,
-plan question Q13).** The pinned shielded-night tree's lockfiles were regenerated wholesale on bun
-1.4.0 by upstream shielded-night#12 ("00007-lockfile-and-allow-unlocked", Q11 -> A) once it merges,
-and bun 1.4 writes `"lockfileVersion": 2`, a format bun 1.3.11 cannot read at all — `bun install
---frozen-lockfile` would fail immediately with `error: Unknown lockfile version` rather than resolve
-a stale dependency. This IS forward-compatible before #12 merges too: `SHIELDED_NIGHT_REF` staying at
-a pre-#12 commit means the fetched tree still carries a `lockfileVersion: 1` lockfile, and bun 1.4.0
-installs a v1 lockfile without complaint (measured, both root and `frontend/`) — so the base image
-was moved in its own commit rather than deferred to the SHA that made it strictly necessary. This
-image is the ONLY one in this repository on bun 1.4: the kernel's deploy entrypoint and zswap-da's
-build both stay on 1.3.11, which is load-bearing there (bun 1.3.14+ breaks the kernel's
-`midnight-contract:deploy` with a graphql-tag/ESM `require()` error) and is unrelated to this tree's
-lockfile format.
+plan question Q13).** `BUN_BASE` moved to 1.4.0 in phase G, BEFORE `SHIELDED_NIGHT_REF` needed it:
+at that point the pinned tree (`main` @ `6d87db4`, pre-#12) still carried `lockfileVersion: 1`
+lockfiles, which bun 1.4.0 reads without complaint (measured, both root and `frontend/`) — so moving
+the base image ahead of the SHA that made it strictly necessary cost nothing. **Phase H2's re-pin
+to `main` after #12 is the commit that makes it load-bearing**: #12 regenerated both `bun.lock`
+files wholesale on bun 1.4.0 (Q11 -> A), and bun 1.4 writes `"lockfileVersion": 2`, a format bun
+1.3.11 cannot read at all — `bun install --frozen-lockfile` would fail immediately with `error:
+Unknown lockfile version` rather than resolve a stale dependency. This image is the ONLY one in
+this repository on bun 1.4: the kernel's deploy entrypoint and zswap-da's build both stay on
+1.3.11, which is load-bearing there (bun 1.3.14+ breaks the kernel's `midnight-contract:deploy`
+with a graphql-tag/ESM `require()` error) and is unrelated to this tree's lockfile format.
 
 Both dependency sets are installed in the build stage with `--frozen-lockfile`, and both are
 installed **deliberately**: the frontend imports the compiled contract from `../src/managed`,

@@ -43,7 +43,7 @@ services:
       target: 'deploy'
       args: &shielded_night_build_args
         SHIELDED_NIGHT_REPO: '${SHIELDED_NIGHT_REPO:-https://github.com/effectstream/shielded-night.git}'
-        SHIELDED_NIGHT_REF: '${SHIELDED_NIGHT_REF:-6d87db4b425341931f11856b93a453ee62c6ee08}'
+        SHIELDED_NIGHT_REF: '${SHIELDED_NIGHT_REF:-f7fcefa7921bf2c3f634871f9ad3aa3a32251af0}'
         # DELIBERATELY NOT OVERRIDABLE from the environment, exactly as compose/frontend.yml
         # pins 0.31.0. The pinned tree's own package.json runs `compact compile +0.31.1` and
         # the image asserts that line still says so, then recompiles and requires the output to
