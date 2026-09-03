@@ -8,6 +8,9 @@
 #   celestia    the offerfiles profile's DA devnet: producing blocks, blob round trip
 #   kernel      /v1/health/sync current, the book endpoints, batcher health
 #   frontend    the zswap-da SPA serves its assets and a browser-reachable /config.js
+#   shielded-night  the dApp serves, /config.js carries THIS stack's contract address, the 11
+#               circuits' ZK artifacts answer with binary, the on-chain verifier keys equal the
+#               served ones, and a funded wallet completes both NIGHT <-> sNight round trips
 #   solver      relay /tokens carries both dev colours, one connected solver, quote round trip
 #
 # Every optional section runs IF AND ONLY IF that profile's containers exist for this compose
@@ -23,6 +26,7 @@ CORE_ONLY=0
 CELESTIA_MODE=auto
 KERNEL_MODE=auto
 FRONTEND_MODE=auto
+SHIELDED_NIGHT_MODE=auto
 SOLVER_MODE=auto
 
 usage() {
@@ -38,6 +42,8 @@ Options:
   --no-kernel    skip the kernel section even if the service is up
   --frontend     require the frontend section (fail if the profile is not up)
   --no-frontend  skip the frontend section even if the profile is up
+  --shielded-night     require the shielded-night section (fail if the profile is not up)
+  --no-shielded-night  skip the shielded-night section even if the profile is up
   --solver       require the solver section (fail if the profile is not up)
   --no-solver    skip the solver section even if the profile is up
   -h, --help     this text
@@ -49,13 +55,15 @@ EOF
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --core-only)   CORE_ONLY=1; CELESTIA_MODE=off; KERNEL_MODE=off; FRONTEND_MODE=off; SOLVER_MODE=off; shift ;;
+    --core-only)   CORE_ONLY=1; CELESTIA_MODE=off; KERNEL_MODE=off; FRONTEND_MODE=off; SHIELDED_NIGHT_MODE=off; SOLVER_MODE=off; shift ;;
     --celestia)    CELESTIA_MODE=on;  shift ;;
     --no-celestia) CELESTIA_MODE=off; shift ;;
     --kernel)      KERNEL_MODE=on;    shift ;;
     --no-kernel)   KERNEL_MODE=off;   shift ;;
     --frontend)    FRONTEND_MODE=on;  shift ;;
     --no-frontend) FRONTEND_MODE=off; shift ;;
+    --shielded-night)    SHIELDED_NIGHT_MODE=on;  shift ;;
+    --no-shielded-night) SHIELDED_NIGHT_MODE=off; shift ;;
     --solver)      SOLVER_MODE=on;    shift ;;
     --no-solver)   SOLVER_MODE=off;   shift ;;
     -h|--help) usage; exit 0 ;;
@@ -263,6 +271,10 @@ if (( ! CORE_ONLY )); then
   run_section celestia celestia "$CELESTIA_MODE" scripts/verify-celestia.sh "./up.sh --with offerfiles"
   run_section kernel   kernel   "$KERNEL_MODE"   scripts/verify-kernel.sh   "./up.sh --with offerfiles"
   run_section frontend frontend "$FRONTEND_MODE" scripts/verify-frontend.sh "./up.sh --with frontend"
+  # The sentinel is the WEB service, not the deploy one-shot: the one-shot exits, and a stack
+  # whose page is gone but whose exited one-shot lingers must not report a passing section.
+  run_section shielded-night shielded-night "$SHIELDED_NIGHT_MODE" \
+    scripts/verify-shielded-night.sh "./up.sh --with shielded-night"
   run_section solver   solver   "$SOLVER_MODE"   scripts/verify-solver.sh   "./up.sh --with offerfiles --with solver"
 fi
 

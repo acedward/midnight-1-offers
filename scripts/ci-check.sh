@@ -199,6 +199,9 @@ info "env     ${CI_ENV_FILE}"
 CI_IMAGE_TAGS=(
   "${POSTGRES_IMAGE:-}" "${CELESTIA_IMAGE:-}" "${KERNEL_IMAGE:-}" "${FRONTEND_IMAGE:-}"
   "${SOLVER_IMAGE:-}" "${RELAY_IMAGE:-}" "${INTENTS_UI_IMAGE:-}"
+  # BOTH shielded-night tags: one build context, two runtime targets, two image names. Listing
+  # only one would leave the other behind and the teardown assertion would still say "clean".
+  "${SHIELDED_NIGHT_IMAGE:-}" "${SHIELDED_NIGHT_DEPLOY_IMAGE:-}"
 )
 
 # ── teardown, asserted ───────────────────────────────────────────────────────
