@@ -292,7 +292,12 @@ run_book_step() {  # run_book_step <label> <command...>
   return 1
 }
 book_field() {  # book_field <prefix> <key> — read key=value off the driver's result line
-  sed -n "s/^${1} .*${2}=\\([^ ]*\\).*$/\\1/p" "$BOOK_OUT" | head -1
+  # THE LEADING SPACE IS LOAD-BEARING. `.*` is greedy, so `.*nightBefore=` matches the LAST
+  # place that substring occurs — and `snightBefore=` CONTAINS `nightBefore=`. Without the
+  # space this read the sNight figures and printed them as NIGHT. The container's own
+  # assertions were unaffected (they are made there, on the real values), but a gate that
+  # prints the wrong numbers is exactly the kind of quiet wrongness a gate exists to prevent.
+  sed -n "s/^${1} .* ${2}=\\([^ ]*\\).*$/\\1/p" "$BOOK_OUT" | head -1
 }
 
 if ! service_present kernel; then
