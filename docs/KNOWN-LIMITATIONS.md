@@ -75,6 +75,21 @@ container facade. If a future profile wants it, give that profile its own seed �
 one a dedicated driver plus a NIGHT + DUST provisioning lane, which this repository still does
 not have (the 2.x sibling's `scripts/fund-wallet.sh` is the shape it would take).
 
+**A related timing note (measured, phase G, 2026-09-03):** the deploy one-shot's own
+DUST-paying transaction and the round trip's first DUST-paying transaction both come from
+`genesis-2`, back to back. Run `./verify.sh --shielded-night` (or `verify-shielded-night.sh`
+directly) TOO SOON after the stack finishes coming up, and the round trip can be rejected on
+chain with `1010: Invalid Transaction: Custom error: 196`
+(`DustDoubleSpend(DustNullifier(...))`, visible in `docker compose … logs node`) — a real
+on-chain rejection, not a flaky test, and it reproduces deterministically until enough time
+passes for `genesis-2`'s DUST to settle after the deploy. A few minutes' gap (which a
+bring-up that also builds the `frontend` profile gets for free) is enough; retrying the SAME
+`./verify.sh` invocation after a short pause resolves it. This is a property of chaining two
+DUST-spending actions on one wallet in quick succession — upstream's own test suite, and this
+repository's choice to reuse `genesis-2` for both roles (Q6 → D) — not something this profile's
+image or scripts can fix without either patching upstream (out of scope, Q2 → A) or adding a
+wait nobody asked for to every bring-up.
+
 ### The relay and the COW solver cannot quote an sNight pair
 
 The `solver` profile's COW solver quotes from inventory it actually holds, and its provisioning
@@ -98,6 +113,20 @@ the network dropdown lists both alongside *Local (undeployed)*. That file is ups
 image applies no patch, so the entries stay. Selecting either talks to that public network
 through your wallet and has nothing to do with this stack; nothing here can or should be
 transacted from a demo stack.
+
+### The demo faucet colours (DEVA/DEVB/DEVU) are, and stay, UNPRICED
+
+Kernel `main`'s sponsorship gate (PR #54/#56) prices offers against a reference-asset table.
+sNight is registered priced (`asset_id: midnight-3`, the same reference as native NIGHT — see
+`docs/COMPONENTS.md`), but DEVA/DEVB/DEVU — minted fresh on every clean redeploy, by colour —
+have no real-world reference asset and are deliberately left out of `PRICE_FEED_MAP`
+(`.env.example`): mapping them to a fabricated price would be worse than leaving them unpriced.
+
+This is only safe because the default policy is `BATCHER_SPONSOR_POLICY=warn` +
+`BATCHER_SPONSOR_UNPRICED=allow`. If a future change flips the policy to `enforce` WITHOUT also
+keeping `BATCHER_SPONSOR_UNPRICED=allow`, every offer using a demo colour — which is most of
+what this stack posts, including the `book` subsection's `WANT` leg — starts refusing with
+`422 NOT_SPONSORED`. This repository does not turn `enforce` on for exactly this reason.
 
 ### `undeployed` only
 

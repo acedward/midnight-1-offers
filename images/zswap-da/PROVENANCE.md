@@ -4,10 +4,10 @@
 
 The image fetches `templates/zswap-da` directly from
 [`effectstream/effectstream`](https://github.com/effectstream/effectstream) at the immutable
-commit `8d21ebe12c3e9b03da629b3eb486c381c33505a0` — the head of the
+commit `f20a38cfccd4f2dec5c886e5c8bb321712d37924` — the head of the
 [`midnight-1`](https://github.com/effectstream/effectstream/tree/midnight-1) branch, the line
 maintained for midnight-node 1.x / ledger-v8 / `@effectstream` 0.1xx — whose template subtree
-is `b22cf08d7d7e9f9b9e794a085c3e50fe342dde4d`. BOTH identities are verified before checkout —
+is `99b871f7aac2e8dc2b3a2172990f1a82bca13360`. BOTH identities are verified before checkout —
 the commit alone does not prove which bytes of it were extracted — and the resolved commit is
 recorded as `/.zswap-da-commit` inside the runtime image, so "what is in here?" never depends
 on remembering which tag it was built as. No third-party SPA source is stored in this
@@ -50,6 +50,18 @@ One function, `api.getMidnightConfig` in `src/services/api.ts`, was carried here
 **This image now applies no patch of any kind.** It asserts the pinned tree carries the fix
 (one marker per half, in the source and again in the emitted bundle) so a re-pin to a tree
 without it fails the build. The description below is of that upstream change.
+
+### Re-pin (phase G) to the branch head after #916
+
+`FRONTEND_REF` moved to `f20a38c` (from `8d21ebe`) for
+[effectstream#916](https://github.com/effectstream/effectstream/pull/916), "reference rate,
+offset and sponsorship threshold" — the SPA-side counterpart of kernel PR #54/#56 (seeded
+reference prices, `GET /v1/prices`, the sponsorship gate), letting the page show the threshold
+the kernel now warns/enforces on. The 20 commits between the two refs touch only
+`src/screens/{Market,Swap}.tsx` and new `src/state/{reference,format,usePrices}.ts` — no
+`package.json`, no `.compact` source, no build script, no `vite.config.ts` — so every assertion
+above was re-checked against the new subtree and holds verbatim, and the compactc 0.31.0
+toolchain this image pins separately is unaffected.
 
 The kernel's `GET /v1/midnight/config` reports the URIs **the kernel itself dials**. Inside
 Docker Compose those are service hostnames (`indexer`, `proof-server`) on a network no browser

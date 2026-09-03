@@ -168,15 +168,16 @@ load_env() {
   : "${PROOF_VERSION:=8.1.0}"
 
   # ── source pins (full 40-hex commit SHAs; see config/artifact-decisions.json) ─
-  # KERNEL_REF is on `feat/cow-solver`, NOT on `main`, and deliberately (Q13): the solver
-  # profile's two kernel routes — the websocket book-update stream and the exact-files read —
-  # exist only there, and without them the intents lane publishes nothing and settles nothing.
-  # It is a strict descendant of main and exactly one commit past SOLVER_REF, so the kernel and
-  # the solver in this stack are two views of ONE tree. Re-pin to main when kernel PR #48 lands.
+  # KERNEL_REF is `main` (re-pinned from `feat/cow-solver` in phase G, once kernel PR #48
+  # merged the whole solver line into it — `git merge-base --is-ancestor` confirms the old pin
+  # is an ancestor of this one, a pure fast-forward). SOLVER_REF below is UNCHANGED and stays a
+  # strict ancestor of this ref too, so the kernel and the solver in this stack are still two
+  # views of ONE tree. `main` also now carries the seeded reference-price service and the
+  # batcher sponsorship gate (kernel PR #54/#56) — see .env.example.
   : "${KERNEL_REPO:=https://github.com/effectstream/zswap-offerfiles-kernel.git}"
-  : "${KERNEL_REF:=773e70cb2f9d9583a01b8540231ae393ed8db207}"
+  : "${KERNEL_REF:=f92c7cacf0588a77c518658b6d6c4836f7b97cae}"
   : "${FRONTEND_REPO:=https://github.com/effectstream/effectstream.git}"
-  : "${FRONTEND_REF:=8d21ebe12c3e9b03da629b3eb486c381c33505a0}"
+  : "${FRONTEND_REF:=f20a38cfccd4f2dec5c886e5c8bb321712d37924}"
   : "${SOLVER_REPO:=https://github.com/effectstream/zswap-offerfiles-kernel.git}"
   : "${SOLVER_REF:=c37bfa68cb944d883f52af7fa8ea533896a34654}"
   # The Shielded NIGHT dApp. A first-party public repository already on this stack's 1.x line

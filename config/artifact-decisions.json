@@ -1,6 +1,6 @@
 {
   "schemaVersion": "artifact-decision-matrix-v2",
-  "pinsDigest": "42d5ec738c009d7434cfcd05abe6771c785001f60b135a7442496c0404e39119",
+  "pinsDigest": "368cf57e04757f3137510f29eaee6181080ed1d1dcc9dfe91aba44def51b96a4",
   "frozenOn": "2026-09-01",
   "note": "Frozen artifact-selection contract for every external dependency of this Midnight 1.x demo. Each field was re-derived from a live source on the freeze date. scripts/verify-artifact-decisions.sh enforces it offline. Do not edit a digest, SHA or hash to make a build pass: re-verify against the source first, then regenerate pinsDigest with --update-pins so the change is visible in review. Schema v2 differs from the 2.x sibling's v1 by adding `sources` (git-pinned source builds) and `toolchains`, and by replacing the warehouse proof-data generation with a pre-warm strategy.",
   "selectionOrder": [
@@ -227,37 +227,33 @@
       "role": "the offer-files kernel, batcher and contract-deploy one-shot — one image, three entrypoints",
       "acquisition": "anonymous-git-fetch",
       "repository": "https://github.com/effectstream/zswap-offerfiles-kernel.git",
-      "branch": "feat/cow-solver",
-      "ref": "773e70cb2f9d9583a01b8540231ae393ed8db207",
+      "branch": "main",
+      "ref": "f92c7cacf0588a77c518658b6d6c4836f7b97cae",
       "envVar": "KERNEL_REF",
-      "verifiedOn": "2026-09-01",
-      "reason": "The 1.x line: @effectstream/* 0.103.1, ledger-v8 8.1.0, mip-zswap-offer 0.3.0, contract pragma 'compact compile +0.30.0', /v1 API. NOT PINNED ON main, AND THAT IS A RECORDED DECISION (plan question Q13, resolved by the user 2026-09-01). The COW solver this repository runs in execution mode dials two kernel routes that main does not serve — GET /v1/offers/updates, the websocket book-update stream its mirror requires before it will publish any ladder, and POST /v1/offers/files, the exact-files read it uses to rebuild a maker's bytes at settlement — so on main the intents lane reaches all-healthy and quotes nothing. Measured, not predicted. This SHA is the merge commit of kernel PR #52 into feat/cow-solver.",
+      "verifiedOn": "2026-09-03",
+      "reason": "The 1.x line: @effectstream/* 0.103.1, ledger-v8 8.1.0, mip-zswap-offer 0.3.0, contract pragma 'compact compile +0.30.0', /v1 API. RE-PINNED TO main IN PHASE G: the reason the prior pin gave for staying off main — kernel PR #52's two routes (GET /v1/offers/updates, the websocket book-update stream the COW solver's mirror needs, and POST /v1/offers/files, the exact-files read it uses at settlement) were absent there — is now moot BY CONSTRUCTION: kernel PR #48 merged the whole feat/cow-solver line into main (measured: git merge-base --is-ancestor confirms the prior ref, 773e70cb…, is an ancestor of this one — a pure fast-forward of 20 commits, nothing lost). SOLVER_REF is unchanged and re-verified a strict ancestor of this ref too, so the images/cow-solver overlay (which reuses this image's compiled Compact artifacts) stays sound without moving. main also now carries kernel PR #54 (seeded reference asset prices, GET /v1/prices, a price-feed service — BREAKING the one-file schema; an existing stack's postgres volume must be wiped, ./down.sh -v) and PR #56 (the batcher's sponsorship gate, defaults BATCHER_SPONSOR_POLICY=warn / BATCHER_SPONSOR_UNPRICED=allow).",
       "supersededPin": {
-        "ref": "6c5ebabc3533147d9a5cd73a57c16175b2974266",
-        "branch": "main",
-        "reason": "The original P0 pin, and still the head of main. Kept here because the relationship is what makes this pin safe rather than a divergence."
+        "ref": "773e70cb2f9d9583a01b8540231ae393ed8db207",
+        "branch": "feat/cow-solver",
+        "reason": "The pin phase A through D′ built and shipped against: the merge commit of kernel PR #52 into feat/cow-solver, kept off main solely because main did not yet serve the solver's two routes. Superseded once kernel PR #48 merged feat/cow-solver into main, at which point staying off main stopped buying anything — kept here because the ancestry (git merge-base --is-ancestor 773e70cb… f92c7ca… exits 0) is what proves this re-pin drops nothing."
       },
       "provenance": {
-        "branch": "feat/cow-solver",
+        "branch": "main",
         "isBranchHead": true,
-        "mergeCommitOfPullRequest": 52,
-        "descendantOfMain": "6c5ebabc3533147d9a5cd73a57c16175b2974266",
-        "commitsBeyondSolverRef": 1,
-        "mainBoundPullRequest": 48,
-        "repinTo": "main, when kernel PR #48 merges — at which point this entry and spec FR-3 revert together"
+        "fulfilledPullRequest": 48,
+        "note": "mainBoundPullRequest from the prior entry — kernel PR #48, \"Merge pull request #48 from effectstream/feat/cow-solver\" — is the commit this ref now sits 20 commits beyond (PRs #53–#56 landed on top of it). repinTo is fulfilled: this entry now IS main, and stays main going forward rather than re-pinning to a branch again."
       },
       "$comment": [
-        "THE SOLVER PIN BELOW IS AN ANCESTOR OF THIS ONE, and that is the whole point: `git",
-        "merge-base` of `cow-solver` and this ref IS the solver ref, and this ref is exactly ONE",
-        "commit beyond it (the PR #52 merge). So the kernel image and the solver image in this",
-        "stack are two views of a single tree, which is what makes the images/cow-solver overlay",
-        "— reusing the kernel image's compiled Compact artifacts rather than compiling a second,",
-        "independent set — sound rather than merely convenient. SOLVER_REF is therefore left",
-        "exactly as it was; it does not need to move with this pin.",
+        "THE SOLVER PIN BELOW IS STILL AN ANCESTOR OF THIS ONE, re-verified for this re-pin: `git",
+        "merge-base --is-ancestor <SOLVER_REF> f92c7ca…` exits 0, so the kernel image and the solver image",
+        "in this stack remain two views of a single tree and SOLVER_REF does not need to move with this pin.",
         "",
-        "It is also a strict DESCENDANT of main (`git merge-base` with main IS main's head), so",
-        "nothing main carries is lost — the branch only adds. Verified against the remote",
-        "2026-09-01."
+        "Ancestry gate run 2026-09-03 in the read-only reference clone, after `git fetch origin --prune`,",
+        "confirming f92c7ca… is origin/main's actual head (subject: \"Merge pull request #56 from",
+        "effectstream/00005-token-price-service-a-feed\"):",
+        "  * SOLVER_REF is a strict ancestor of the new KERNEL_REF (21 commits behind) — unaffected.",
+        "  * the prior KERNEL_REF (773e70cb…) is an ancestor of the new one, and IS its own merge-base with",
+        "    it — a pure fast-forward of 20 commits, nothing the prior pin carried is lost."
       ]
     },
     {
@@ -265,25 +261,28 @@
       "role": "the zswap-da trading SPA, built from a frozen upstream template subtree",
       "acquisition": "anonymous-git-fetch",
       "repository": "https://github.com/effectstream/effectstream.git",
-      "ref": "8d21ebe12c3e9b03da629b3eb486c381c33505a0",
+      "ref": "f20a38cfccd4f2dec5c886e5c8bb321712d37924",
       "subtree": "templates/zswap-da",
-      "subtreeSha": "b22cf08d7d7e9f9b9e794a085c3e50fe342dde4d",
+      "subtreeSha": "99b871f7aac2e8dc2b3a2172990f1a82bca13360",
       "envVar": "FRONTEND_REF",
-      "verifiedOn": "2026-09-01",
-      "reason": "The head of effectstream's `midnight-1` branch — the line the owner maintains for midnight-node 1.x / ledger-v8 / @effectstream 0.1xx (Q14, user decision 2026-09-01). At this ref the template is v8-native in BOTH lanes: contract (ledger-v8 8.1.0, midnight-js 4.1.1, compact-js 2.5.1) and wallet (@effectstream/{midnight-contracts,wallets} 0.104.0, whose closure carries no ledger-v9), and since effectstream#912 (merged 2026-09-02) it also carries the browser-network URI fix at api.getMidnightConfig — so this repository applies NO patch at all: no ledger-v9.patch stage, no dependency patch, no URI patch; the build only asserts the fix is present. The subtree SHA is recorded separately and verified during the build, because the commit alone does not prove which bytes of it were extracted.",
+      "verifiedOn": "2026-09-03",
+      "reason": "The head of effectstream's `midnight-1` branch — the line the owner maintains for midnight-node 1.x / ledger-v8 / @effectstream 0.1xx (Q14, user decision 2026-09-01). At this ref the template is still v8-native in BOTH lanes: contract (ledger-v8 8.1.0, midnight-js 4.1.1, compact-js 2.5.1) and wallet (@effectstream/{midnight-contracts,wallets} 0.104.0, whose closure carries no ledger-v9), and it still carries the browser-network URI fix at api.getMidnightConfig (effectstream#912) — so this repository applies NO patch at all, exactly as before. RE-PINNED IN PHASE G to the branch head after effectstream#916 (\"reference rate, offset and sponsorship threshold\", the frontend counterpart of kernel PR #54/#56), which touches only src/screens/{Market,Swap}.tsx and new src/state/{reference,format,usePrices}.ts — no package.json, no .compact source, no build script — so every assertion above was re-checked against the new subtree and holds verbatim. The subtree SHA is recorded separately and verified during the build, because the commit alone does not prove which bytes of it were extracted.",
       "provenance": {
         "branch": "midnight-1",
         "supersededRefs": [
           "9474871185fd1b2704a9487718eee9d88c4f8edc",
-          "332503c8f9216143a8c805f2a0acbcfd39e5a21d"
+          "332503c8f9216143a8c805f2a0acbcfd39e5a21d",
+          "8d21ebe12c3e9b03da629b3eb486c381c33505a0"
         ],
         "supersededSubtreeShas": [
           "af6023edf0d79269457adfaf17d09c9ebd301698",
-          "1f63d7eedc9a8aff729b7fe026486cb89cb618de"
+          "1f63d7eedc9a8aff729b7fe026486cb89cb618de",
+          "b22cf08d7d7e9f9b9e794a085c3e50fe342dde4d"
         ],
         "upstreamedFix": "effectstream/effectstream#912 — browser-network URIs (api.getMidnightConfig), merged 2026-09-02, the last patch this image carried",
         "forkPoint": "b267fa2e795fcd1bd8e295d4d9b8eb65814b11ee",
-        "identityProof": "Subtree b22cf08d = af6023ed (9474871, byte-identical to the frozen ref 332503c8 plus the retired effectstream-1x-line.patch: package.json blob 822bd218…, bun.lock blob 1099e6f6…) + effectstream#912, which changes only src/services/api.ts by the same +32 lines the retired browser-network-urls.patch applied. Verified 2026-09-01/02."
+        "identityProof": "Subtree b22cf08d = af6023ed (9474871, byte-identical to the frozen ref 332503c8 plus the retired effectstream-1x-line.patch: package.json blob 822bd218…, bun.lock blob 1099e6f6…) + effectstream#912, which changes only src/services/api.ts by the same +32 lines the retired browser-network-urls.patch applied. Verified 2026-09-01/02.",
+        "repinnedFor": "effectstream#916 (phase G, 2026-09-03) — port(zswap-da): reference rate, offset and sponsorship threshold"
       },
       "$comment": "Upstream templates/** on main is FROZEN by effectstream 00016 FR-10; the midnight-1 branch is the 1.x line's own. Nothing in this repository pushes to either — the pin is read-only."
     },

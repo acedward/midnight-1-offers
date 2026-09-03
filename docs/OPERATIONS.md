@@ -1,7 +1,37 @@
 # Operations
 
-> **Scope.** This file currently documents the **`shielded-night`** profile only. Operating
-> notes for the other profiles land with 00005 P6.
+> **Scope.** This file currently documents the **`shielded-night`** profile only, plus the one
+> `offerfiles`-profile note below that this phase's kernel re-pin makes unavoidable for anyone
+> running the book chain. The rest of the `offerfiles` profile's operating notes land with
+> 00005 P6.
+
+## Upgrading past the kernel re-pin to `main` (phase G) — BREAKING for an EXISTING stack
+
+`KERNEL_REF` now pins `zswap-offerfiles-kernel` `main`, which carries kernel PR #54's seeded
+reference-price tables (`asset_prices`, `price_feed_status`, two new `known_tokens` columns).
+The kernel's schema is **one file, applied fresh** (`packages/database/migrations/000-init.sql`,
+no `IF NOT EXISTS` anywhere) — there is no migration runner and nothing here adds one. An
+**existing** stack's shared `postgres` volume still holds the OLD shape and the kernel will
+fail loudly against it rather than silently degrade.
+
+**The fix is `./down.sh -v`.** On a devnet — which is what this repository ever runs — that is
+the correct and only upgrade path: the offer book, the Celestia history and the deployed
+contracts are all projections of the same chain that command already wipes, so wiping the
+Postgres schema alongside them loses nothing an operator was relying on. There is no
+in-place-upgrade lane, and none is planned — a fresh chain always gets a fresh schema together.
+
+```sh
+./down.sh -v                                        # wipes the chain, Celestia, and the DB schema together
+./up.sh --with offerfiles --with shielded-night      # fresh contracts, fresh schema, re-run the token-name one-shot
+```
+
+If you skip this and bring an old volume forward, `kernel`'s healthcheck fails and its logs
+name the missing table/column rather than starting degraded.
+
+The batcher's new **sponsorship gate** (`BATCHER_SPONSOR_POLICY=warn`,
+`BATCHER_SPONSOR_UNPRICED=allow` by default) and the standalone price-feed refresh service
+(**not run** by this repository — the seeded reference prices are enough offline) are covered
+in `docs/COMPONENTS.md`'s "sNight is a PRICED asset" section.
 
 ## Bringing the `shielded-night` profile up
 
@@ -108,11 +138,15 @@ performs real proofs; upstream's own timeout for each test is ten minutes.
 | `SNIGHT_BOOK_WANT_KEY` | `shieldedA` | book chain: which minted colour to ask for — `shieldedA` is DEVA, `shieldedB` is DEVB |
 | `SNIGHT_BOOK_TAKER_SEED` | `e2e-taker` (`0x…0032`) | book chain: the wallet that takes the offer. Empty at genesis; the chain funds it |
 | `SNIGHT_BOOK_FUNDER_SEED` | `genesis-1` | book chain: funds the taker. It is the faucet **and** the wallet the demo colours were minted to, so it is the only wallet that can hand the taker the token the offer demands |
+| `SHIELDED_NIGHT_SKIP_BOOK` | unset (`0`) | `1`/`true` skips the WHOLE book-chain subsection (below) — not the round trips above it, which always run. For a gate on a time budget that still wants `offerfiles`+`shielded-night` wired together (compose renders, the cross-profile one-shot fires, the sNight pricing and quote are still checked from `verify-kernel.sh`) without paying the book chain's own ~12–20 min of proving |
 
 ## The book chain (`./verify.sh`, `book` subsection)
 
 It runs **only** when the `offerfiles` profile is up; otherwise the section prints a SKIP and
-the rest of the shielded-night assertions still run. Bring both up with:
+the rest of the shielded-night assertions still run. `SHIELDED_NIGHT_SKIP_BOOK=1` skips it
+unconditionally even when `offerfiles` IS up (see the Knobs table) — for a gate that wants
+everything ELSE this subsection depends on (the cross-profile registration, the sNight pricing)
+without its own ~12–20 min of proving. Bring both up with:
 
 ```sh
 ./up.sh --with offerfiles --with shielded-night

@@ -271,8 +271,26 @@ fi
 # wrap and unwrap use the shielded-night image (the pinned tree, its node_modules and the
 # compiled keys), the offer and the take use the kernel image (the MIP-0005 codec and the
 # wallet facade). This script only sequences them and owns the verdict.
+#
+# SHIELDED_NIGHT_SKIP_BOOK=1 skips this WHOLE subsection (phase G) — a proving-heavy ~10-15 min
+# chain (five on-chain steps: wrap, post, list, take, unwrap), distinct from the two round
+# trips above (~10 min, ALWAYS run — they are what actually prove the contract works). It
+# exists for a gate under a hard time budget that still wants offerfiles+shielded-night wired
+# together (compose renders, the cross-profile one-shot fires, the round trips pass) without
+# paying for the book chain's own proving time. Not a silent default: it prints why it skipped.
 echo
 log "shielded-night: the book chain (NIGHT -> sNight -> an sNight offer file)"
+
+if [[ "${SHIELDED_NIGHT_SKIP_BOOK:-}" == "true" || "${SHIELDED_NIGHT_SKIP_BOOK:-}" == "1" ]]; then
+  info "SKIP (SHIELDED_NIGHT_SKIP_BOOK=${SHIELDED_NIGHT_SKIP_BOOK}) — the round trips above already proved the contract; the book chain itself was not run"
+  echo
+  if (( FAILURES == 0 )); then
+    ok "shielded-night assertions passed"
+    exit 0
+  fi
+  err "${FAILURES} shielded-night assertion(s) failed"
+  exit 1
+fi
 
 BOOK_OUT="$(mktemp)"
 trap 'rm -f "$BODY" "$HEADERS" "$BOOK_OUT"' EXIT
@@ -343,6 +361,44 @@ else
     # match a name registered on some other colour.
     if printf '%s' "$KNOWN" | tr '{' '\n' | grep -Eqi "(${SNIGHT_COLOR}.*snight|snight.*${SNIGHT_COLOR})"; then
       ok "GET /v1/known-tokens names this colour sNight"
+
+      # ── priced, not just named (phase G) ─────────────────────────────────────
+      # The registration one-shot reads NIGHT's own kernel-pricing decimals and reuses it (see
+      # images/shielded-night/entrypoint-token-name.sh for why: it is NOT the same number as
+      # this dApp's own SHIELDED_NIGHT_DECIMALS=6, which is the contract's DISPLAY decimals).
+      # So this assertion checks CONSISTENCY with NIGHT's own row, never a hard-coded digit —
+      # a kernel re-seed that changed NIGHT's decimals would change sNight's expected value
+      # right along with it.
+      SNIGHT_RECORD="$(printf '%s' "$KNOWN" | tr '{' '\n' | grep -Ei "${SNIGHT_COLOR}" | head -1)"
+      NIGHT_RECORD="$(printf '%s' "$KNOWN" | tr '{' '\n' | grep -E '"token_color":"0{64}"' | head -1)"
+      SNIGHT_DECIMALS="$(printf '%s' "$SNIGHT_RECORD" | sed -n 's/.*"decimals":\([0-9]\+\).*/\1/p' | head -1)"
+      NIGHT_DECIMALS="$(printf '%s' "$NIGHT_RECORD" | sed -n 's/.*"decimals":\([0-9]\+\).*/\1/p' | head -1)"
+      if [[ -n "$SNIGHT_DECIMALS" && -n "$NIGHT_DECIMALS" && "$SNIGHT_DECIMALS" == "$NIGHT_DECIMALS" ]]; then
+        ok "sNight is registered at ${SNIGHT_DECIMALS} decimals — the same as NIGHT's own row"
+      else
+        fail "sNight decimals (${SNIGHT_DECIMALS:-none}) != NIGHT decimals (${NIGHT_DECIMALS:-none}) — GET /v1/quote will not be ~1:1"
+        BOOK_FAILED=1
+      fi
+      if printf '%s' "$SNIGHT_RECORD" | grep -q '"asset_id":"midnight-3"'; then
+        ok "sNight is priced against midnight-3 (NIGHT's own reference asset)"
+      else
+        fail "sNight's known-tokens row carries no asset_id=midnight-3: ${SNIGHT_RECORD:0:200}"
+        BOOK_FAILED=1
+      fi
+
+      # ── the quote itself, not just the ingredients ────────────────────────────
+      # market_rate is pf/pt BEFORE any sponsorship discount is applied, so this is the real
+      # price ratio the registration produced, not an artefact of the 2.5% default haircut
+      # `suggested_to_amount` would otherwise bake in. Same asset, same decimals => the two
+      # sides resolve to the SAME price-per-base-unit, and IEEE754 X/X is exactly 1 — so the
+      # JSON literal is checked for, not approximated.
+      QUOTE="$(curl -fsS --max-time 20 "${KERNEL_URL}/v1/quote?from_token=${SNIGHT_COLOR}&to_token=0000000000000000000000000000000000000000000000000000000000000000&from_amount=1000000" 2>/dev/null || true)"
+      if printf '%s' "$QUOTE" | grep -q '"market_rate":1[,}]'; then
+        ok "GET /v1/quote sNight->NIGHT market_rate is exactly 1 — the same asset, priced the same way"
+      else
+        fail "GET /v1/quote sNight->NIGHT is not ~1:1: ${QUOTE:0:300}"
+        BOOK_FAILED=1
+      fi
     else
       fail "the kernel's token registry does not name ${SNIGHT_COLOR} sNight — the one-shot did not run, or the registry is disabled"
       BOOK_FAILED=1
