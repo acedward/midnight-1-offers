@@ -183,7 +183,7 @@ load_env() {
   # (ledger-v8 8.1.0 / midnight-js 4.1.1 / compact-runtime 0.16.0), so nothing here is
   # patched — see config/artifact-decisions.json -> sources[shielded-night].
   : "${SHIELDED_NIGHT_REPO:=https://github.com/effectstream/shielded-night.git}"
-  : "${SHIELDED_NIGHT_REF:=0b0a3580e2645c37dd0bc7987b0f3c244f63c145}"
+  : "${SHIELDED_NIGHT_REF:=6d87db4b425341931f11856b93a453ee62c6ee08}"
   # The relay/intents-UI pin. There is deliberately no *_REPO for it: the source is private
   # and is never fetched by this repository. RELAY_SOURCE_DIR names the operator's own
   # clone, and assert_relay_source() below verifies that clone is at exactly this commit.
@@ -238,10 +238,27 @@ load_env() {
   # shielded-night's own scripts default to genesis-1 on `undeployed`, so this is stated
   # explicitly here and the deploy entrypoint REFUSES that seed rather than trusting the env.
   : "${SHIELDED_NIGHT_WALLET_SEED:=0000000000000000000000000000000000000000000000000000000000000002}"
-  # The verify round trip's DRIVER, distinct from the deployer (spec FR-011). Defaults to the
-  # `lace-test` seed: measured genesis-funded and DUST-registered on this line, and held open
-  # by no container facade in any profile. See wallets/wallets.json and project 00007 Q6.
-  : "${SHIELDED_NIGHT_DRIVER_SEED:=a51c86de32d0791f7cffc3bdff1abd9bb54987f0ed5effc30c936dddbb9afd9d530c8db445e4f2d3ea42a321b260e022aadf05987c9a67ec7b6b6ca1d0593ec9}"
+  # The verify round trip's DRIVER, and the sNight MAKER in the book chain. genesis-2 — the
+  # SAME seed as the deployer, on purpose (project 00007 question Q6, owner decision D; spec
+  # FR-011 amended): the deploy one-shot is `restart: "no"` and has exited before anything
+  # reads contract.json, so the two facades never coexist. It used to default to `lace-test`,
+  # which cost the operator a rule ("do not verify while Lace is connected"); that rule is
+  # gone. See wallets/wallets.json and docs/KNOWN-LIMITATIONS.md.
+  : "${SHIELDED_NIGHT_DRIVER_SEED:=0000000000000000000000000000000000000000000000000000000000000002}"
+  # ── the book chain (./verify.sh's `book` subsection; needs the offerfiles profile) ────
+  # How much NIGHT is wrapped, and the offer the wrapped sNight is then posted as. The taker
+  # receives the sNight as ONE coin worth exactly SNIGHT_BOOK_AMOUNT, which is what lets the
+  # unwrap step burn it whole (convertToUnshielded consumes one coin, never part of one).
+  : "${SNIGHT_BOOK_AMOUNT:=1000000}"
+  : "${SNIGHT_BOOK_WANT_AMOUNT:=750000}"
+  # Which minted demo colour the sNight offer asks for. `shieldedA` is DEVA, `shieldedB` DEVB;
+  # both are minted by the offerfiles deploy one-shot and named by its token-names one-shot.
+  : "${SNIGHT_BOOK_WANT_KEY:=shieldedA}"
+  # The taker, and the wallet that funds it. e2e-taker starts empty at genesis (measured), so
+  # the chain provisions it from the faucet wallet — which is also the wallet the demo colours
+  # were minted to, and therefore the only one that can hand it the token the offer demands.
+  : "${SNIGHT_BOOK_TAKER_SEED:=${TAKER_SEED:-0000000000000000000000000000000000000000000000000000000000000032}}"
+  : "${SNIGHT_BOOK_FUNDER_SEED:=${MIDNIGHT_GENESIS_SEED:-0000000000000000000000000000000000000000000000000000000000000001}}"
   : "${SHIELDED_NIGHT_NAME:=Shielded Night}"
   : "${SHIELDED_NIGHT_SYMBOL:=sNight}"
   : "${SHIELDED_NIGHT_DECIMALS:=6}"
@@ -274,6 +291,8 @@ load_env() {
          KERNEL_REPO KERNEL_REF FRONTEND_REPO FRONTEND_REF \
          SHIELDED_NIGHT_REPO SHIELDED_NIGHT_REF \
          SHIELDED_NIGHT_WALLET_SEED SHIELDED_NIGHT_DRIVER_SEED \
+         SNIGHT_BOOK_AMOUNT SNIGHT_BOOK_WANT_AMOUNT SNIGHT_BOOK_WANT_KEY \
+         SNIGHT_BOOK_TAKER_SEED SNIGHT_BOOK_FUNDER_SEED \
          SHIELDED_NIGHT_NAME SHIELDED_NIGHT_SYMBOL SHIELDED_NIGHT_DECIMALS \
          SHIELDED_NIGHT_LOCK SHIELDED_NIGHT_WAIT_TIMEOUT \
          SOLVER_REPO SOLVER_REF RELAY_REF RELAY_SOURCE_DIR \

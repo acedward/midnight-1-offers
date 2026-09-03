@@ -43,7 +43,7 @@ services:
       target: 'deploy'
       args: &shielded_night_build_args
         SHIELDED_NIGHT_REPO: '${SHIELDED_NIGHT_REPO:-https://github.com/effectstream/shielded-night.git}'
-        SHIELDED_NIGHT_REF: '${SHIELDED_NIGHT_REF:-0b0a3580e2645c37dd0bc7987b0f3c244f63c145}'
+        SHIELDED_NIGHT_REF: '${SHIELDED_NIGHT_REF:-6d87db4b425341931f11856b93a453ee62c6ee08}'
         # DELIBERATELY NOT OVERRIDABLE from the environment, exactly as compose/frontend.yml
         # pins 0.31.0. The pinned tree's own package.json runs `compact compile +0.31.1` and
         # the image asserts that line still says so, then recompiles and requires the output to
@@ -171,11 +171,51 @@ services:
       - 'shielded-night-deploy:/srv/shielded-night:ro'
     environment:
       <<: *shielded_night_env
-      # THE DRIVER WALLET, and it must not be the deployer's (spec FR-011) — the entrypoint
-      # refuses both that and the genesis-1 seed. Defaults to `lace-test`, the only remaining
-      # genesis-funded, DUST-registered seed on this line that no container facade holds open.
-      # See wallets/wallets.json and project 00007 question Q6.
-      SHIELDED_NIGHT_DRIVER_SEED: '${SHIELDED_NIGHT_DRIVER_SEED:-a51c86de32d0791f7cffc3bdff1abd9bb54987f0ed5effc30c936dddbb9afd9d530c8db445e4f2d3ea42a321b260e022aadf05987c9a67ec7b6b6ca1d0593ec9}'
+      # THE DRIVER WALLET — genesis-2, THE SAME SEED AS THE DEPLOYER, on purpose (project
+      # 00007 question Q6, owner decision D; spec FR-011 amended). The hazard
+      # wallets/wallets.json documents needs two CONCURRENT facades on one seed, and there is
+      # never a second one here: `shielded-night-deploy` is `restart: "no"` and has exited
+      # before anything runs this service. What it buys is that the profile no longer touches
+      # `lace-test`, so an operator's browser session can no longer collide with `./verify.sh`.
+      # The entrypoint still REFUSES the genesis-1 seed, which is the one that would take a
+      # long-lived facade (the kernel, the batcher, the faucet) offline.
+      SHIELDED_NIGHT_DRIVER_SEED: '${SHIELDED_NIGHT_DRIVER_SEED:-0000000000000000000000000000000000000000000000000000000000000002}'
+
+  # ── shielded-night-token-name ──────────────────────────────────────────────
+  # NEVER STARTED BY `up.sh` EITHER, and for a sharper reason than the verify service: it is
+  # the ONE service in this profile that knows the offer-files kernel exists, and this profile
+  # must depend only on `core` (spec FR-002/FR-015).
+  #
+  # It cannot express "depend on the kernel if there is one": compose REJECTS a `depends_on`
+  # naming a service no selected fragment defines — even with `required: false` — and with
+  # `./up.sh --with shielded-night` alone there is no `kernel` service at all. MEASURED on
+  # compose v5.4.0: `service "x" depends on undefined service "kernel": invalid compose project`.
+  #
+  # So the ordering lives in the caller, where the information is: `up.sh` runs this with
+  # `docker compose run --rm --no-deps` AFTER the kernel is healthy, and only when
+  # `service_present kernel` — its existing test for "the offerfiles profile is up". Run
+  # against a network with no kernel, the entrypoint says so in one line and exits 0.
+  shielded-night-token-name:
+    image: '${SHIELDED_NIGHT_DEPLOY_IMAGE:-midnight-1-offers/shielded-night-deploy:local}'
+    build:
+      context: '../images/shielded-night'
+      target: 'deploy'
+      args: *shielded_night_build_args
+    entrypoint: ['/usr/local/bin/entrypoint-token-name.sh']
+    restart: 'no'
+    deploy:
+      replicas: 0
+    volumes:
+      - 'shielded-night-deploy:/srv/shielded-night:ro'
+    environment:
+      <<: *shielded_night_env
+      # The kernel's own dev name registry. Hard-coded like every other cross-service URL here:
+      # it is a compose service name on this project's network, not an operator knob, and a
+      # parameterised one could silently point two consumers at different kernels.
+      KERNEL_API_URL: 'http://kernel:9999'
+      # The label the book shows. Defaults to the wrapper's own sealed symbol so the two cannot
+      # drift; the kernel stores it upper-cased (SNIGHT), which is its normalisation, not ours.
+      SHIELDED_NIGHT_TOKEN_NAME: '${SHIELDED_NIGHT_SYMBOL:-sNight}'
 
 volumes:
   # Declared here rather than created ad hoc: only a compose-created volume carries the

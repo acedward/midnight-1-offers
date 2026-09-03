@@ -341,6 +341,26 @@ if (( ! FAILED )) && [[ " $PROFILES " == *" shielded-night "* ]] && service_pres
     fi
   fi
 fi
+# ── the ONE cross-profile step in this stack, and it lives here on purpose ──
+# When BOTH `offerfiles` and `shielded-night` are up, the kernel's dev token registry is told
+# what the sNight colour is called. It cannot be a compose dependency in either direction:
+# `shielded-night` must work with nothing but core (spec FR-002), and compose rejects a
+# `depends_on` — even `required: false` — that names a service the selected fragments do not
+# define. The information "is there a kernel?" exists HERE and nowhere else, so the one-shot is
+# `deploy: { replicas: 0 }` and is invoked explicitly, after both profiles are healthy.
+#
+# NON-FATAL BY DESIGN. A colour without a friendly name is a cosmetic gap: the offer book, the
+# page and every round trip work exactly the same. Failing a whole bring-up over a label would
+# be the wrong trade, so this warns. `./verify.sh`'s book subsection is what asserts it.
+if (( ! FAILED )) \
+   && [[ " $PROFILES " == *" shielded-night "* ]] && [[ " $PROFILES " == *" offerfiles "* ]] \
+   && service_present shielded-night && service_present kernel; then
+  log "registering the sNight colour with the offer-files token registry"
+  if ! dc run --rm --no-deps -T shielded-night-token-name; then
+    warn "could not name the sNight colour in the kernel registry — the book will show it as raw hex"
+    info "(nothing else is affected; ./verify.sh --shielded-night reports it too)"
+  fi
+fi
 if (( ! FAILED )) && [[ " $PROFILES " == *" solver "* ]] && service_present relay; then
   wait_compose_healthy relay "$RELAY_WAIT_TIMEOUT" || FAILED=1
 fi

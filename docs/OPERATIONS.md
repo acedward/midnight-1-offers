@@ -99,10 +99,39 @@ performs real proofs; upstream's own timeout for each test is ten minutes.
 | `SHIELDED_NIGHT_REPO` | the public repo URL | source of that commit |
 | `SHIELDED_NIGHT_IMAGE` / `SHIELDED_NIGHT_DEPLOY_IMAGE` | `midnight-1-offers/shielded-night{,-deploy}:local` | one build context, two runtime targets, two tags |
 | `SHIELDED_NIGHT_WALLET_SEED` | `genesis-2` | the deployer. **The genesis-1 seed is refused outright** (see `docs/WALLETS.md`) |
-| `SHIELDED_NIGHT_DRIVER_SEED` | the `lace-test` seed | the verify round trip's wallet; must differ from the deployer's |
+| `SHIELDED_NIGHT_DRIVER_SEED` | `genesis-2` (`0x…0002`) | the verify round trip's wallet, and the sNight maker in the book chain. Same seed as the deployer on purpose — that one-shot has exited by then (Q6 → D) |
 | `SHIELDED_NIGHT_NAME` / `_SYMBOL` / `_DECIMALS` | `Shielded Night` / `sNight` / `6` | sealed into the contract at deploy; they cannot be changed afterwards |
 | `SHIELDED_NIGHT_LOCK` | `false` | see below |
 | `SHIELDED_NIGHT_WAIT_TIMEOUT` | `600` | how long the web container waits for `contract.json` before failing |
+| `SNIGHT_BOOK_AMOUNT` | `1000000` | book chain: how much NIGHT is wrapped, and the size of the sNight leg of the offer. The taker receives it as ONE coin worth exactly this, which is what lets the unwrap step burn it whole |
+| `SNIGHT_BOOK_WANT_AMOUNT` | `750000` | book chain: how much of the demo colour the offer asks for |
+| `SNIGHT_BOOK_WANT_KEY` | `shieldedA` | book chain: which minted colour to ask for — `shieldedA` is DEVA, `shieldedB` is DEVB |
+| `SNIGHT_BOOK_TAKER_SEED` | `e2e-taker` (`0x…0032`) | book chain: the wallet that takes the offer. Empty at genesis; the chain funds it |
+| `SNIGHT_BOOK_FUNDER_SEED` | `genesis-1` | book chain: funds the taker. It is the faucet **and** the wallet the demo colours were minted to, so it is the only wallet that can hand the taker the token the offer demands |
+
+## The book chain (`./verify.sh`, `book` subsection)
+
+It runs **only** when the `offerfiles` profile is up; otherwise the section prints a SKIP and
+the rest of the shielded-night assertions still run. Bring both up with:
+
+```sh
+./up.sh --with offerfiles --with shielded-night
+./verify.sh --shielded-night
+```
+
+Five steps, all in containers built from this stack's own images (no host `bun`, no host
+`node`): wrap → post a real MIP-0005 offer file → find it in the book on the sNight colour →
+take and settle it from a second wallet → unwrap what that wallet bought.
+
+**Budget 12–20 minutes for it on a cold stack**, on top of the round trips. Seven real proofs
+happen in it: the wrap, the offer, three funding transactions for the taker (NIGHT, the DUST
+registration, the demanded token), the settlement, and the unwrap. Nothing here is
+parallelisable — a wallet that submits twice before the first transaction confirms is rejected
+outright (`1010: Custom error: 170`), which is why each funding step is retried rather than
+pipelined.
+
+The chain is re-runnable on a live stack: each run wraps fresh NIGHT and posts a new offer, and
+the taker keeps the change from the previous run's demanded token.
 
 ## `SHIELDED_NIGHT_LOCK` — a one-way door
 
@@ -128,4 +157,7 @@ through by accident.
 | the one-shot exits 78 with `missing required environment` | the fragment was rendered without `compose/shielded-night.yml`'s `environment:` block — usually a hand-built `docker compose` invocation rather than `./up.sh`. |
 | the page loads but the network dropdown shows only *Preview* | `/config.js` was not served or carried no address. `curl http://127.0.0.1:${SHIELDED_NIGHT_HOST_PORT}/config.js`. |
 | the page says the wallet does not support dApp proving | the connected wallet has no `getProvingProvider`. See `docs/KNOWN-LIMITATIONS.md`. |
-| `verify.sh` reports the round trip failed on a wallet that never syncs | something else is holding a facade on the driver seed — most often a Lace session on `lace-test`. See `docs/KNOWN-LIMITATIONS.md`. |
+| `verify.sh` reports the round trip failed on a wallet that never syncs | something else is holding a facade on the driver seed (`genesis-2` by default). Nothing in this repository does — check for a hand-started container or script of your own. See `docs/KNOWN-LIMITATIONS.md`. |
+| the book subsection fails at step 0 with "the kernel's token registry does not name … sNight" | the `shielded-night-token-name` one-shot did not run (the profiles were brought up separately, so `up.sh` never saw both) or `ENABLE_TOKEN_REGISTRY` did not reach the kernel as the literal string `true`. Re-run `./up.sh --with offerfiles --with shielded-night`, or `docker compose … run --rm --no-deps shielded-night-token-name`. |
+| the book subsection fails at step 4 with "no live offer gives …" | the offer expired (`TTL_MINUTES`, 120 by default) or a previous run already consumed it. Re-run the section; step 2 posts a fresh one each time. |
+| the book subsection fails with `1010: Invalid Transaction: Custom error: 170` after every retry | the funder wallet is submitting faster than the chain confirms. It is retried 8 times, 15 s apart; if it still fails, the node is not producing blocks — check `docker compose … logs node`. |

@@ -40,7 +40,7 @@ ARG BUN_BASE=oven/bun:1.3.11@sha256:0733e50325078969732ebe3b15ce4c4be5082f18c4ac
 ARG NGINX_BASE=nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10
 
 ARG SHIELDED_NIGHT_REPO=https://github.com/effectstream/shielded-night.git
-ARG SHIELDED_NIGHT_REF=0b0a3580e2645c37dd0bc7987b0f3c244f63c145
+ARG SHIELDED_NIGHT_REF=6d87db4b425341931f11856b93a453ee62c6ee08
 # NOT a free choice: the pinned tree's package.json runs `compact compile +0.31.1` and its CI
 # pins COMPACT_VERSION 0.31.1. Stage `source` asserts the tree still says so, so this ARG and
 # the source can never drift apart silently.
@@ -306,11 +306,25 @@ COPY --from=build /src/test    /app/test
 COPY --from=build /src/envs    /app/envs
 COPY --from=source /.shielded-night-commit /.shielded-night-commit
 
+# THE FIRST-PARTY DRIVER, and it is deliberately INSIDE /app rather than mounted next to it.
+# bun resolves npm dependencies by walking up from the importing FILE, so a driver at /mnt/…
+# would look in /mnt/node_modules and /node_modules and find nothing; at /app/driver it finds
+# /app/node_modules, and its relative imports of the pinned tree's own test/support primitives
+# resolve too. Nothing here is a transcription of that tree — see driver/snight-driver.ts.
+COPY driver /app/driver
 COPY entrypoint-common.sh /usr/local/lib/shielded-night/entrypoint-common.sh
-COPY entrypoint-deploy.sh entrypoint-verify.sh /usr/local/bin/
+COPY entrypoint-deploy.sh entrypoint-verify.sh entrypoint-token-name.sh /usr/local/bin/
 RUN set -eux; \
-    chmod 0755 /usr/local/bin/entrypoint-deploy.sh /usr/local/bin/entrypoint-verify.sh; \
+    chmod 0755 /usr/local/bin/entrypoint-deploy.sh /usr/local/bin/entrypoint-verify.sh \
+               /usr/local/bin/entrypoint-token-name.sh; \
     chmod 0644 /usr/local/lib/shielded-night/entrypoint-common.sh; \
+    # The driver imports the pinned tree's test/support primitives by relative path. If a
+    # re-pin ever moved or removed one, the failure would be a module-not-found deep inside a
+    # `docker compose run` during ./verify.sh; assert it at BUILD time instead.
+    test -f /app/test/support/wallet-transfer.ts; \
+    test -f /app/test/support/setup-contract.ts; \
+    test -f /app/test/support/shielded-night.ts; \
+    test -f /app/driver/snight-driver.ts; \
     # The one-shot publishes here; compose mounts a named volume over it. Creating it in the
     # image means a `docker run` without the volume fails on the deploy rather than on a
     # missing directory three steps later.

@@ -56,24 +56,46 @@ Consequences, all upstream and none fixed here:
 The Node-side harness has no such limit: it discovers coins from the wallet's own synced state,
 which is why `./verify.sh`'s round trips exercise the full unwrap path that the browser cannot.
 
-### The verify driver shares a seed with the Lace hand-test wallet
+### The verify driver is the deployer's wallet (`genesis-2`)
 
-`SHIELDED_NIGHT_DRIVER_SEED` defaults to the `lace-test` seed, because it is the only
-genesis-funded, DUST-registered wallet on this line that no container facade holds open (see
-`docs/WALLETS.md`). **Do not run `./verify.sh --shielded-night` while Lace is connected on that
-wallet**: two facades on one seed force each other's connection down, and it presents as a
-round trip that hangs rather than as a conflict. The verify run and the hand test are
-sequential.
+`SHIELDED_NIGHT_DRIVER_SEED` defaults to `genesis-2` — the seed the deploy one-shot used. That
+is safe rather than sloppy: `shielded-night-deploy` is `restart: "no"`, so it has published
+`contract.json` and exited long before `./verify.sh` opens a wallet, and the hazard this
+repository documents (two facades on one seed forcing each other's connection down) needs two
+*concurrent* facades.
 
-The clean fix is a dedicated driver seed with its own NIGHT + DUST provisioning lane, which
-this repository does not have yet (the 2.x sibling's `scripts/fund-wallet.sh` is the shape it
-would take). Tracked as question Q6 of project 00007.
+What this replaced is worth knowing, because it removes a rule: until project 00007 phase D′
+the driver was the `lace-test` seed, and running `./verify.sh --shielded-night` while a Lace
+session was connected on that wallet was a real collision. **That rule is gone** — nothing in
+this profile touches `lace-test` any more, so the browser hand test and the automated gates can
+overlap freely. (Owner decision, project 00007 question Q6 → D.)
 
-### The page also offers the live Preview network
+The residual limit is unchanged in kind: `genesis-2` must stay a wallet with no long-lived
+container facade. If a future profile wants it, give that profile its own seed — or give this
+one a dedicated driver plus a NIGHT + DUST provisioning lane, which this repository still does
+not have (the 2.x sibling's `scripts/fund-wallet.sh` is the shape it would take).
 
-Upstream's committed `frontend/.env` carries the real Preview contract address, so the network
-dropdown lists *Preview* alongside *Local (undeployed)*. That file is upstream's and this image
-applies no patch, so the entry stays. Selecting *Preview* talks to the public Preview network
+### The relay and the COW solver cannot quote an sNight pair
+
+The `solver` profile's COW solver quotes from inventory it actually holds, and its provisioning
+one-shot mints it only the offer-files demo colours. sNight exists **only** by wrapping native
+NIGHT through the ShieldedNight contract, which that profile knows nothing about — so an sNight
+offer can never appear in the solver's ladder and the relay will not broker a fill for it.
+
+This costs nothing today, because taking an Offer File needs no intermediary: the maker's
+transaction is deliberately unbalanced, and a taker balances it, claims the give leg, pays the
+want leg and submits. That is what `./verify.sh`'s book subsection does, and the kernel
+certifies the outcome (the offer reaches `consumed`, i.e. its input nullifier was spent on
+chain). With the `solver` profile up the section says so and takes the offer directly anyway.
+
+Teaching the solver to hold sNight would mean coupling it to a profile that must depend only on
+`core`. Recorded as question Q12 of project 00007.
+
+### The page also offers the live Preview and PreProd networks
+
+Upstream's committed `frontend/.env` carries the real Preview and PreProd contract addresses, so
+the network dropdown lists both alongside *Local (undeployed)*. That file is upstream's and this
+image applies no patch, so the entries stay. Selecting either talks to that public network
 through your wallet and has nothing to do with this stack; nothing here can or should be
 transacted from a demo stack.
 

@@ -20,7 +20,10 @@ Two deltas beyond the version line:
 - **added**: the `shielded-night` profile — [`effectstream/shielded-night`](https://github.com/effectstream/shielded-night),
   a Compact contract plus a page that wraps native unshielded NIGHT into a shielded token
   (**sNight**) 1:1 and back. It depends only on `core`, deploys its contract once per stack,
-  and is verified by upstream's own integration round trips run against this stack.
+  and is verified by upstream's own integration round trips run against this stack. Bring it up
+  **with `offerfiles`** and native NIGHT becomes tradable on the offer-files book: `./verify.sh`
+  wraps it, posts a real MIP-0005 offer file carrying sNight, has a second wallet settle that
+  offer, and has that wallet unwrap what it bought — with exact balances at every step.
 
 > **STATUS — scaffold.** Phase P0 (repository skeleton, operating scripts, pinned identities)
 > is landed. The compose fragments are valid **placeholders**: they declare no services yet.
@@ -38,7 +41,7 @@ never passes `--profile`, so a service carrying one would silently never start.
 | `core` | `compose/core.yml` | midnight-node 1.0.0, indexer-standalone 4.3.3, proof-server 8.1.0 (+ its proof-data pre-warm), PostgreSQL with `pg_ivm`. **Unconditional** — every `up.sh` includes it. |
 | `offerfiles` | `compose/offerfiles.yml` | Celestia DA devnet, the offer-files contract deploy one-shot, the kernel API (`:9999`) and the batcher (`:3334`), built from `effectstream/zswap-offerfiles-kernel` **main**. |
 | `frontend` | `compose/frontend.yml` | the `zswap-da` SPA (`:10600`), built from the frozen `effectstream/effectstream` template — v8-native at that ref, so **no** ledger patch. |
-| `shielded-night` | `compose/shielded-night.yml` | the **Shielded NIGHT** dApp (`:10900`): a deploy one-shot that mints the NIGHT ⇄ sNight wrapper contract **once per stack**, and an nginx page that learns that address at container start. Built from `effectstream/shielded-night` at a pinned commit, with the contract **recompiled in-image** (compactc 0.31.1) and required to reproduce the committed artifacts byte-for-byte. **Depends only on `core`.** |
+| `shielded-night` | `compose/shielded-night.yml` | the **Shielded NIGHT** dApp (`:10900`): a deploy one-shot that mints the NIGHT ⇄ sNight wrapper contract **once per stack**, and an nginx page that learns that address at container start. Built from `effectstream/shielded-night` at a pinned commit, with the contract **recompiled in-image** (compactc 0.31.1) and required to reproduce the committed artifacts byte-for-byte. **Depends only on `core`.** With `offerfiles` also up it names the sNight colour in the kernel's token registry, and `./verify.sh` drives the whole chain — NIGHT → sNight → an offer file on the book → taken → back to NIGHT. |
 | `solver` | `compose/solver.yml` | the Midnight Intents relay (`:13000` HTTP, `:19001` solver WS), the COW solver in execution mode, the provisioning one-shots, and the intents browser UI (`:10700`). |
 
 ```sh
@@ -46,6 +49,7 @@ never passes `--profile`, so a service carrying one would silently never start.
 ./up.sh --with offerfiles                  # …and Celestia + kernel + batcher
 ./up.sh --with offerfiles --with frontend  # …and the SPA
 ./up.sh --with shielded-night              # the Shielded NIGHT dApp (core is all it needs)
+./up.sh --with offerfiles --with shielded-night   # …and sNight is tradable on the offer book
 ./up.sh --all                              # every profile
 ./verify.sh                                # assert the stack is usable, not merely running
 ./down.sh -v                               # stop and wipe every volume of this project

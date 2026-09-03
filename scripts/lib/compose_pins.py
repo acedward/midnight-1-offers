@@ -83,6 +83,7 @@ SERVICE_COMPACT_TOOLCHAIN = {
     "shielded-night": "compact-shielded-night",
     "shielded-night-deploy": "compact-shielded-night",
     "shielded-night-verify": "compact-shielded-night",
+    "shielded-night-token-name": "compact-shielded-night",
 }
 
 # Anything that looks like a source ref must be a full commit, even if it is not one of the
