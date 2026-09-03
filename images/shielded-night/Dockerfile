@@ -31,12 +31,22 @@
 # locally instead of trusting it, with the compiler the tree itself names.
 
 # ── base images: index digests, not tags ─────────────────────────────────────
-# The SAME three digests images/zswap-da and images/offerfiles-kernel pin — fewer distinct
-# external identities in the stack, and ones already vetted. All are good official multiarch
-# indexes (linux/amd64 + linux/arm64), so nothing here needs a `platform:` pin and both
-# architectures build native.
+# DEBIAN_BASE and NGINX_BASE are the SAME two digests images/zswap-da and images/offerfiles-kernel
+# pin — fewer distinct external identities in the stack, and ones already vetted. All are good
+# official multiarch indexes (linux/amd64 + linux/arm64), so nothing here needs a `platform:`
+# pin and both architectures build native.
+#
+# BUN_BASE is DELIBERATELY NOT the 1.3.11 the kernel and zswap-da images share (phase G, plan
+# question Q13). The pinned shielded-night tree's lockfiles were regenerated wholesale on bun
+# 1.4.0 (upstream PR effectstream/shielded-night#12/#11's line, Q11 -> A) and bun 1.4 writes
+# `"lockfileVersion": 2`, a format 1.3.11 cannot parse at all — `bun install --frozen-lockfile`
+# on this stage would fail immediately with "Unknown lockfile version" rather than resolve a
+# stale dependency. This is the ONE image in this repository on bun 1.4: the kernel's deploy
+# entrypoint and zswap-da's build both stay on 1.3.11, which is load-bearing there (1.3.14+
+# breaks the kernel's `midnight-contract:deploy` with a graphql-tag/ESM require() error) and
+# unrelated to this tree's lockfile format.
 ARG DEBIAN_BASE=debian:trixie-slim@sha256:f6e2cfac5cf956ea044b4bd75e6397b4372ad88fe00908045e9a0d21712ae3ba
-ARG BUN_BASE=oven/bun:1.3.11@sha256:0733e50325078969732ebe3b15ce4c4be5082f18c4ac1a0f0ca4839c2e4e42a7
+ARG BUN_BASE=oven/bun:1.4.0@sha256:5ff609364c049b54eb0ff560ec96319729a972078ef2c755d758f0c6ef89c2d6
 ARG NGINX_BASE=nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10
 
 ARG SHIELDED_NIGHT_REPO=https://github.com/effectstream/shielded-night.git

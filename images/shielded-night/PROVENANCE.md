@@ -96,7 +96,21 @@ so they are not interchangeable. `scripts/lib/compose_pins.py` binds each servic
 | target | base | what it is |
 |---|---|---|
 | `web` | `nginx:1.27-alpine` (digest-pinned) | the built SPA on container `:10900`, plus the compiled contract artifacts under `/contract/compiled/shielded-night/`. `entrypoint-web.sh` waits for the deploy one-shot's `contract.json` and writes `/config.js`. |
-| `deploy` | `oven/bun:1.3.11` (digest-pinned) | the pinned tree and its **root** `node_modules`, for `entrypoint-deploy.sh` (deploy once per stack) and `entrypoint-verify.sh` (on-chain keys + the round trips). No SPA, no frontend `node_modules`. |
+| `deploy` | `oven/bun:1.4.0` (digest-pinned) | the pinned tree and its **root** `node_modules`, for `entrypoint-deploy.sh` (deploy once per stack) and `entrypoint-verify.sh` (on-chain keys + the round trips). No SPA, no frontend `node_modules`. |
+
+**`build` and `deploy` are on bun 1.4.0, NOT the 1.3.11 the kernel and zswap-da images share (phase G,
+plan question Q13).** The pinned shielded-night tree's lockfiles were regenerated wholesale on bun
+1.4.0 by upstream shielded-night#12 ("00007-lockfile-and-allow-unlocked", Q11 -> A) once it merges,
+and bun 1.4 writes `"lockfileVersion": 2`, a format bun 1.3.11 cannot read at all — `bun install
+--frozen-lockfile` would fail immediately with `error: Unknown lockfile version` rather than resolve
+a stale dependency. This IS forward-compatible before #12 merges too: `SHIELDED_NIGHT_REF` staying at
+a pre-#12 commit means the fetched tree still carries a `lockfileVersion: 1` lockfile, and bun 1.4.0
+installs a v1 lockfile without complaint (measured, both root and `frontend/`) — so the base image
+was moved in its own commit rather than deferred to the SHA that made it strictly necessary. This
+image is the ONLY one in this repository on bun 1.4: the kernel's deploy entrypoint and zswap-da's
+build both stay on 1.3.11, which is load-bearing there (bun 1.3.14+ breaks the kernel's
+`midnight-contract:deploy` with a graphql-tag/ESM `require()` error) and is unrelated to this tree's
+lockfile format.
 
 Both dependency sets are installed in the build stage with `--frozen-lockfile`, and both are
 installed **deliberately**: the frontend imports the compiled contract from `../src/managed`,

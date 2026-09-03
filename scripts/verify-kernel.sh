@@ -5,22 +5,21 @@
 #
 #   ./scripts/verify-kernel.sh
 #
-# EVERY ASSERTION IS AGAINST WHAT KERNEL `main` ACTUALLY SERVES, checked at the pinned commit
-# rather than carried over from the v9 branch the 2.x sibling and the 1.x deploy prototype were
-# written against. Three routes those deployments assume DO NOT EXIST on main, and this script
-# must not pretend otherwise:
+# EVERY ASSERTION IS AGAINST WHAT KERNEL `main` ACTUALLY SERVES, checked at the pinned commit.
 #
-#   * `POST /v1/offers/files`      — absent. There is no exact-files read on main at all; the
-#                                    write path is `POST /v1/offers` with `{"offer":"swapoffer1…"}`.
-#                                    The spec's Celestia byte-round-trip assertion depends on
-#                                    this route and cannot be made as written — plan question Q12.
-#   * `requireCurrentBackend`      — absent, along with `MAX_CELESTIA_LAG_BLOCKS` and
-#                                    `deriveSyncStatus`. Nothing on main refuses a request for
-#                                    being behind, so "is the backend current?" is a question this
-#                                    script has to ask, not something the API enforces.
-#   * `API_RATE_LIMIT_MAX` / `_ALLOWLIST` — absent. The limit is hard-coded 60/minute; only
-#                                    `/v1/health`, `/v1/health/sync`, `/keys/*`, `/zkir/*` and
-#                                    `/docs*` are exempt. This script stays well under it.
+# HISTORY WORTH RECORDING: an EARLIER `main` (before kernel PR #48 merged the whole
+# `feat/cow-solver` line into it) served neither `POST /v1/offers/files` nor `GET
+# /v1/offers/updates`, and this script's own header used to document that as a fact about "the
+# pin". It is no longer one: KERNEL_REF is `main` again (phase G), and `main` now sits 20
+# commits beyond that merge — `POST /v1/offers/files`, `requireCurrentBackend` (the sync-lag
+# gate `offer-files-read.ts` uses) and `API_RATE_LIMIT_MAX`/`_ALLOWLIST` (env-configurable,
+# default 60/min; `/v1/health`, `/v1/health/sync`, `/keys/*`, `/zkir/*`, `/docs*` exempt) are
+# all present. None of that changes what THIS script asserts — it never depended on the
+# exact-files route or a lag gate — but a header that named them absent would now be wrong.
+#
+# main ALSO now carries kernel PR #54 (seeded reference asset prices, `GET /v1/prices`, a
+# price-feed service — see the `prices` section below) and PR #56 (the batcher's sponsorship
+# gate, `BATCHER_SPONSOR_POLICY`/`BATCHER_SPONSOR_UNPRICED`, defaults warn/allow).
 #
 # What it proves, and why each check is here rather than being assumed:
 #
@@ -38,7 +37,15 @@
 #   known tokens    GET /v1/known-tokens lists the dev tokens the deploy one-shot minted, matched
 #                   BY COLOUR against the minted-tokens.json it published. Colours derive from
 #                   the deployed contract address, so this is a genuine end-to-end check of
-#                   deploy -> mint -> publish -> name -> serve, not a fixed expectation.
+#                   deploy -> mint -> publish -> name -> serve, not a fixed expectation. If the
+#                   shielded-night profile is ALSO up, a sNight row is expected too, priced
+#                   (decimals + asset_id) rather than merely named — reported, not hard-failed,
+#                   when that profile is not part of this bring-up.
+#   prices          GET /v1/prices?tokens=<NIGHT colour> answers a SEEDED price (source
+#                   feed|seed|manual, never fallback) for `midnight-3` — kernel PR #54's
+#                   reference-price table, seeded offline by 000-init.sql with no CoinGecko
+#                   network dependency. The standalone price-feed REFRESH service is not part
+#                   of this stack (.env.example); this is what proves the seed alone is enough.
 #   zk assets       /keys/* is mounted — the browser prover fetches from there.
 #   batcher         GET /health on the batcher answers `{"status":"ok"}`. batcher-sdk 0.103.1
 #                   DOES serve a health route (the v9 SDK's did not, which is why the sibling
@@ -188,6 +195,45 @@ else
     fail "/v1/known-tokens lists only ${MATCHED}/3 minted colours; missing:${MISSING}
           (offerfiles-token-names registers these — check that one-shot's logs)"
   fi
+fi
+
+# The sNight row — a DIFFERENT one-shot (images/shielded-night/entrypoint-token-name.sh), run
+# by up.sh only when BOTH `offerfiles` AND `shielded-night` are up (the profile itself declares
+# no dependency on a kernel — spec FR-002/FR-015). Reported, not hard-failed, when
+# shielded-night is not part of this bring-up: this script's job is the offerfiles profile,
+# and a stack legitimately brought up as `--with offerfiles` alone has nothing to check here.
+if service_present shielded-night; then
+  if [[ -n "$KNOWN" ]] && printf '%s' "$KNOWN" | grep -qi '"name":"snight"'; then
+    SNIGHT_ROW="$(printf '%s' "$KNOWN" | tr '{' '\n' | grep -i '"name":"snight"' | head -1)"
+    if printf '%s' "$SNIGHT_ROW" | grep -Eq '"decimals":[0-9]+' && printf '%s' "$SNIGHT_ROW" | grep -q '"asset_id":"midnight-3"'; then
+      ok "sNight is registered PRICED: $(printf '%s' "$SNIGHT_ROW" | grep -oE '"decimals":[0-9]+|"asset_id":"[^"]*"' | tr '\n' ' ')"
+    else
+      fail "sNight is named but not priced (no decimals/asset_id): ${SNIGHT_ROW:0:200}"
+    fi
+  else
+    fail "shielded-night is up but /v1/known-tokens names no sNight row — the shielded-night-token-name one-shot did not run or failed"
+  fi
+else
+  info "shielded-night profile not up on this bring-up — nothing to check for the sNight row"
+fi
+
+# ── reference prices (kernel PR #54) ──────────────────────────────────────────
+# GET /v1/prices?tokens= is REQUIRED and bounded (Q-11 of the kernel's own plan), so this asks
+# for exactly NIGHT's own colour (0x00…00, seeded unconditionally) rather than the unfiltered
+# form main no longer serves. A `source` of `feed` or `seed` (never `fallback`) is what "the
+# seed is enough, no live CoinGecko feed needed" actually means — `fallback` is the $1
+# unknown-token path and would mean the seed migration did not run.
+echo
+log "kernel: prices"
+NIGHT_COLOR="0000000000000000000000000000000000000000000000000000000000000000"
+PRICES="$(curl -fsS --max-time 10 "$API/v1/prices?tokens=${NIGHT_COLOR}" 2>/dev/null || true)"
+if [[ -z "$PRICES" ]]; then
+  fail "GET /v1/prices?tokens=<NIGHT> did not answer"
+elif printf '%s' "$PRICES" | grep -q '"asset_id":"midnight-3"' \
+     && printf '%s' "$PRICES" | grep -Eq '"source":"(feed|seed|manual)"'; then
+  ok "GET /v1/prices reports a real (non-fallback) price for midnight-3 (NIGHT): ${PRICES:0:160}"
+else
+  fail "GET /v1/prices did not report a seeded/fed price for NIGHT (midnight-3): ${PRICES:0:300}"
 fi
 
 # ── ZK assets ────────────────────────────────────────────────────────────────
