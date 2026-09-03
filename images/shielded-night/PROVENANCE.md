@@ -41,14 +41,14 @@ and its use in `networks.ts`, the four `MN_*_URL` names in `test/support/network
 it (checked in the source tree and again in the built `dist/`) — so a re-pin to a tree without
 them fails the build instead of producing a page that can never learn its address.
 
-### The pin is currently a BRANCH head, and that is temporary
+### The pin is a commit on `main`
 
 Those changes are [`effectstream/shielded-night#9`](https://github.com/effectstream/shielded-night/pull/9),
-open at the time of this pin. `SHIELDED_NIGHT_REF` is that branch's head — a strict descendant
-of `main` by three commits — and it is re-pinned to the PR's **merge commit** as soon as it
-merges. A branch head is a temporary identity: the branch can be force-pushed, and this pin
-would then name bytes that exist on no branch at all. See
-`config/artifact-decisions.json` → `sources[shielded-night].provenance.repinTo`.
+merged upstream on 2026-09-03 (`5902a90`). `SHIELDED_NIGHT_REF` is `main`'s head after the
+follow-up [#11](https://github.com/effectstream/shielded-night/pull/11), which filled in the
+PreProd contract address in `frontend/.env`. The earlier branch-head pin (`0b0a358`) is retired:
+a branch head is a temporary identity — the branch can be force-pushed, and the pin would then
+name bytes that exist on no branch at all.
 
 ## The 1.x line, asserted rather than assumed
 
@@ -117,10 +117,11 @@ artifacts are also asserted present under `dist/contract/compiled/shielded-night
 
 ## A note on what else the page offers
 
-The upstream tree's committed `frontend/.env` carries the live **Preview** contract address, so
-the built page's network dropdown offers *Preview* alongside *Local (undeployed)*. That is
-upstream's file, unmodified: this image adds a network, it does not remove one. Only *Local
-(undeployed)* has anything to do with this stack.
+The upstream tree's committed `frontend/.env` carries the live **Preview** and **PreProd**
+contract addresses, so the built page's network dropdown offers both alongside *Local
+(undeployed)*. That is upstream's file, unmodified: this image adds a network, it does not
+remove one. Only *Local (undeployed)* has anything to do with this stack; the other two talk to
+the public networks through your wallet.
 
 ## Licenses
 

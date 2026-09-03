@@ -97,7 +97,7 @@ asserting the deployed contract's on-chain verifier keys equal the served ones, 
 
 ### What else the page offers
 
-Upstream's committed `frontend/.env` carries the live **Preview** contract address, so the
-network dropdown shows *Preview* alongside *Local (undeployed)*. That is upstream's file,
+Upstream's committed `frontend/.env` carries the live **Preview** and **PreProd** contract
+addresses, so the network dropdown shows both alongside *Local (undeployed)*. That is upstream's file,
 unmodified — this profile adds a network rather than removing one. Only *Local (undeployed)*
 has anything to do with this stack.

@@ -99,7 +99,7 @@ performs real proofs; upstream's own timeout for each test is ten minutes.
 | `SHIELDED_NIGHT_REPO` | the public repo URL | source of that commit |
 | `SHIELDED_NIGHT_IMAGE` / `SHIELDED_NIGHT_DEPLOY_IMAGE` | `midnight-1-offers/shielded-night{,-deploy}:local` | one build context, two runtime targets, two tags |
 | `SHIELDED_NIGHT_WALLET_SEED` | `genesis-2` | the deployer. **The genesis-1 seed is refused outright** (see `docs/WALLETS.md`) |
-| `SHIELDED_NIGHT_DRIVER_SEED` | the `lace-test` seed | the verify round trip's wallet; must differ from the deployer's |
+| `SHIELDED_NIGHT_DRIVER_SEED` | `genesis-2` (`0x…0002`) | the verify round trip's wallet, and the sNight maker in the book chain. Same seed as the deployer on purpose — that one-shot has exited by then (Q6 → D) |
 | `SHIELDED_NIGHT_NAME` / `_SYMBOL` / `_DECIMALS` | `Shielded Night` / `sNight` / `6` | sealed into the contract at deploy; they cannot be changed afterwards |
 | `SHIELDED_NIGHT_LOCK` | `false` | see below |
 | `SHIELDED_NIGHT_WAIT_TIMEOUT` | `600` | how long the web container waits for `contract.json` before failing |
@@ -128,4 +128,4 @@ through by accident.
 | the one-shot exits 78 with `missing required environment` | the fragment was rendered without `compose/shielded-night.yml`'s `environment:` block — usually a hand-built `docker compose` invocation rather than `./up.sh`. |
 | the page loads but the network dropdown shows only *Preview* | `/config.js` was not served or carried no address. `curl http://127.0.0.1:${SHIELDED_NIGHT_HOST_PORT}/config.js`. |
 | the page says the wallet does not support dApp proving | the connected wallet has no `getProvingProvider`. See `docs/KNOWN-LIMITATIONS.md`. |
-| `verify.sh` reports the round trip failed on a wallet that never syncs | something else is holding a facade on the driver seed — most often a Lace session on `lace-test`. See `docs/KNOWN-LIMITATIONS.md`. |
+| `verify.sh` reports the round trip failed on a wallet that never syncs | something else is holding a facade on the driver seed (`genesis-2` by default). Nothing in this repository does — check for a hand-started container or script of your own. See `docs/KNOWN-LIMITATIONS.md`. |

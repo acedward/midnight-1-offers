@@ -1,11 +1,19 @@
 #!/usr/bin/env bash
-# shielded-night-verify — the two assertions that need a bun runtime, run INSIDE the compose
+# shielded-night-verify — the assertions that need a bun runtime, run INSIDE the compose
 # network from the same image the contract was deployed from.
 #
 #   entrypoint-verify.sh keys        the deployed contract's on-chain verifier keys are
 #                                    byte-identical to the ones this image serves
 #   entrypoint-verify.sh roundtrip   NIGHT -> sNight -> NIGHT, atomic and two-step, with exact
 #                                    balance assertions, driven by a funded wallet
+#
+# …and three modes that belong to the BOOK CHAIN (`./verify.sh`'s `book` subsection, which
+# runs only when the offerfiles profile is up). They drive THIS stack's deployed contract
+# rather than a fresh one, and they leave a coin behind on purpose — see driver/snight-driver.ts:
+#
+#   entrypoint-verify.sh color       print the sNight colour of the deployed contract
+#   entrypoint-verify.sh wrap        NIGHT -> sNight, kept (SNIGHT_SEED, SNIGHT_AMOUNT)
+#   entrypoint-verify.sh unwrap      sNight -> NIGHT from discovered coins (same two knobs)
 #
 # It is invoked by scripts/verify-shielded-night.sh through `docker compose run --rm`; the
 # service declares `deploy: { replicas: 0 }` so `up.sh` never starts it. With no argument this
@@ -29,8 +37,11 @@ usage() {
 
     docker compose run --rm shielded-night-verify keys        on-chain verifier keys
     docker compose run --rm shielded-night-verify roundtrip   NIGHT <-> sNight round trips
+    docker compose run --rm shielded-night-verify color       the deployed contract's sNight colour
+    docker compose run --rm shielded-night-verify wrap        NIGHT -> sNight, and keep it
+    docker compose run --rm shielded-night-verify unwrap      sNight -> NIGHT, coin discovered
 
-./scripts/verify-shielded-night.sh runs both.
+./scripts/verify-shielded-night.sh runs them.
 EOF
 }
 
@@ -145,16 +156,19 @@ EOF
 #
 # TWO TESTS, SELECTED BY NAME, and the selection is load-bearing. `-t '[smoke]'` would be the
 # obvious filter and it would be wrong: the same file also carries a multi-wallet smoke that
-# runs on `describeContractWithWallets(['alice','bob'])`, i.e. genesis seeds 0x…01 and 0x…02 —
-# the offer-files kernel's wallet and our own deployer. Driving those from here would put a
-# second facade on a seed a long-lived service holds open, which takes it offline silently.
-# Both selected tests assert EXACT balances (wrapped == N, final NIGHT == starting NIGHT).
+# runs on `describeContractWithWallets(['alice','bob'])`, i.e. genesis seeds 0x…01 and 0x…02.
+# 0x…01 in this stack is the faucet, the offer-files deploy/mint wallet AND the kernel's
+# MIDNIGHT_WALLET_SEED — a second facade on it takes a LONG-LIVED service offline with nothing
+# naming the cause. Both selected tests assert EXACT balances (wrapped == N, final NIGHT ==
+# starting NIGHT).
 verify_roundtrip() {
   require_env SHIELDED_NIGHT_DRIVER_SEED
   refuse_genesis_1 "${SHIELDED_NIGHT_DRIVER_SEED}" "shielded-night verify driver"
-  if [ "${SHIELDED_NIGHT_DRIVER_SEED}" = "${SHIELDED_NIGHT_WALLET_SEED:-}" ]; then
-    die "the driver seed must differ from the deployer's (spec FR-011)"
-  fi
+  # THE DRIVER MAY BE THE DEPLOYER, and by default it is (genesis-2 — project 00007 question
+  # Q6, owner decision D; spec FR-011 amended). What the earlier refusal here protected
+  # against was two CONCURRENT facades on one seed, and the deploy one-shot has exited before
+  # this container is ever run. genesis-1 is still refused above, because THAT seed does have
+  # long-lived facades in this stack (the kernel, the batcher, the faucet).
 
   export MN_EXTERNAL_STACK=1
   export MN_SEED="${SHIELDED_NIGHT_DRIVER_SEED}"
@@ -173,9 +187,23 @@ verify_roundtrip() {
   log "OK: both round trips completed with exact balance assertions"
 }
 
+# ── the book-chain modes ─────────────────────────────────────────────────────
+#
+# Thin on purpose: every assertion lives in driver/snight-driver.ts, which imports the pinned
+# tree's own test/support primitives rather than transcribing them. `color` needs no wallet and
+# no chain, so it does NOT wait for the stack — it is a pure derivation from contract.json and
+# is called by the token-name one-shot, which must be cheap.
+driver() {
+  cd "${REPO_ROOT}" || die "no ${REPO_ROOT}"
+  exec bun run driver/snight-driver.ts "$@"
+}
+
 case "${MODE}" in
   keys)      prepare; verify_keys ;;
   roundtrip) prepare; verify_roundtrip ;;
+  color)     driver color ;;
+  wrap)      prepare; require_env SNIGHT_SEED; refuse_genesis_1 "${SNIGHT_SEED}" "shielded-night wrap driver"; driver wrap ;;
+  unwrap)    prepare; require_env SNIGHT_SEED; refuse_genesis_1 "${SNIGHT_SEED}" "shielded-night unwrap driver"; driver unwrap ;;
   ""|help|-h|--help) usage; exit 0 ;;
   *) usage; die "unknown mode '${MODE}'" ;;
 esac

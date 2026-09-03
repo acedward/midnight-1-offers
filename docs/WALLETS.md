@@ -13,12 +13,17 @@ naming the cause: it presents as "the batcher stopped submitting", or "the round
 hours later, and looks like a node fault. Every long-lived facade therefore gets its own seed,
 and `wallets/wallets.json` records who owns which.
 
-## The two wallets this profile uses
+## The wallets this profile uses
 
 | role | wallet | seed | why this one |
 |---|---|---|---|
 | **deployer** (`SHIELDED_NIGHT_WALLET_SEED`) | `genesis-2` | `0x…0002` | Genesis-funded and DUST-registered from block 0 (measured), and it is a **one-shot** facade: the deploy container proves, submits, publishes and exits, so it never holds a wallet open beside the kernel or the batcher. |
-| **verify driver** (`SHIELDED_NIGHT_DRIVER_SEED`) | `lace-test` | the 64-byte Midnight/Lace test seed | Also genesis-funded and DUST-registered, distinct from the deployer as the spec requires, and — decisively — **held open by no container facade in any profile**. |
+| **verify driver / sNight maker** (`SHIELDED_NIGHT_DRIVER_SEED`) | `genesis-2` — the same wallet | `0x…0002` | The deploy one-shot has **exited** before anything reads `contract.json`, so the two roles are sequential and never two facades at once. Owner decision (project 00007 question Q6 → D); the spec's original "distinct from the deployer" is amended with it. |
+| **offer taker** (`TAKER_SEED`) | `e2e-taker` | `0x…0032` | Empty at genesis and provisioned by the book chain itself (NIGHT from the faucet, then DUST registration, then the demo colour it pays with). Only used when the `offerfiles` profile is up. |
+
+`lace-test` is **not** in this table any more, and that is the point: nothing in this profile
+and nothing in `./verify.sh` opens a facade on it, so an operator can keep a browser session
+connected on it while the automated gates run.
 
 ### Why the deployer is NOT genesis-1
 
@@ -32,20 +37,25 @@ enough — an operator who merely unsets the variable would get the forbidden wa
 So `images/shielded-night/entrypoint-deploy.sh` **refuses the genesis-1 seed outright** and
 exits 78 (`EX_CONFIG`) with an explanation. The same refusal applies to the verify driver.
 
-### Why the driver is the Lace test wallet, and the one rule that comes with it
+### Why the driver is the deployer's own wallet
 
 On this line the `midnight-node` 1.0.0 dev preset funds exactly four wallets — `genesis-1`,
 `genesis-2`, `batcher` (genesis seed 3) and `lace-test` — and only those four have DUST
 registered at genesis. A wallet holding NIGHT with **no DUST registration cannot pay a fee at
 all**, and this repository has no funding lane (no `fund-wallet.sh`, no pinned toolkit image)
-to provision a fresh seed. Of the four, three are already taken: genesis-1 is the kernel's,
-genesis-2 is the deployer, genesis-3 is the batcher's.
+to provision a fresh seed from nothing. Of the four, `genesis-1` is the kernel's, the faucet's
+and the offer-files mint wallet's, and `genesis-3` is the batcher's — both long-lived facades.
 
-**So: do not run `./verify.sh --shielded-night` while a Lace session is connected on
-`lace-test`.** That would be two facades on one seed, and it would present as a round trip that
-hangs on a wallet that never syncs. The verify run and the browser hand test are sequential,
-not concurrent. `SHIELDED_NIGHT_DRIVER_SEED` is a knob precisely so a different wallet can be
-pointed at it without touching the fragment or the image.
+That leaves `genesis-2` and `lace-test`, and the deciding argument is what each costs the
+operator. Driving on `lace-test` cost a rule to remember (*never run verify while the browser
+is connected*); driving on `genesis-2` costs nothing, because the only other facade on it —
+the deploy one-shot — is `restart: "no"` and has already exited. So the driver is `genesis-2`.
+
+`SHIELDED_NIGHT_DRIVER_SEED` remains a knob: point it at a different funded, DUST-registered
+wallet and nothing in the fragment, the image or the verify script changes.
+
+> **Behaviour change.** Until project 00007 phase D′ this defaulted to the `lace-test` seed. An
+> operator who never set the variable now drives the round trips on `genesis-2` instead.
 
 ## The browser hand test (Lace)
 
@@ -61,7 +71,8 @@ hand test, and it needs the **default port block**: Lace has fixed `undeployed` 
 2. In Lace, switch the network to **Undeployed** and import the `lace-test` wallet. Its BIP-39
    phrase is in `wallets/wallets.json` (23 × `abandon` + `diesel`) — Midnight's own canonical
    test wallet, funded at genesis. **Never use it for anything with real value.**
-3. Wait for Lace to sync and show a NIGHT balance.
+3. Wait for Lace to sync and show a NIGHT balance. (Nothing in this stack uses that wallet,
+   so you can leave the session connected — `./verify.sh` will not disturb it.)
 4. Open `http://127.0.0.1:10900`, choose **Local (undeployed)** in the network dropdown, and
    connect the wallet. If the page reports that the wallet does not support dApp proving, that
    Lace build has no `getProvingProvider` — see `docs/KNOWN-LIMITATIONS.md`.
