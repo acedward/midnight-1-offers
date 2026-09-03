@@ -33,6 +33,25 @@ The batcher's new **sponsorship gate** (`BATCHER_SPONSOR_POLICY=warn`,
 (**not run** by this repository — the seeded reference prices are enough offline) are covered
 in `docs/COMPONENTS.md`'s "sNight is a PRICED asset" section.
 
+## Re-pin to kernel PR #60 (phase H2) — a SILENT breaking change for an EXISTING stack
+
+`KERNEL_REF` moved again, to `main` after kernel PR #60 (project 00007's own upstream fix,
+question Q14): the seeded `known_tokens` row for NIGHT (and the USDC placeholder) changes its
+`decimals` value from `0` to `6`. Unlike the phase-G re-pin above, this is **not** a schema
+SHAPE change — no table or column is added — so an existing stack's `postgres` volume does
+**not** fail loudly. It keeps running, healthcheck green, with the OLD row (`decimals: 0`)
+untouched, because the seed file only runs on a fresh (empty) volume. The symptom is silent and
+numeric, not an error: `GET /v1/prices` for NIGHT still answers `decimals: 0`, and a freshly
+registered sNight would be priced 10^6 off from a genuinely 1:1 relationship — exactly the bug
+kernel PR #60 fixed, reappearing on any stack that re-pins `KERNEL_REF` without also wiping its
+volume.
+
+**The fix is the same as above: `./down.sh -v`.** There is no in-place row-update lane in this
+repository (an operator with direct DB access on a live, non-devnet deployment can instead run
+the one-line `UPDATE known_tokens SET decimals = 6 WHERE name IN ('NIGHT', 'USDC');` that kernel
+PR #60's own body documents — not applicable here, since this profile only ever runs a
+disposable devnet).
+
 ## Bringing the `shielded-night` profile up
 
 ```sh
@@ -177,10 +196,16 @@ becomes permanently non-upgradeable.
 
 It is **off by default and should stay off here.** It is meant for hosted releases — upstream's
 live Preview contract is locked — and a throwaway devnet contract that dies with `./down.sh -v`
-gains nothing from it. The knob exists because upstream's release path uses it, and because
-`./verify.sh` asserts the authority state **in both directions**: it fails if the contract is
-locked when nobody asked for it, which is the only way to notice that a one-way door was walked
-through by accident.
+gains nothing from it. The knob exists because upstream's release path uses it.
+
+`./verify.sh`'s on-chain-key check calls upstream's `scripts/verify-deployment.ts` with
+`--allow-unlocked` (project 00007 phases F1/H2): the lock state is still measured and printed to
+the `shielded-night-verify` container's log either way, but only the verifier-key/circuit-set
+check decides the exit code — a devnet contract deliberately left unlocked (the default here)
+no longer makes the strongest check in the profile read as a failure. This means `verify.sh` no
+longer independently FAILS a bring-up where `SHIELDED_NIGHT_LOCK` was set but the contract
+somehow came up unlocked (or vice versa); read the container's log line (`✓ LOCKED: …` / `ℹ NOT
+locked: …`) if you need to confirm the authority state directly.
 
 ## Troubleshooting
 

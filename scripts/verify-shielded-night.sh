@@ -362,21 +362,21 @@ else
     if printf '%s' "$KNOWN" | tr '{' '\n' | grep -Eqi "(${SNIGHT_COLOR}.*snight|snight.*${SNIGHT_COLOR})"; then
       ok "GET /v1/known-tokens names this colour sNight"
 
-      # ── priced, not just named (phase G) ─────────────────────────────────────
-      # The registration one-shot reads NIGHT's own kernel-pricing decimals and reuses it (see
-      # images/shielded-night/entrypoint-token-name.sh for why: it is NOT the same number as
-      # this dApp's own SHIELDED_NIGHT_DECIMALS=6, which is the contract's DISPLAY decimals).
-      # So this assertion checks CONSISTENCY with NIGHT's own row, never a hard-coded digit —
-      # a kernel re-seed that changed NIGHT's decimals would change sNight's expected value
-      # right along with it.
+      # ── priced, not just named, at the FIXED 6 decimals (phase G, hardened in phase H2) ──
+      # The registration one-shot posts the literal constant 6 (Q14's resolution: kernel PR #60
+      # made 6 the correct, permanent value for NIGHT's own kernel-pricing decimals — see
+      # images/shielded-night/entrypoint-token-name.sh). This assertion checks BOTH the fixed
+      # value directly AND consistency with NIGHT's own row, so a kernel re-pin that regresses
+      # the seed (or a re-pin to before PR #60) is caught here too, not only by the one-shot's
+      # own preflight at registration time.
       SNIGHT_RECORD="$(printf '%s' "$KNOWN" | tr '{' '\n' | grep -Ei "${SNIGHT_COLOR}" | head -1)"
       NIGHT_RECORD="$(printf '%s' "$KNOWN" | tr '{' '\n' | grep -E '"token_color":"0{64}"' | head -1)"
-      SNIGHT_DECIMALS="$(printf '%s' "$SNIGHT_RECORD" | sed -n 's/.*"decimals":\([0-9]\+\).*/\1/p' | head -1)"
-      NIGHT_DECIMALS="$(printf '%s' "$NIGHT_RECORD" | sed -n 's/.*"decimals":\([0-9]\+\).*/\1/p' | head -1)"
-      if [[ -n "$SNIGHT_DECIMALS" && -n "$NIGHT_DECIMALS" && "$SNIGHT_DECIMALS" == "$NIGHT_DECIMALS" ]]; then
-        ok "sNight is registered at ${SNIGHT_DECIMALS} decimals — the same as NIGHT's own row"
+      SNIGHT_DECIMALS="$(printf '%s' "$SNIGHT_RECORD" | sed -n 's/.*"decimals":\([0-9][0-9]*\).*/\1/p' | head -1)"
+      NIGHT_DECIMALS="$(printf '%s' "$NIGHT_RECORD" | sed -n 's/.*"decimals":\([0-9][0-9]*\).*/\1/p' | head -1)"
+      if [[ "$SNIGHT_DECIMALS" == "6" && "$NIGHT_DECIMALS" == "6" ]]; then
+        ok "sNight and NIGHT are both registered at exactly 6 decimals"
       else
-        fail "sNight decimals (${SNIGHT_DECIMALS:-none}) != NIGHT decimals (${NIGHT_DECIMALS:-none}) — GET /v1/quote will not be ~1:1"
+        fail "sNight decimals=${SNIGHT_DECIMALS:-none}, NIGHT decimals=${NIGHT_DECIMALS:-none} — expected BOTH exactly 6 (kernel PR #60 / Q14); GET /v1/quote will not be 1:1"
         BOOK_FAILED=1
       fi
       if printf '%s' "$SNIGHT_RECORD" | grep -q '"asset_id":"midnight-3"'; then

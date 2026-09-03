@@ -88,7 +88,7 @@ fi
 wait_http "${KERNEL_API_URL}/v1/health" "kernel" "${KERNEL_WAIT_TIMEOUT_S}" \
   || die "the kernel /v1 API never answered at ${KERNEL_API_URL}"
 
-# ── priced, as NIGHT is (phase G) ─────────────────────────────────────────────
+# ── priced, as NIGHT is (phase G), at NIGHT's REAL decimals (phase H2, Q14) ──
 #
 # Kernel `main` (PR #54) accepts an optional `decimals`/`asset_id` on POST /v1/known-tokens and
 # answers 400 with the known ids on an unrecognised one. sNight is registered as `midnight-3` —
@@ -97,26 +97,30 @@ wait_http "${KERNEL_API_URL}/v1/health" "kernel" "${KERNEL_WAIT_TIMEOUT_S}" \
 # the actual relationship. Fixed, not overridable — a colour claiming a DIFFERENT asset would
 # misprice every sNight offer's sponsorship check.
 #
-# THE DECIMALS VALUE IS READ FROM NIGHT'S OWN ROW, NOT HARD-CODED, and that is a deliberate
-# correction of the naive choice (measured 2026-09-03, see the plan's phase G log). The
-# kernel's pricing table's `decimals` is "base units per PRICING coin" (`price_usd /
-# 10^decimals` = USD per base unit) — a kernel-API convention, NOT the same thing as this
-# contract's own on-chain `decimals()` circuit (6, a DISPLAY convention). Kernel `main`'s own
-# seed (`000-init.sql`) registers NIGHT with `decimals: 0` ("the faucet mints 1000 base units =
-# 1000 coins" — the kernel prices every raw unit directly, with no coin-grouping), and the wrap
-# circuit locks and mints RAW UNITS one-for-one (measured: wrapping 1,000,000 raw NIGHT mints
-# exactly 1,000,000 raw sNight — see phase D′'s live run). So for `GET /v1/quote` to actually
-# answer ~1:1 rather than off by 10^N, sNight's KERNEL-PRICING decimals must equal NIGHT's
-# KERNEL-PRICING decimals — whatever that is TODAY, read live rather than assumed as 6 (which
-# would silently misprice every sNight offer's sponsorship check by 1,000,000x if the two ever
-# diverged from a hard-coded guess).
+# DECIMALS IS THE LITERAL CONSTANT 6, NOT MIRRORED OFF NIGHT'S OWN ROW ANY MORE. Phase G read
+# it live because the kernel's seed was WRONG (registered NIGHT at kernel-pricing decimals 0,
+# see the plan's phase G log and question Q14) — mirroring a wrong number faithfully reproduced
+# it for sNight too. Kernel PR #60 (this project's own upstream fix, phase H1) corrected the
+# seed: 1 NIGHT = 10^6 Stars (`STARS_PER_NIGHT` in midnight-ledger/ledger/src/structure.rs;
+# `NIGHT-shielded-vs-unshielded-FINDINGS.md`), so NIGHT's kernel-pricing decimals is now
+# genuinely 6 — the SAME number as the kernel-pricing convention's definition ("base units per
+# PRICED coin") and, not coincidentally, the same number this contract's own on-chain
+# `decimals()` circuit answers (a DIFFERENT convention — display decimals — that happens to
+# share the value once the kernel's own seed is correct). Hard-coding 6 here is therefore
+# CORRECT BY CONSTRUCTION against the fixed seed, not a guess: the wrap circuit locks and mints
+# raw units one-for-one (measured: wrapping 1,000,000 raw NIGHT mints exactly 1,000,000 raw
+# sNight — phase D′'s live run), so pricing both at the SAME kernel-pricing decimals is what
+# makes `GET /v1/quote` genuinely 1:1.
 #
-# `midnight-3` is seeded unconditionally by the kernel's own `000-init.sql` (the NIGHT row,
-# colour 0x00…00), so this probe is not a live config an operator can break — but reading both
-# values off it turns "the registration 400s with an opaque server message", or a silently
-# wrong price ratio, into either a correct registration or a named, actionable failure.
+# THE ASSERTION BELOW IS WHAT KEEPS THIS HONEST: before posting the literal 6, this one-shot
+# reads NIGHT's own row off `GET /v1/prices` and demands it ALSO read exactly 6. A kernel whose
+# seed regresses (or is re-pinned to a ref before PR #60) fails LOUDLY here, naming the kernel
+# pin as the thing to check, rather than silently registering sNight at a decimals value that
+# no longer matches NIGHT's and quietly making `GET /v1/quote` wrong by a power of ten again —
+# exactly the failure mode a literal constant would otherwise reintroduce without this check.
 ASSET_ID="midnight-3"
 NIGHT_COLOR="0000000000000000000000000000000000000000000000000000000000000000"
+SNIGHT_DECIMALS=6
 # `bun -e fetch`, NOT curl: measured 2026-09-03 — this runtime image (the `deploy` target, FROM
 # `oven/bun`) has no `curl` binary at all. curl is installed only in the Dockerfile's separate
 # `compact` build stage, never copied into the runtime image. A `curl -fsS ... || true` call
@@ -133,9 +137,13 @@ case "${PRICES_PROBE}" in
   *"\"asset_id\":\"${ASSET_ID}\""*) log "confirmed ${ASSET_ID} is a seeded asset (GET /v1/prices)" ;;
   *) die "GET /v1/prices does not list ${ASSET_ID} as a seeded asset — cannot register sNight priced against it: ${PRICES_PROBE:0:300}" ;;
 esac
-DECIMALS="$(printf '%s' "${PRICES_PROBE}" | sed -n 's/.*"token_color":"'"${NIGHT_COLOR}"'"[^}]*"decimals":\([0-9]\+\).*/\1/p' | head -1)"
-[ -n "${DECIMALS}" ] || die "could not read NIGHT's own decimals off GET /v1/prices — cannot price sNight consistently with it: ${PRICES_PROBE:0:300}"
-log "pricing sNight at ${DECIMALS} decimals — the same value NIGHT itself is registered at"
+NIGHT_DECIMALS="$(printf '%s' "${PRICES_PROBE}" | sed -n 's/.*"token_color":"'"${NIGHT_COLOR}"'"[^}]*"decimals":\([0-9]\+\).*/\1/p' | head -1)"
+[ -n "${NIGHT_DECIMALS}" ] || die "could not read NIGHT's own decimals off GET /v1/prices — cannot verify sNight's fixed decimals=${SNIGHT_DECIMALS} against it: ${PRICES_PROBE:0:300}"
+if [ "${NIGHT_DECIMALS}" -ne "${SNIGHT_DECIMALS}" ]; then
+  die "NIGHT is registered at ${NIGHT_DECIMALS} kernel-pricing decimals, not the expected ${SNIGHT_DECIMALS} — the KERNEL_REF pin (kernel PR #60, NIGHT/USDC decimals 0 -> 6) has moved backward or the seed regressed. Registering sNight at a hard-coded ${SNIGHT_DECIMALS} would make GET /v1/quote wrong by 10^$(( SNIGHT_DECIMALS - NIGHT_DECIMALS )) instead of ~1:1 -- fix the kernel pin, do not mirror this value."
+fi
+log "NIGHT confirmed at ${NIGHT_DECIMALS} decimals — pricing sNight at the same fixed ${SNIGHT_DECIMALS}"
+DECIMALS="${SNIGHT_DECIMALS}"
 
 # ── the colour, derived exactly as the page derives it ───────────────────────
 #
@@ -163,11 +171,12 @@ log "sNight colour ${COLOR}"
 # `decimals`/`asset_id` are what makes sNight a PRICED asset (phase G): without them the row
 # registers exactly as before (name only), the kernel's sponsorship gate treats it as
 # `unpriced`, and `BATCHER_SPONSOR_UNPRICED` decides its fate rather than a real 1:1-with-NIGHT
-# comparison. `${DECIMALS}` is read off NIGHT's own row above, NOT this dApp's own
-# `SHIELDED_NIGHT_DECIMALS` (.env.example, 6) — that is the CONTRACT's on-chain display
-# decimals, a different convention from the kernel pricing table's, and using it here would
-# misprice sNight by 1,000,000x against a NIGHT priced at kernel-decimals 0. See the comment
-# above the probe for the full derivation.
+# comparison. `${DECIMALS}` is the fixed `${SNIGHT_DECIMALS}` (6) asserted equal to NIGHT's own
+# kernel-pricing row above, NOT a value read live off it any more (phase H2, now that kernel PR
+# #60 makes 6 the correct, permanent answer) — and it happens to coincide with this dApp's own
+# `SHIELDED_NIGHT_DECIMALS` (.env.example, 6), which is a DIFFERENT convention (the contract's
+# on-chain display decimals) that is not read here either. See the comment above the probe for
+# the full derivation and why a mismatch is fatal rather than mirrored.
 #
 # `${res.status}` below is a JS template literal evaluated by bun, not a shell expansion.
 # shellcheck disable=SC2016

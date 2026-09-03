@@ -75,6 +75,40 @@ BATCHER="http://${BIND}:${BATCHER_HOST_PORT:-3334}"
 FAILURES=0
 fail() { err "$*"; FAILURES=$(( FAILURES + 1 )); }
 
+# decimal_shift_left <value> <n> — EXACT decimal-string division by 10^n (i.e. "shift the
+# decimal point left by n places"), mirroring packages/database/price-map.ts's
+# `tokenPriceFromAsset()`/`renderDecimal()` on the kernel side. Pure bash + sed, no bc/python3/
+# jq — this must run on a clean macOS box. Used to prove NIGHT's per-base-unit `price_usd`
+# (GET /v1/prices `tokens[]`) equals its coin `price_usd` (GET /v1/prices `assets[]`) divided by
+# 10^decimals, as an EXACT STRING, never a float comparison (the whole reason this reads decimal
+# strings via grep/sed instead of parsing them into shell arithmetic, which is integer-only).
+decimal_shift_left() {
+  local value="$1" n="$2" int_part frac_part digits pointpos before after pad
+  if [[ "$value" == *.* ]]; then
+    int_part="${value%%.*}"; frac_part="${value#*.}"
+  else
+    int_part="$value"; frac_part=""
+  fi
+  digits="${int_part}${frac_part}"
+  pointpos=${#int_part}
+  pointpos=$(( pointpos - n ))
+  if (( pointpos < 0 )); then
+    pad=$(( -pointpos ))
+    digits="$(printf '%0*d' "$pad" 0)${digits}"
+    pointpos=0
+  fi
+  before="${digits:0:pointpos}"
+  after="${digits:pointpos}"
+  before="$(printf '%s' "$before" | sed 's/^0*\(.\)/\1/')"
+  [[ -n "$before" ]] || before="0"
+  after="$(printf '%s' "$after" | sed 's/0*$//')"
+  if [[ -z "$after" ]]; then
+    printf '%s' "$before"
+  else
+    printf '%s.%s' "$before" "$after"
+  fi
+}
+
 log "kernel: endpoints"
 info "api      ${API}"
 info "batcher  ${BATCHER}"
@@ -202,19 +236,39 @@ fi
 # no dependency on a kernel — spec FR-002/FR-015). Reported, not hard-failed, when
 # shielded-night is not part of this bring-up: this script's job is the offerfiles profile,
 # and a stack legitimately brought up as `--with offerfiles` alone has nothing to check here.
+SNIGHT_COLOR_FOR_QUOTE=""
 if service_present shielded-night; then
   if [[ -n "$KNOWN" ]] && printf '%s' "$KNOWN" | grep -qi '"name":"snight"'; then
     SNIGHT_ROW="$(printf '%s' "$KNOWN" | tr '{' '\n' | grep -i '"name":"snight"' | head -1)"
-    if printf '%s' "$SNIGHT_ROW" | grep -Eq '"decimals":[0-9]+' && printf '%s' "$SNIGHT_ROW" | grep -q '"asset_id":"midnight-3"'; then
-      ok "sNight is registered PRICED: $(printf '%s' "$SNIGHT_ROW" | grep -oE '"decimals":[0-9]+|"asset_id":"[^"]*"' | tr '\n' ' ')"
+    SNIGHT_ROW_DECIMALS="$(printf '%s' "$SNIGHT_ROW" | sed -n 's/.*"decimals":\([0-9][0-9]*\).*/\1/p' | head -1)"
+    if [[ "$SNIGHT_ROW_DECIMALS" == "6" ]] && printf '%s' "$SNIGHT_ROW" | grep -q '"asset_id":"midnight-3"'; then
+      ok "sNight is registered PRICED at exactly 6 decimals, asset_id midnight-3: $(printf '%s' "$SNIGHT_ROW" | grep -oE '"decimals":[0-9]+|"asset_id":"[^"]*"' | tr '\n' ' ')"
     else
-      fail "sNight is named but not priced (no decimals/asset_id): ${SNIGHT_ROW:0:200}"
+      fail "sNight is not priced at exactly 6 decimals / asset_id=midnight-3 (decimals=${SNIGHT_ROW_DECIMALS:-none}): ${SNIGHT_ROW:0:200}"
     fi
+    SNIGHT_COLOR_FOR_QUOTE="$(printf '%s' "$SNIGHT_ROW" | sed -n 's/.*"token_color":"\([0-9a-fA-F]\{64\}\)".*/\1/p' | head -1)"
+    [[ -n "$SNIGHT_COLOR_FOR_QUOTE" ]] || fail "could not read sNight's token_color off its known-tokens row: ${SNIGHT_ROW:0:200}"
   else
     fail "shielded-night is up but /v1/known-tokens names no sNight row — the shielded-night-token-name one-shot did not run or failed"
   fi
 else
   info "shielded-night profile not up on this bring-up — nothing to check for the sNight row"
+fi
+
+# ── the quote, book-chain-INDEPENDENT (runs even with SHIELDED_NIGHT_SKIP_BOOK=1) ────
+# The `book` subsection of verify-shielded-night.sh also asserts this, but that subsection is
+# entirely SKIPPED under SHIELDED_NIGHT_SKIP_BOOK=1 (phase G) — this is the one place the
+# 1:1 quote claim is proven on every bring-up that has both profiles up, book or no book.
+if [[ -n "$SNIGHT_COLOR_FOR_QUOTE" ]]; then
+  echo
+  log "kernel: sNight<->NIGHT quote"
+  NIGHT_COLOR_Q="0000000000000000000000000000000000000000000000000000000000000000"
+  QUOTE="$(curl -fsS --max-time 20 "$API/v1/quote?from_token=${SNIGHT_COLOR_FOR_QUOTE}&to_token=${NIGHT_COLOR_Q}&from_amount=1000000" 2>/dev/null || true)"
+  if printf '%s' "$QUOTE" | grep -q '"market_rate":1[,}]'; then
+    ok "GET /v1/quote sNight->NIGHT market_rate is exactly 1"
+  else
+    fail "GET /v1/quote sNight->NIGHT is not exactly 1:1: ${QUOTE:0:300}"
+  fi
 fi
 
 # ── reference prices (kernel PR #54) ──────────────────────────────────────────
@@ -229,11 +283,55 @@ NIGHT_COLOR="0000000000000000000000000000000000000000000000000000000000000000"
 PRICES="$(curl -fsS --max-time 10 "$API/v1/prices?tokens=${NIGHT_COLOR}" 2>/dev/null || true)"
 if [[ -z "$PRICES" ]]; then
   fail "GET /v1/prices?tokens=<NIGHT> did not answer"
-elif printf '%s' "$PRICES" | grep -q '"asset_id":"midnight-3"' \
-     && printf '%s' "$PRICES" | grep -Eq '"source":"(feed|seed|manual)"'; then
-  ok "GET /v1/prices reports a real (non-fallback) price for midnight-3 (NIGHT): ${PRICES:0:160}"
 else
-  fail "GET /v1/prices did not report a seeded/fed price for NIGHT (midnight-3): ${PRICES:0:300}"
+  # Two DIFFERENT records both carry "asset_id":"midnight-3" — the top-level `assets[]` entry
+  # (the COIN price, e.g. 0.01918181 USD) and the `tokens[]` entry for NIGHT's own colour (the
+  # PER-BASE-UNIT price, already divided by 10^decimals server-side). Disambiguated by the
+  # presence of `token_color`, which only the second carries.
+  NIGHT_TOKEN_RECORD="$(printf '%s' "$PRICES" | tr '{' '\n' | grep -E '"token_color":"0{64}"' | head -1)"
+  ASSET_RECORD="$(printf '%s' "$PRICES" | tr '{' '\n' | grep '"asset_id":"midnight-3"' | grep -v '"token_color"' | head -1)"
+  if [[ -z "$NIGHT_TOKEN_RECORD" ]]; then
+    fail "GET /v1/prices?tokens=<NIGHT> has no tokens[] entry for NIGHT's colour: ${PRICES:0:300}"
+  else
+    NIGHT_TOKEN_SOURCE="$(printf '%s' "$NIGHT_TOKEN_RECORD" | sed -n 's/.*"source":"\([a-z]*\)".*/\1/p' | head -1)"
+    NIGHT_TOKEN_DECIMALS="$(printf '%s' "$NIGHT_TOKEN_RECORD" | sed -n 's/.*"decimals":\([0-9][0-9]*\).*/\1/p' | head -1)"
+    NIGHT_TOKEN_PRICE="$(printf '%s' "$NIGHT_TOKEN_RECORD" | sed -n 's/.*"price_usd":"\([0-9.]*\)".*/\1/p' | head -1)"
+    case "$NIGHT_TOKEN_SOURCE" in
+      feed|seed|manual) ok "GET /v1/prices reports a real (non-fallback) price for NIGHT: source=${NIGHT_TOKEN_SOURCE}" ;;
+      *) fail "GET /v1/prices did not report a seeded/fed price for NIGHT (source=${NIGHT_TOKEN_SOURCE:-none}): ${NIGHT_TOKEN_RECORD:0:200}" ;;
+    esac
+    # Q14's fix, asserted directly rather than mirrored: NIGHT must be EXACTLY 6 decimals
+    # (1 NIGHT = 10^6 Stars — STARS_PER_NIGHT in midnight-ledger/ledger/src/structure.rs), not
+    # merely "whatever the kernel currently says" (that was phase G's weaker, self-consistent-
+    # only check, which measured 0 and was wrong — question Q14).
+    if [[ "$NIGHT_TOKEN_DECIMALS" == "6" ]]; then
+      ok "NIGHT is registered at exactly 6 decimals"
+    else
+      fail "NIGHT is registered at ${NIGHT_TOKEN_DECIMALS:-none} decimals, expected exactly 6 (kernel PR #60 / Q14) — KERNEL_REF may be pinned before the fix"
+    fi
+    # NIGHT's price PER BASE UNIT must equal its seeded COIN price / 10^decimals, EXACTLY —
+    # read both exact-decimal strings the kernel returns and compare them as STRINGS (never as
+    # floats: bash has no float arithmetic at all, and that is deliberately not worked around
+    # here, since a float comparison is exactly the class of bug this assertion exists to rule
+    # out on the kernel side too — see packages/database/price-map.ts's tokenPriceFromAsset()).
+    if [[ -z "$ASSET_RECORD" ]]; then
+      fail "GET /v1/prices has no assets[] entry for midnight-3 — cannot cross-check NIGHT's per-base-unit price"
+    elif [[ -z "$NIGHT_TOKEN_PRICE" || -z "$NIGHT_TOKEN_DECIMALS" ]]; then
+      fail "could not read NIGHT's tokens[] price_usd/decimals to cross-check: ${NIGHT_TOKEN_RECORD:0:200}"
+    else
+      ASSET_PRICE="$(printf '%s' "$ASSET_RECORD" | sed -n 's/.*"price_usd":"\([0-9.]*\)".*/\1/p' | head -1)"
+      if [[ -z "$ASSET_PRICE" ]]; then
+        fail "could not read midnight-3's coin price_usd off assets[]: ${ASSET_RECORD:0:200}"
+      else
+        EXPECTED_NIGHT_PRICE="$(decimal_shift_left "$ASSET_PRICE" "$NIGHT_TOKEN_DECIMALS")"
+        if [[ "$NIGHT_TOKEN_PRICE" == "$EXPECTED_NIGHT_PRICE" ]]; then
+          ok "NIGHT's per-base-unit price (${NIGHT_TOKEN_PRICE}) == its coin price (${ASSET_PRICE}) / 10^${NIGHT_TOKEN_DECIMALS}, exactly"
+        else
+          fail "NIGHT's per-base-unit price is ${NIGHT_TOKEN_PRICE}, expected ${ASSET_PRICE} / 10^${NIGHT_TOKEN_DECIMALS} = ${EXPECTED_NIGHT_PRICE} exactly"
+        fi
+      fi
+    fi
+  fi
 fi
 
 # ── ZK assets ────────────────────────────────────────────────────────────────

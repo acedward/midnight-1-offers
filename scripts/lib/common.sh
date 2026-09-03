@@ -175,7 +175,7 @@ load_env() {
   # views of ONE tree. `main` also now carries the seeded reference-price service and the
   # batcher sponsorship gate (kernel PR #54/#56) — see .env.example.
   : "${KERNEL_REPO:=https://github.com/effectstream/zswap-offerfiles-kernel.git}"
-  : "${KERNEL_REF:=f92c7cacf0588a77c518658b6d6c4836f7b97cae}"
+  : "${KERNEL_REF:=61f055e83ae1ac4cb6e45031fb38c93c07f2d4d4}"
   : "${FRONTEND_REPO:=https://github.com/effectstream/effectstream.git}"
   : "${FRONTEND_REF:=f20a38cfccd4f2dec5c886e5c8bb321712d37924}"
   : "${SOLVER_REPO:=https://github.com/effectstream/zswap-offerfiles-kernel.git}"
@@ -184,7 +184,7 @@ load_env() {
   # (ledger-v8 8.1.0 / midnight-js 4.1.1 / compact-runtime 0.16.0), so nothing here is
   # patched — see config/artifact-decisions.json -> sources[shielded-night].
   : "${SHIELDED_NIGHT_REPO:=https://github.com/effectstream/shielded-night.git}"
-  : "${SHIELDED_NIGHT_REF:=6d87db4b425341931f11856b93a453ee62c6ee08}"
+  : "${SHIELDED_NIGHT_REF:=f7fcefa7921bf2c3f634871f9ad3aa3a32251af0}"
   # The relay/intents-UI pin. There is deliberately no *_REPO for it: the source is private
   # and is never fetched by this repository. RELAY_SOURCE_DIR names the operator's own
   # clone, and assert_relay_source() below verifies that clone is at exactly this commit.
