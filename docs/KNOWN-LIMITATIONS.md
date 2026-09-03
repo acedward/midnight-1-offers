@@ -75,6 +75,22 @@ container facade. If a future profile wants it, give that profile its own seed â
 one a dedicated driver plus a NIGHT + DUST provisioning lane, which this repository still does
 not have (the 2.x sibling's `scripts/fund-wallet.sh` is the shape it would take).
 
+### The relay and the COW solver cannot quote an sNight pair
+
+The `solver` profile's COW solver quotes from inventory it actually holds, and its provisioning
+one-shot mints it only the offer-files demo colours. sNight exists **only** by wrapping native
+NIGHT through the ShieldedNight contract, which that profile knows nothing about â€” so an sNight
+offer can never appear in the solver's ladder and the relay will not broker a fill for it.
+
+This costs nothing today, because taking an Offer File needs no intermediary: the maker's
+transaction is deliberately unbalanced, and a taker balances it, claims the give leg, pays the
+want leg and submits. That is what `./verify.sh`'s book subsection does, and the kernel
+certifies the outcome (the offer reaches `consumed`, i.e. its input nullifier was spent on
+chain). With the `solver` profile up the section says so and takes the offer directly anyway.
+
+Teaching the solver to hold sNight would mean coupling it to a profile that must depend only on
+`core`. Recorded as question Q12 of project 00007.
+
 ### The page also offers the live Preview and PreProd networks
 
 Upstream's committed `frontend/.env` carries the real Preview and PreProd contract addresses, so

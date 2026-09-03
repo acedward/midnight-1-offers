@@ -95,6 +95,32 @@ byte-exactness is the dApp's verifiability claim, and `./verify.sh` closes the l
 asserting the deployed contract's on-chain verifier keys equal the served ones, 11 of 11. See
 `images/shielded-night/PROVENANCE.md` and `config/artifact-decisions.json`.
 
+### sNight on the offer book — the reason this dApp is in an OFFERS stack
+
+Native NIGHT cannot be traded on the offer-files book: the book trades **shielded** tokens and
+NIGHT is unshielded. Wrapped, it can be. Two things make that real when the `offerfiles`
+profile is also up, and both are additive — neither profile depends on the other:
+
+* **The colour gets a name.** sNight's colour derives from the contract address, so it is
+  different on every fresh stack and cannot be written down anywhere. At the end of bring-up
+  `up.sh` runs the `shielded-night-token-name` one-shot, which derives it exactly as the page
+  does (`rawTokenType(pad(32,"shielded-night:wrapper"), address)`) and registers it with the
+  kernel's dev registry (`POST /v1/known-tokens`, symbol `sNight`). Without it the zswap-da SPA
+  shows an sNight offer as 64 hex characters. The one-shot is idempotent (the kernel answers
+  409 on a re-run) and exits 0 with one line if there is no kernel on the network.
+* **`./verify.sh` drives the whole chain.** Its `book` subsection — which runs *if and only if*
+  the `offerfiles` profile is up — wraps NIGHT into sNight, posts a real MIP-0005 offer file
+  giving that sNight against one of the stack's minted demo colours (through the kernel's own
+  `post-maker-offer.ts`, the same code path the repository's `maker-offer` one-shot uses),
+  finds it in the book on the sNight colour, has a second wallet balance and settle it, and has
+  that wallet convert the sNight it *bought* back into native NIGHT. Exact balances at every
+  step. See `docs/OPERATIONS.md` for the knobs and the time budget.
+
+The last step is the one the browser cannot do: the page can only unwrap coins it minted
+itself, because it remembers their nonces in `localStorage`. The taker in the chain never
+wrapped anything — its sNight arrived inside somebody else's offer file — and the Node-side
+driver discovers the coin from the wallet's own synced state.
+
 ### What else the page offers
 
 Upstream's committed `frontend/.env` carries the live **Preview** and **PreProd** contract
