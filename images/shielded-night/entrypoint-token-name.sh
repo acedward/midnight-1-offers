@@ -200,7 +200,42 @@ RESULT="$(KT_URL="${KERNEL_API_URL}/v1/known-tokens" KT_COLOR="${COLOR}" KT_NAME
 
 case "${RESULT}" in
   2*)   log "named ${TOKEN_NAME} (shielded) = ${COLOR}, priced as ${ASSET_ID} at ${DECIMALS} decimals" ;;
-  409*) log "${TOKEN_NAME} is already registered — nothing to do" ;;
+  # ── 409 IS NO LONGER TAKEN AT FACE VALUE (00011 PR A) ──────────────────────
+  #
+  # `known_tokens.name` is UNIQUE and the kernel upper-cases the posted name, so a 409 means
+  # EITHER "this stack already registered this very colour" (a re-run — the case this branch
+  # was written for) OR "something else owns the name SNIGHT". Since kernel PR #61 the second
+  # case happens on a FRESH stack: `packages/database/migrations/000-init.sql` now SEEDS a
+  # SNIGHT row at the PREVIEW contract's colour (793c29c9…), and that colour cannot exist on an
+  # `undeployed` devnet — this stack deploys its own shielded-night contract and derives a
+  # different colour every time. Treating that 409 as success left the stack's REAL sNight
+  # colour unnamed while every check that greps for a row named sNight passed against the
+  # phantom, which is the worst of both worlds.
+  #
+  # So: read the registry back and compare colours.
+  #   same colour  -> genuine idempotence, exit 0.
+  #   other colour -> exit 75 (EX_TEMPFAIL), which up.sh answers by clearing the stale row and
+  #                   running this one-shot once more. Run by hand, the message says what to do.
+  409*)
+    # shellcheck disable=SC2016
+    OWNER="$(KT_URL="${KERNEL_API_URL}/v1/known-tokens" bun -e '
+      const res = await fetch(process.env.KT_URL, { signal: AbortSignal.timeout(15000) })
+        .catch(() => ({ text: async () => "" }));
+      process.stdout.write(await res.text());
+    ')" || OWNER=""
+    OWNER_ROW="$(printf '%s' "${OWNER}" | tr '{' '\n' | grep -i '"name":"snight"' | head -1)"
+    OWNER_COLOR="$(printf '%s' "${OWNER_ROW}" | sed -n 's/.*"token_color":"\([0-9a-f]\{64\}\)".*/\1/p' | head -1)"
+    if [ "${OWNER_COLOR}" = "${COLOR}" ]; then
+      log "${TOKEN_NAME} is already registered as ${COLOR} — nothing to do"
+    else
+      log "STALE ${TOKEN_NAME} ROW: the registry holds ${OWNER_COLOR:-<unreadable>} under that name, but this stack's"
+      log "sNight colour is ${COLOR}. Kernel PR #61 seeds a SNIGHT row at the PREVIEW contract's colour,"
+      log "which cannot exist on an undeployed devnet. Clear it and re-run this one-shot:"
+      log "  docker compose exec -T postgres psql -U \${OFFERFILES_PG_USER} -d \${OFFERFILES_PG_DB} \\"
+      log "    -c \"DELETE FROM known_tokens WHERE upper(name) = 'SNIGHT';\""
+      exit 75
+    fi
+    ;;
   # Loud and fatal, exactly as offerfiles-token-names is: a 404 NOT_ENABLED means
   # ENABLE_TOKEN_REGISTRY did not reach the kernel as the literal string "true" (it parses THAT
   # variable strictly), a 400 names an unknown asset_id (should not happen — see the preflight

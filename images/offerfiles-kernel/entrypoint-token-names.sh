@@ -54,6 +54,16 @@ REGISTERED=0
 SKIPPED=0
 FAILED=0
 
+# Base units per coin for every colour this stack mints. STATED on every registration, never
+# left to the column default — see the block comment above `register()`'s POST body.
+#
+# The literal mirrors `DEFAULT_TOKEN_DECIMALS` in the kernel's own
+# `packages/solver-core/amount.ts` (6 since kernel PR #63) and `known_tokens.decimals DEFAULT 6`
+# in `packages/database/migrations/000-init.sql`. It is a literal here for the same reason it is
+# one in upstream's `entrypoint-register-minted-tokens.sh`: this runs as a bare `bun -e` snippet
+# inside the image, with no module to import it from.
+MINTED_TOKEN_DECIMALS="${MINTED_TOKEN_DECIMALS:-6}"
+
 register() {
   local json_key="$1" name="$2" kind="$3" colour result
   colour="$(MINTED_JSON_PATH="${PUBLISHED_MINTED}" MINTED_KEY="${json_key}" bun -e '
@@ -73,9 +83,19 @@ register() {
   # NOT_ENABLED, for instance, means ENABLE_TOKEN_REGISTRY did not reach the kernel as the
   # literal string "true" (main parses THAT variable strictly, unlike its other booleans).
   # `${res.status}` below is a JS template literal evaluated by bun, not a shell expansion.
+  #
+  # `decimals` IS STATED, not left to the column default (kernel PR #63 / spec FR-003).
+  # The faucet mints WHOLE COINS scaled by 10^6 — `mint-test-tokens.ts`'s MINT_AMOUNT is
+  # `coinsToBaseUnits(1000n, 6)` = 1_000_000_000 base units, i.e. 1 000 coins — so the registry
+  # has to say 6 or every USD price and every sponsorship verdict for this colour is off by
+  # 10^6. Explicit beats implicit even though the column now defaults to 6: a kernel pinned
+  # BEFORE #63 defaults it to 0, and this one-shot would then silently register three colours
+  # at the wrong scale rather than failing. This mirrors upstream's own
+  # `deploy/images/kernel/entrypoint-register-minted-tokens.sh`, which states it for the same
+  # reason and in the same words.
   # shellcheck disable=SC2016
   result="$(KT_URL="${KERNEL_API_URL}/v1/known-tokens" KT_COLOR="${colour}" \
-            KT_NAME="${name}" KT_KIND="${kind}" bun -e '
+            KT_NAME="${name}" KT_KIND="${kind}" KT_DECIMALS="${MINTED_TOKEN_DECIMALS}" bun -e '
     const res = await fetch(process.env.KT_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -83,6 +103,7 @@ register() {
         color: process.env.KT_COLOR,
         name: process.env.KT_NAME,
         kind: process.env.KT_KIND,
+        decimals: Number(process.env.KT_DECIMALS),
       }),
       signal: AbortSignal.timeout(15000),
     }).catch((e) => ({ status: 0, text: async () => String(e) }));
@@ -91,7 +112,7 @@ register() {
   ')" || result="0 (probe failed)"
 
   case "${result}" in
-    2*) log "named ${name} (${kind}) = ${colour}"; REGISTERED=$(( REGISTERED + 1 )) ;;
+    2*) log "named ${name} (${kind}) = ${colour} at ${MINTED_TOKEN_DECIMALS} decimals"; REGISTERED=$(( REGISTERED + 1 )) ;;
     409*) log "${name} (${kind}) already registered — nothing to do"; SKIPPED=$(( SKIPPED + 1 )) ;;
     *) log "FAILED to name ${name} (${kind}) ${colour}: ${result}"; FAILED=$(( FAILED + 1 )) ;;
   esac
@@ -101,7 +122,7 @@ register shieldedA  "${NAME_SHIELDED_A}" shielded
 register shieldedB  "${NAME_SHIELDED_B}" shielded
 register unshielded "${NAME_UNSHIELDED}" unshielded
 
-log "token names: ${REGISTERED} registered, ${SKIPPED} already present or absent, ${FAILED} failed"
+log "token names: ${REGISTERED} registered at ${MINTED_TOKEN_DECIMALS} decimals, ${SKIPPED} already present or absent, ${FAILED} failed"
 
 # Loud, and fatal: this one-shot exists BECAUSE the upstream failure is silent. A registration
 # that fails for a real reason (the registry disabled, a malformed colour) must stop the

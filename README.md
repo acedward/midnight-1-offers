@@ -25,10 +25,13 @@ Two deltas beyond the version line:
   wraps it, posts a real MIP-0005 offer file carrying sNight, has a second wallet settle that
   offer, and has that wallet unwrap what it bought — with exact balances at every step.
 
-> **STATUS — scaffold.** Phase P0 (repository skeleton, operating scripts, pinned identities)
-> is landed. The compose fragments are valid **placeholders**: they declare no services yet.
-> Services and images arrive in P1 (core), P2 (offerfiles), P3 (frontend) and P4 (solver).
-> `./up.sh` therefore brings up nothing today, and says so.
+> **STATUS — shipped.** All five profiles run real services: `./up.sh --all` brings up the
+> whole stack from a clean host and `./verify.sh` gates it end to end. The stack tracks the
+> offer-files kernel's own `main` — currently `c293ebd`, **the whole-coin line** (every token is
+> 6 decimals and one faucet press mints 1 000 whole coins = 1 000 000 000 base units), with the
+> `zswap-da` SPA on its matching `midnight-1` head `58ab921`. **Re-pinning an EXISTING stack
+> forward onto this line is BREAKING for its `postgres` volume — `./down.sh -v` first; see
+> [`docs/OPERATIONS.md`](docs/OPERATIONS.md).**
 
 ## Profiles
 
@@ -39,8 +42,8 @@ never passes `--profile`, so a service carrying one would silently never start.
 | Profile | Fragment | What it runs |
 |---|---|---|
 | `core` | `compose/core.yml` | midnight-node 1.0.0, indexer-standalone 4.3.3, proof-server 8.1.0 (+ its proof-data pre-warm), PostgreSQL with `pg_ivm`. **Unconditional** — every `up.sh` includes it. |
-| `offerfiles` | `compose/offerfiles.yml` | Celestia DA devnet, the offer-files contract deploy one-shot, the kernel API (`:9999`) and the batcher (`:3334`), built from `effectstream/zswap-offerfiles-kernel` **main** — which now includes the COW-solver line, seeded reference asset prices (`GET /v1/prices`), and the batcher's sponsorship gate (`BATCHER_SPONSOR_POLICY=warn` / `BATCHER_SPONSOR_UNPRICED=allow` by default). **Re-pinning past a stack that already ran an OLDER `KERNEL_REF` is BREAKING for its Postgres volume — see `docs/OPERATIONS.md`, `./down.sh -v` is the upgrade path.** |
-| `frontend` | `compose/frontend.yml` | the `zswap-da` SPA (`:10600`), built from the frozen `effectstream/effectstream` template — v8-native at that ref, so **no** ledger patch. Now includes the reference-rate / sponsorship-threshold UI (effectstream#916). |
+| `offerfiles` | `compose/offerfiles.yml` | Celestia DA devnet, the offer-files contract deploy one-shot, the kernel API (`:9999`) and the batcher (`:3334`), built from `effectstream/zswap-offerfiles-kernel` **main** — which includes the COW-solver line, seeded reference asset prices (`GET /v1/prices`), the batcher's sponsorship gate (`BATCHER_SPONSOR_POLICY=warn` / `BATCHER_SPONSOR_UNPRICED=allow` by default) and, since `c293ebd`, **the whole-coin line**: every registered token is at 6 decimals, one faucet press mints 1 000 whole coins (`1000000000` base units), and prices are served PER BASE UNIT (`WBTC` = `0.077387`). **Re-pinning past a stack that already ran an OLDER `KERNEL_REF` is BREAKING for its Postgres volume — see `docs/OPERATIONS.md`, `./down.sh -v` is the upgrade path.** |
+| `frontend` | `compose/frontend.yml` | the `zswap-da` SPA (`:10600`), built from the frozen `effectstream/effectstream` template — v8-native at that ref, so **no** ledger patch. Includes the reference-rate / sponsorship-threshold UI (effectstream#916) and, since `58ab921`, **whole-coin amounts** (effectstream#918): the page reads each token's `decimals` off the registry, so the faucet says `1,000` and a take moves the balance by exactly the coins shown. |
 | `shielded-night` | `compose/shielded-night.yml` | the **Shielded NIGHT** dApp (`:10900`): a deploy one-shot that mints the NIGHT ⇄ sNight wrapper contract **once per stack**, and an nginx page that learns that address at container start. Built from `effectstream/shielded-night` at a pinned commit, with the contract **recompiled in-image** (compactc 0.31.1) and required to reproduce the committed artifacts byte-for-byte. **Depends only on `core`.** With `offerfiles` also up it names the sNight colour in the kernel's token registry **and prices it** (`asset_id: midnight-3`, the same reference NIGHT itself uses — `GET /v1/quote` sNight↔NIGHT answers `market_rate: 1`), and `./verify.sh` drives the whole chain — NIGHT → sNight → an offer file on the book → taken → back to NIGHT. |
 | `solver` | `compose/solver.yml` | the Midnight Intents relay (`:13000` HTTP, `:19001` solver WS), the COW solver in execution mode, the provisioning one-shots, and the intents browser UI (`:10700`). |
 
@@ -117,11 +120,10 @@ All three are offline: no daemon, no network, no registry, no credential.
 ```
 compose/     core.yml, offerfiles.yml, frontend.yml, shielded-night.yml, solver.yml
              — one fragment per profile
-images/      build contexts for the locally built images (P1–P4)
+images/      build contexts for the locally built images — one directory per image
 scripts/     verify-*.sh gates, pick-ports.sh, ci-check.sh, lib/ (shared bash + python)
 config/      artifact-decisions.json — the frozen pin record
 docs/        COMPONENTS.md, OPERATIONS.md, WALLETS.md, KNOWN-LIMITATIONS.md
-             (today they cover the shielded-night profile; the rest lands with P6)
 wallets/     wallets.json — the dev wallet roster (DEV SEEDS ONLY, no real funds)
 local/       gitignored: where you put your own clone of the private relay source
 up.sh down.sh verify.sh

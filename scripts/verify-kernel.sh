@@ -41,6 +41,19 @@
 #                   shielded-night profile is ALSO up, a sNight row is expected too, priced
 #                   (decimals + asset_id) rather than merely named — reported, not hard-failed,
 #                   when that profile is not part of this bring-up.
+#   token decimals  EVERY row of GET /v1/known-tokens is at exactly 6 decimals — kernel PR #63's
+#                   whole-coin line, where `decimals` DEFAULTS to 6 and every faucet mints whole
+#                   coins scaled by 10^6. This is ALSO the stale-volume detector: 000-init.sql
+#                   runs once against an empty database and has no IF NOT EXISTS, so a `postgres`
+#                   volume created under an older KERNEL_REF keeps the old `DEFAULT 0` forever
+#                   and merely lies about every price. A row at 0 fails NAMING `./down.sh -v`.
+#   faucet          The ALLOTMENT is read out of the RUNNING image's own pinned tree
+#                   (docs/src/wallet/mintable.ts) and must be exactly 1 000 whole coins =
+#                   1_000_000_000 base units at 6 decimals; then the two priced faucet presets
+#                   (WBTC -> bitcoin, WETH -> ethereum), whose colours derive from the deployed
+#                   contract address and so cannot be seeded, are registered idempotently at 6
+#                   decimals and their PER-BASE-UNIT prices asserted as exact decimal strings
+#                   (0.077387 and 0.00239328). See images/offerfiles-kernel/faucet-probe.ts.
 #   prices          GET /v1/prices?tokens=<NIGHT colour> answers a SEEDED price (source
 #                   feed|seed|manual, never fallback) for `midnight-3` — kernel PR #54's
 #                   reference-price table, seeded offline by 000-init.sql with no CoinGecko
@@ -231,6 +244,60 @@ else
   fi
 fi
 
+# ── THE WHOLE-COIN LINE: every registered token is at 6 decimals ─────────────
+#
+# Kernel PR #63 (KERNEL_REF c293ebd…) made `known_tokens.decimals` DEFAULT 6 instead of 0 and
+# made every faucet mint WHOLE COINS scaled by 10^6. The registry is what turns a base-unit
+# amount into a USD price (`asset_prices.price_usd / 10^decimals`), so a single row left at the
+# old default silently misprices that colour by a factor of a million — in the SPA, in
+# `GET /v1/quote` and in the batcher's sponsorship verdict.
+#
+# THIS IS ALSO THE STALE-VOLUME DETECTOR. `packages/database/migrations/000-init.sql` has no
+# `IF NOT EXISTS` and runs EXACTLY ONCE, against an empty database. A `postgres` volume created
+# under an older KERNEL_REF therefore keeps `decimals DEFAULT 0` and its old seed rows forever,
+# and NOTHING migrates it: the stack comes up healthy and merely lies about every price. A row
+# at 0 is the signature, so it is named as such here with `./down.sh -v` as the fix, rather
+# than being reported as a slow chain or an unregistered colour.
+if [[ -n "$KNOWN" ]]; then
+  echo
+  log "kernel: token decimals (the whole-coin line)"
+  DEC_ROWS=0
+  DEC_OK=0
+  DEC_BAD=""
+  DEC_STALE=0
+  while IFS= read -r row; do
+    case "$row" in
+      *'"name":'*) : ;;
+      *) continue ;;
+    esac
+    DEC_ROWS=$(( DEC_ROWS + 1 ))
+    ROW_NAME="$(printf '%s' "$row" | sed -n 's/.*"name":"\([^"]*\)".*/\1/p' | head -1)"
+    # `[0-9][0-9]*`, never the GNU-only `[0-9]\+`: BSD sed silently matches nothing (00007 H2).
+    ROW_DEC="$(printf '%s' "$row" | sed -n 's/.*"decimals":\([0-9][0-9]*\).*/\1/p' | head -1)"
+    if [[ "$ROW_DEC" == "6" ]]; then
+      DEC_OK=$(( DEC_OK + 1 ))
+    else
+      DEC_BAD="${DEC_BAD} ${ROW_NAME:-<unnamed>}=${ROW_DEC:-none}"
+      [[ "$ROW_DEC" == "0" ]] && DEC_STALE=1
+    fi
+  done <<< "$(printf '%s' "$KNOWN" | tr '{' '\n')"
+
+  if (( DEC_ROWS == 0 )); then
+    fail "GET /v1/known-tokens listed no rows at all — nothing is registered on this stack"
+  elif (( DEC_OK == DEC_ROWS )); then
+    ok "all ${DEC_ROWS} registered tokens are at exactly 6 decimals (kernel PR #63's whole-coin line)"
+  elif (( DEC_STALE )); then
+    fail "STALE POSTGRES VOLUME: ${DEC_OK}/${DEC_ROWS} tokens are at 6 decimals, and at least one is at the pre-#63 default 0 —${DEC_BAD}
+          000-init.sql runs ONCE against an EMPTY database and has no IF NOT EXISTS, so a volume
+          created under an older KERNEL_REF keeps decimals DEFAULT 0 and its old seed rows, and
+          nothing migrates it. Fix: ./down.sh -v && ./up.sh  (there is nothing to migrate on a devnet)"
+  else
+    fail "${DEC_OK}/${DEC_ROWS} registered tokens are at 6 decimals; these are not —${DEC_BAD}
+          Every colour this stack mints or seeds is 6 (kernel PR #63). A colour registered at a
+          different scale prices as price_usd / 10^decimals and is wrong by that factor."
+  fi
+fi
+
 # The sNight row — a DIFFERENT one-shot (images/shielded-night/entrypoint-token-name.sh), run
 # by up.sh only when BOTH `offerfiles` AND `shielded-night` are up (the profile itself declares
 # no dependency on a kernel — spec FR-002/FR-015). Reported, not hard-failed, when
@@ -329,6 +396,100 @@ else
         else
           fail "NIGHT's per-base-unit price is ${NIGHT_TOKEN_PRICE}, expected ${ASSET_PRICE} / 10^${NIGHT_TOKEN_DECIMALS} = ${EXPECTED_NIGHT_PRICE} exactly"
         fi
+      fi
+    fi
+  fi
+fi
+
+# ── the whole-coin FAUCET, and the two preset colours it mints ───────────────
+#
+# Two things kernel PR #63 specifies, neither of which any other section can see:
+#
+#   1. THE ALLOTMENT. One faucet press is 1 000 WHOLE COINS = 1_000_000_000 base units at 6
+#      decimals. The number is read out of the RUNNING kernel image's own pinned tree
+#      (docs/src/wallet/mintable.ts — the single definition the SPA faucet, the deploy mint and
+#      the offer poster all import), never re-declared here, so this asserts what the pinned
+#      commit ships rather than what someone remembered about it.
+#   2. THE TWO PRICED PRESETS. WBTC and WETH are the faucet names the kernel's built-in map
+#      prices (WBTC -> bitcoin, WETH -> ethereum). Their colours derive from the deployed
+#      contract address, so 000-init.sql cannot seed them; the probe registers them (with an
+#      explicit decimals: 6, exactly the body the SPA sends after a mint) and this section then
+#      asserts the per-base-unit prices the whole-coin line implies, as EXACT DECIMAL STRINGS:
+#        WBTC  77387    / 10^6 = 0.077387
+#        WETH  2393.28  / 10^6 = 0.00239328
+#      Those two coin prices are the values seeded by packages/database/migrations/000-init.sql
+#      at KERNEL_REF; the expectation is DERIVED from the assets[] row the kernel itself serves,
+#      not hard-coded, and then cross-checked against the literal the spec names.
+#
+# The probe mints nothing, holds no wallet and signs nothing — it is a derivation plus two
+# idempotent registry POSTs, so it is safe on every ./verify.sh run.
+if [[ -n "$KERNEL_ADDR" ]]; then
+  echo
+  log "kernel: faucet (whole coins)"
+  PROBE="$(dc exec -T -e "FAUCET_PROBE_CONTRACT=${KERNEL_ADDR}" -e 'KERNEL_API_URL=http://127.0.0.1:9999' \
+             kernel bun run /usr/local/lib/offerfiles/faucet-probe.ts 2>/dev/null || true)"
+  PROBE_SUMMARY="$(printf '%s' "$PROBE" | tr ' ' '\n' | grep -c '^allotmentBaseUnits=' || true)"
+  if [[ "$PROBE_SUMMARY" != "1" ]]; then
+    fail "the faucet probe did not run inside the kernel container (is the image rebuilt at this KERNEL_REF?): ${PROBE:0:300}"
+  else
+    ALLOT_COINS="$(printf '%s' "$PROBE" | sed -n 's/.*allotmentCoins=\([0-9][0-9]*\).*/\1/p' | head -1)"
+    ALLOT_UNITS="$(printf '%s' "$PROBE" | sed -n 's/.*allotmentBaseUnits=\([0-9][0-9]*\).*/\1/p' | head -1)"
+    ALLOT_DEC="$(printf '%s' "$PROBE" | sed -n 's/.*defaultDecimals=\([0-9][0-9]*\).*/\1/p' | head -1)"
+    if [[ "$ALLOT_COINS" == "1000" && "$ALLOT_UNITS" == "1000000000" && "$ALLOT_DEC" == "6" ]]; then
+      ok "one faucet mint is exactly ${ALLOT_COINS} whole coins = ${ALLOT_UNITS} base units at ${ALLOT_DEC} decimals"
+    else
+      fail "the faucet allotment is coins=${ALLOT_COINS:-none} baseUnits=${ALLOT_UNITS:-none} decimals=${ALLOT_DEC:-none},
+            expected 1000 / 1000000000 / 6 (kernel PR #63) — KERNEL_REF may be pinned before the whole-coin line"
+    fi
+
+    WBTC_COLOUR="$(printf '%s' "$PROBE" | grep 'name=WBTC ' | sed -n 's/.*colour=\([0-9a-f]\{64\}\).*/\1/p' | head -1)"
+    WETH_COLOUR="$(printf '%s' "$PROBE" | grep 'name=WETH ' | sed -n 's/.*colour=\([0-9a-f]\{64\}\).*/\1/p' | head -1)"
+    if [[ -z "$WBTC_COLOUR" || -z "$WETH_COLOUR" ]]; then
+      fail "the faucet probe did not report both preset colours: ${PROBE:0:300}"
+    else
+      ok "faucet presets registered at 6 decimals: WBTC ${WBTC_COLOUR:0:16}…, WETH ${WETH_COLOUR:0:16}…"
+      PP="$(curl -fsS --max-time 15 "$API/v1/prices?tokens=${WBTC_COLOUR},${WETH_COLOUR}" 2>/dev/null || true)"
+      if [[ -z "$PP" ]]; then
+        fail "GET /v1/prices for the two faucet presets did not answer"
+      else
+        # One row per preset: <name> <colour> <asset id> <the literal the whole-coin line names>.
+        # Read field by field rather than `set --`, which would clobber this script's own "$@".
+        while read -r P_NAME P_COLOUR P_ASSET P_WANT; do
+          [[ -n "$P_NAME" ]] || continue
+          P_TOKEN_ROW="$(printf '%s' "$PP" | tr '{' '\n' | grep -E "\"token_color\":\"${P_COLOUR}\"" | head -1)"
+          P_ASSET_ROW="$(printf '%s' "$PP" | tr '{' '\n' | grep "\"asset_id\":\"${P_ASSET}\"" | grep -v '"token_color"' | head -1)"
+          if [[ -z "$P_TOKEN_ROW" ]]; then
+            fail "GET /v1/prices has no tokens[] row for ${P_NAME} (${P_COLOUR:0:16}…): ${PP:0:300}"
+            continue
+          fi
+          if [[ -z "$P_ASSET_ROW" ]]; then
+            fail "GET /v1/prices has no assets[] row for ${P_ASSET} — ${P_NAME} is not priced by the built-in NAME map"
+            continue
+          fi
+          P_DEC="$(printf '%s' "$P_TOKEN_ROW" | sed -n 's/.*"decimals":\([0-9][0-9]*\).*/\1/p' | head -1)"
+          P_UNIT="$(printf '%s' "$P_TOKEN_ROW" | sed -n 's/.*"price_usd":"\([0-9.]*\)".*/\1/p' | head -1)"
+          P_COIN="$(printf '%s' "$P_ASSET_ROW" | sed -n 's/.*"price_usd":"\([0-9.]*\)".*/\1/p' | head -1)"
+          if [[ "$P_DEC" != "6" ]]; then
+            fail "${P_NAME} is registered at ${P_DEC:-none} decimals, expected exactly 6"
+            continue
+          fi
+          if [[ -z "$P_UNIT" || -z "$P_COIN" ]]; then
+            fail "could not read ${P_NAME}'s per-base-unit / coin price_usd: ${P_TOKEN_ROW:0:200}"
+            continue
+          fi
+          P_EXPECTED="$(decimal_shift_left "$P_COIN" "$P_DEC")"
+          if [[ "$P_UNIT" != "$P_EXPECTED" ]]; then
+            fail "${P_NAME}'s per-base-unit price is ${P_UNIT}, expected ${P_COIN} / 10^${P_DEC} = ${P_EXPECTED} exactly"
+          elif [[ "$P_UNIT" != "$P_WANT" ]]; then
+            fail "${P_NAME} prices at ${P_UNIT} per base unit, but the whole-coin line specifies ${P_WANT}
+                  (seeded ${P_ASSET} coin price in 000-init.sql is ${P_COIN}) — the seed moved"
+          else
+            ok "${P_NAME} per base unit is ${P_UNIT} == ${P_COIN} / 10^${P_DEC}, exactly"
+          fi
+        done <<EOF
+WBTC ${WBTC_COLOUR} bitcoin 0.077387
+WETH ${WETH_COLOUR} ethereum 0.00239328
+EOF
       fi
     fi
   fi

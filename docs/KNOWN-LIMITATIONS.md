@@ -128,6 +128,29 @@ keeping `BATCHER_SPONSOR_UNPRICED=allow`, every offer using a demo colour — wh
 what this stack posts, including the `book` subsection's `WANT` leg — starts refusing with
 `422 NOT_SPONSORED`. This repository does not turn `enforce` on for exactly this reason.
 
+### The kernel seeds a PREVIEW sNight colour into every fresh database (kernel #61)
+
+Since `KERNEL_REF=c293ebd…`, the kernel's `packages/database/migrations/000-init.sql` seeds a
+`SNIGHT` row at `793c29c9…` — the colour derived from shielded-night's **preview** contract. That
+colour cannot exist on an `undeployed` devnet, where this stack deploys its own wrapper contract
+and derives a different colour on every clean bring-up.
+
+`known_tokens.name` is UNIQUE and `POST /v1/known-tokens` upper-cases the posted name **and
+checks the name before the colour**, so the seeded row holds `SNIGHT` against a colour with no
+supply on this chain, and this stack's real sNight colour cannot be registered under its own
+name. Left alone, the failure is silent: every registration path treats a 409 as "already
+registered".
+
+`up.sh` works around it — the one-shot exits **75** when the name is held by a different colour,
+`up.sh` deletes the row by name and re-runs the one-shot once (see `docs/OPERATIONS.md`). Both
+steps log. **What remains a limitation**: the workaround runs only when BOTH `offerfiles` and
+`shielded-night` are up, so on an `--with offerfiles`-only stack the phantom `SNIGHT` row stays in
+the registry, listed by `GET /v1/known-tokens` and priceable, for a colour nothing on this chain
+holds. It is harmless (no offer can reference it) but it is visible in the SPA's token list.
+
+The upstream fix — stop seeding the row and let `price-map.ts`'s `SNIGHT` NAME entry price it
+wherever it is registered — belongs to the kernel repository and is recorded there, not here.
+
 ### `undeployed` only
 
 This profile deploys to `undeployed` and refuses any other `MN_ENV`. shielded-night's Preview
