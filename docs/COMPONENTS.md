@@ -1,8 +1,9 @@
 # Components
 
-> **Scope.** This file documents the source pins that decide which LINE the stack runs, and the
-> **`shielded-night`** profile. The component notes for `core`, `offerfiles`, `frontend` and
-> `solver` are still to be written; `README.md` remains the map of the stack.
+> **Scope.** This file documents the source pins that decide which LINE the stack runs, the
+> **`solver`** profile's own processes, and the **`shielded-night`** profile. The component
+> notes for `core`, `offerfiles` and `frontend` are still to be written; `README.md` remains the
+> map of the stack.
 
 ## Source pins, and the line they put this stack on
 
@@ -14,6 +15,11 @@ what the stack *means* rather than merely which bytes it runs.
 | `KERNEL_REF` | `c293ebd57937c0065663b08b2c244438be8989a5` — `effectstream/zswap-offerfiles-kernel` `main` | ledger-v8 / 1.x, **the whole-coin line** (kernel #61/#63/#66) |
 | `FRONTEND_REF` | `58ab921be5513b77937a37be86bf724a41888302` — `effectstream/effectstream` `midnight-1`, subtree `templates/zswap-da` @ `3ca1d56ffc29f03c73cf43432bdfeeaf3ab43c6b` | the same line's UI (effectstream#918) |
 | `SHIELDED_NIGHT_REF` | `f7fcefa7921bf2c3f634871f9ad3aa3a32251af0` — `effectstream/shielded-night` `main` | unchanged |
+
+**There is no solver pin.** Since 00011 PR B `images/cow-solver` is `FROM kernel-image` plus four
+entrypoints, so the solver, its monitor and its two one-shots are all *the kernel commit above*.
+`SOLVER_REPO`/`SOLVER_REF` are retired — set, they now only produce a warning from
+`scripts/lib/common.sh`. See "The solver IS the kernel commit" below.
 
 ### The whole-coin line (kernel #63 + effectstream#918)
 
@@ -42,6 +48,101 @@ the allotment out of the RUNNING image's own tree rather than re-declaring it he
 
 **Moving an EXISTING stack onto this line is BREAKING for its `postgres` volume**, silently — see
 `docs/OPERATIONS.md`. `./down.sh -v` is the upgrade path.
+
+## The `solver` profile — the COW solver, its status listener and its monitor
+
+### The solver IS the kernel commit
+
+`images/cow-solver` used to be an **overlay**: it fetched a second commit (`SOLVER_REF`) and
+`COPY`d that tree over the locally built kernel image. That was sound only while the solver
+lived on a branch *descended* from the kernel pin. Kernel PR #48 merged the whole solver line
+into `main` and inverted the relationship, with two results:
+
+* a `COPY` **merges**, so overlaying an ancestor **reverted 25 solver files** to their
+  pre-#53/#58 state while leaving the 7 files added after it in place — a mixed tree whose
+  executable code was the old PR #52 solver, without #53's capital-free fee sizing and without
+  #58's status listener;
+* at `KERNEL_REF=c293ebd…` it stopped building at all, because the base image carries workspace
+  packages (`packages/solver-frontend`, the poster's `deploy/scripts/lib/poster-*.ts`) that the
+  old `bun.lock` has never seen and the image's `bun install --frozen-lockfile` refuses.
+
+The image is now `FROM kernel-image` and adds only entrypoints. One consequence is worth
+stating plainly: **every process in this stack built from the kernel repository reports the same
+commit**, and `/app/.solver-commit` no longer exists anywhere. `scripts/verify-source-pins.sh`
+asserts both — the solver image's `/app/.kernel-commit == KERNEL_REF`, and the *absence* of the
+retired second commit file.
+
+| Container | Entrypoint | What it is |
+|---|---|---|
+| `solver` | `entrypoint-solver.sh` | the posted-price solver in EXECUTION mode (`start.solver.ts`) |
+| `solver-frontend` | `entrypoint-solver-frontend.sh` | the read-only monitor site (`start.solver-frontend.ts`) |
+| `solver-provision` | `entrypoint-solver-provision.sh` | one-shot: the solver's trading inventory |
+| `maker-offer` | `entrypoint-maker-offer.sh` | one-shot: one real, settle-able offer on the book |
+
+### The read-only status listener (`:9100`)
+
+The solver serves its own state on a second listener, **opt-in by the port and by nothing else**:
+with `SOLVER_STATUS_PORT` unset the solver behaves exactly as it did before. Set, it serves
+
+| Route | Auth | Body |
+|---|---|---|
+| `GET /health` | none | `{status, ready, mode, contractVersion}` — nothing internal, so a container healthcheck needs no secret |
+| `GET /status/snapshot` | **bearer** | the versioned `StatusSnapshot`: process, backend, book, inventory, relay, ladder, executor, journal, admission, listener |
+| `GET /status/stream` | **bearer** | the same as SSE, one frame on connect then on change; the solver closes each stream after five minutes so its client cap can self-heal |
+
+Collection reads **in-memory state only** — no wallet call, no proof, no kernel or relay I/O —
+and no route mutates anything.
+
+`SOLVER_STATUS_AUTH_TOKEN` is **mandatory and ≥ 32 characters** whenever the port is set: a
+missing or short value is one of the problems `start.solver.ts` lists *before it binds*, not a
+late 401. `/status/*` carries the solver's entire internal state, so the listener must never be
+able to come up open. m1 commits a devnet default (like the relay bearer) so `./up.sh` works with
+no `.env`, and `scripts/pick-ports.sh` emits a random 64-hex value into every generated one.
+
+**The port is not published on the host**, deliberately. The monitor is its reader, over the
+compose network; `compose/solver.yml` carries a commented `SOLVER_STATUS_HOST_PORT` block for a
+debugging session, and reading the raw JSON needs nothing published anyway:
+
+```bash
+docker compose exec solver bun -e 'const r = await fetch(
+  "http://127.0.0.1:9100/status/snapshot",
+  { headers: { authorization: "Bearer " + process.env.SOLVER_STATUS_AUTH_TOKEN } });
+  console.log(await r.text());'
+```
+
+### The monitor (`solver-frontend`, `:${SOLVER_FRONTEND_HOST_PORT}`)
+
+One Bun process, no build step, no database, and **no route that writes anything** — here or
+upstream. It answers one question at a glance: *is the solver quoting, and if not, why*.
+
+| Block | Read from |
+|---|---|
+| Status pill — QUOTING / WITHDRAWN / DISCONNECTED / STARTING / DRY-RUN / SOLVER UNREACHABLE | the solver snapshot |
+| Health strip — six stages: kernel sync → book cache → inventory → journal & DUST → relay socket → published ladder | kernel `/v1/health/sync` + the snapshot |
+| Alarms, tiles, published ladders (with the maker hash per rung), *not published* with the solver's own exclusion reason, book, jobs, inventory, DUST, relay, configuration, events | as labelled in each block's `?` |
+
+Its own surface is `GET /`, five named static files, `/api/snapshot`, `/api/stream` and
+`/health`; everything else is 404, and a write method on a known route is 405.
+
+**It depends on the KERNEL only — never on the solver.** The moment anyone actually opens it is
+the moment the solver is down, so an unreachable solver is a *rendered state* ("SOLVER
+UNREACHABLE", with the time it was last seen) beside a live book and sync panel, and never a
+reason to refuse to start. Its `/health` is the site's own liveness and says nothing about the
+solver: a monitor whose health followed the thing it monitors would restart itself exactly when
+it is needed.
+
+**It has no authentication of its own**, which is why its host port binds `BIND_ADDR`
+(127.0.0.1) like everything else here. Put a reverse proxy in front of it before it reaches any
+wider network — and note that the SSE feed needs response buffering off and a read timeout
+longer than the five-minute stream lifetime.
+
+Two things it is careful about, and `./verify.sh` asserts both:
+
+* **an empty ladder is never shown as "no liquidity"** — when the solver's push carries a
+  `withheld` reason the page says which one (`cache-not-current` is the fail-closed withdrawal,
+  `withdrawn` a deliberate one);
+* **amounts are integer base units everywhere**; a coin-denominated value is shown *beside* them
+  and marked as derived, using the kernel registry's `decimals` (6 on the whole-coin line).
 
 ## The `shielded-night` profile — the Shielded NIGHT dApp
 

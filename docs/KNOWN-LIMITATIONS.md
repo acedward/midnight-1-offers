@@ -1,7 +1,44 @@
 # Known limitations
 
-> **Scope.** This file currently records the limitations of the **`shielded-night`** profile.
-> The other profiles' entries land with 00005 P6.
+> **Scope.** This file records the limitations of the **`solver`** and **`shielded-night`**
+> profiles. The other profiles' entries land with 00005 P6.
+
+## `solver`
+
+### The monitor's relay panel is empty until the solver publishes a ladder
+
+`solver-frontend` reads the relay's `GET /tokens`, which is the union of what **connected
+solvers advertise** — not a registry. So on a cold stack the relay panel is empty and the
+published-ladder block says so, for a window that lasts until `solver-provision` and
+`maker-offer` have both completed and the solver has mirrored the book and pushed once. That is
+minutes on a cold host, and it is the *correct* rendering of that state rather than a fault; the
+health strip's last two stages (relay socket, published ladder) are what say which half is still
+missing. `./verify.sh` gives it `SOLVER_MONITOR_BUDGET_S` (180 s, spec SC-004's own budget)
+before failing.
+
+The same is true, permanently, of a stack brought up with `MAKER_OFFER_ENABLED=false` or
+`SOLVER_PROVISION_ENABLED=false`: the ladder is derived from the book, so with nothing to quote
+an empty publication is honest and the panel stays empty.
+
+### The seeded maker offer does not survive a long run, and `./verify.sh` re-seeds
+
+An offer on this chain lives `min(ROOT_WINDOW_SECONDS, OFFER_TTL_SECONDS)` = **1 hour**, whatever
+`MAKER_OFFER_TTL_MINUTES` asks for, and it is archived the moment any on-chain transaction spends
+its input nullifier — a settled take, or an unrelated transfer from the maker's own wallet that
+selects the coin the offer reserved. Both happen on a full `./up.sh --all` + `./verify.sh` run.
+
+The `solver` section therefore **posts a fresh offer** (`MAKER_OFFER_RESEED=true`) when the book
+holds none, which costs a proving round of a minute or two, and reports the previous offer's
+terminal status first. It is the one side effect `./verify.sh` has; `SOLVER_VERIFY_RESEED=false`
+forbids it, at the price of turning an empty book into a failure. Skipping the assertions —
+what this section did before 00011 — is not an option: it passed the section without testing it.
+
+### The status port is not published, by design
+
+`/status/*` carries the solver's entire internal state, so `:9100` is reachable only from inside
+the compose network and only with the bearer. Reading it from the host needs `docker compose
+exec` (the idiom is in `docs/OPERATIONS.md`) or uncommenting the `SOLVER_STATUS_HOST_PORT` block
+in `compose/solver.yml`. The monitor on `:10800` is the intended reader.
 
 ## `shielded-night`
 
