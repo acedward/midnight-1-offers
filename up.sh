@@ -356,7 +356,34 @@ if (( ! FAILED )) \
    && [[ " $PROFILES " == *" shielded-night "* ]] && [[ " $PROFILES " == *" offerfiles "* ]] \
    && service_present shielded-night && service_present kernel; then
   log "registering the sNight colour with the offer-files token registry"
-  if ! dc run --rm --no-deps -T shielded-night-token-name; then
+  SNIGHT_NAME_RC=0
+  dc run --rm --no-deps -T shielded-night-token-name || SNIGHT_NAME_RC=$?
+  # ── exit 75: the name SNIGHT is held by a colour that is not this stack's ───
+  #
+  # Since kernel PR #61 (KERNEL_REF c293ebd…) `packages/database/migrations/000-init.sql` SEEDS
+  # a SNIGHT row at the PREVIEW contract's colour. `known_tokens.name` is UNIQUE, so on an
+  # `undeployed` devnet — where this stack deploys its own shielded-night contract and derives a
+  # different colour every time — that seeded row holds the name against a colour that cannot
+  # exist here, and the one-shot's POST 409s. Upstream's own comment beside that seed prescribes
+  # exactly this remedy for a database that is already live ("patch that one by hand, with
+  # UPDATE known_tokens … WHERE name = 'SNIGHT'"), so this is operating the stack's database, not
+  # patching a dependency. Recorded in the organizer's issues/00012.
+  #
+  # By NAME only, and only on 75: the one-shot returns 75 exclusively when it has READ the
+  # registry back and found a DIFFERENT colour under that name, so the row being removed is
+  # provably not one this stack registered. Then the one-shot runs once more and registers the
+  # real colour. Everything here stays non-fatal, as this whole block already is.
+  if [ "$SNIGHT_NAME_RC" -eq 75 ]; then
+    log "clearing a stale SNIGHT registry row (kernel PR #61 seeds the PREVIEW colour) and retrying"
+    if dc exec -T postgres psql -U "${OFFERFILES_PG_USER}" -d "${OFFERFILES_PG_DB}" \
+         -v ON_ERROR_STOP=1 -q -c "DELETE FROM known_tokens WHERE upper(name) = 'SNIGHT';" >/dev/null 2>&1; then
+      SNIGHT_NAME_RC=0
+      dc run --rm --no-deps -T shielded-night-token-name || SNIGHT_NAME_RC=$?
+    else
+      warn "could not clear the stale SNIGHT row from the kernel's registry"
+    fi
+  fi
+  if [ "$SNIGHT_NAME_RC" -ne 0 ]; then
     warn "could not name the sNight colour in the kernel registry — the book will show it as raw hex"
     info "(nothing else is affected; ./verify.sh --shielded-night reports it too)"
   fi
