@@ -44,7 +44,10 @@ trap 'rm -rf "$EMPTY_ENV" "$RENDER_DIR"' EXIT
 # fragment is additive on top of it. `solver` is always rendered together with `offerfiles`
 # because it takes the kernel image as an additional build context. `shielded-night` is
 # rendered BOTH alone on core (the profile depends on nothing else, and that has to stay
-# true) and in the fullest stack, so a cross-fragment name collision cannot hide.
+# true) and in the fullest stack, so a cross-fragment name collision cannot hide. `poster` is
+# rendered on `offerfiles` alone (its only dependency — it needs neither relay nor solver) AND
+# beside `solver`, because the two fragments declare the SAME `genesis-lock` volume and
+# compose merging those two declarations is what the genesis-1 mutex rests on (00011 Q7).
 COMBOS=(
   "core"
   "core offerfiles"
@@ -53,8 +56,10 @@ COMBOS=(
   "core offerfiles frontend"
   "core offerfiles shielded-night"
   "core offerfiles solver"
+  "core offerfiles poster"
   "core offerfiles frontend solver"
-  "core offerfiles frontend solver shielded-night"
+  "core offerfiles poster solver"
+  "core offerfiles frontend solver shielded-night poster"
 )
 
 FAILURES=0

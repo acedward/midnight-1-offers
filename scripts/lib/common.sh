@@ -231,6 +231,10 @@ load_env() {
   # deliberately NOT published — the monitor is its reader; see compose/solver.yml.
   : "${SOLVER_FRONTEND_HOST_PORT:=10800}"
   : "${SHIELDED_NIGHT_HOST_PORT:=10900}"
+  # The offer poster's /health /metrics /journal surface (:9977 in the container). Upstream
+  # calls the host side HOST_OFFER_POSTER_HEALTH_PORT and publishes 19977; this repository's
+  # port block keeps the *_HOST_PORT spelling every other service here uses.
+  : "${POSTER_HEALTH_HOST_PORT:=19977}"
 
   # ── the shared PostgreSQL (Q7) ─────────────────────────────────────────────
   # The role/database the offer-files kernel authenticates as. Defaulted here as well as in
@@ -293,6 +297,18 @@ load_env() {
   # KERNEL_WAIT_TIMEOUT and covers a loaded host.
   : "${SHIELDED_NIGHT_WAIT_TIMEOUT:=600}"
 
+  # ── the poster profile ─────────────────────────────────────────────────────
+  # A DEDICATED, non-genesis seed (wallets/wallets.json). Unlike upstream, which ships no
+  # default at all, this repository commits one: `./up.sh` on a clean host with no .env must
+  # reach a working stack, and the roster is public devnet-only. It must equal NO other seed
+  # here — the poster itself exits 78 if it does.
+  : "${OFFER_POSTER_SEED:=0000000000000000000000000000000000000000000000000000000000000041}"
+  # How long ./verify.sh's poster section waits for the poster to reach >= 2 mints and >= 2
+  # live offers. The first mint is wallet sync + DUST registration + the dust wait + a
+  # contract join + ~30 s of proving, so the budget is minutes rather than seconds; see
+  # docs/KNOWN-LIMITATIONS.md.
+  : "${POSTER_VERIFY_BUDGET_S:=420}"
+
   # ── wait timeouts (seconds) ────────────────────────────────────────────────
   : "${NODE_WAIT_TIMEOUT:=180}"
   : "${INDEXER_WAIT_TIMEOUT:=420}"
@@ -306,6 +322,10 @@ load_env() {
   : "${FRONTEND_WAIT_TIMEOUT:=300}"
   : "${SOLVER_WAIT_TIMEOUT:=300}"
   : "${RELAY_WAIT_TIMEOUT:=300}"
+  # The poster binds its health port only AFTER wallet sync, DUST registration, the bounded
+  # dust wait and the contract join — the same reason its compose healthcheck has a 15-minute
+  # start_period. up.sh's wait has to be of that order or it gives up on a healthy bring-up.
+  : "${POSTER_WAIT_TIMEOUT:=900}"
 
   export COMPOSE_PROJECT_NAME \
          NODE_IMAGE INDEXER_IMAGE PROOF_IMAGE \
@@ -322,11 +342,12 @@ load_env() {
          BIND_ADDR NODE_HOST_PORT INDEXER_HOST_PORT PROOF_HOST_PORT \
          KERNEL_HOST_PORT BATCHER_HOST_PORT CELESTIA_HOST_PORT FRONTEND_HOST_PORT \
          RELAY_HTTP_HOST_PORT RELAY_WS_HOST_PORT INTENTS_UI_HOST_PORT \
-         SOLVER_FRONTEND_HOST_PORT SHIELDED_NIGHT_HOST_PORT \
+         SOLVER_FRONTEND_HOST_PORT SHIELDED_NIGHT_HOST_PORT POSTER_HEALTH_HOST_PORT \
          INDEXER_API_PATH OFFERFILES_PG_USER OFFERFILES_PG_DB PROOF_WARM_TIMEOUT \
          NODE_WAIT_TIMEOUT INDEXER_WAIT_TIMEOUT PROOF_WAIT_TIMEOUT POSTGRES_WAIT_TIMEOUT \
          CELESTIA_WAIT_TIMEOUT KERNEL_WAIT_TIMEOUT FRONTEND_WAIT_TIMEOUT \
-         SOLVER_WAIT_TIMEOUT RELAY_WAIT_TIMEOUT
+         SOLVER_WAIT_TIMEOUT RELAY_WAIT_TIMEOUT POSTER_WAIT_TIMEOUT \
+         OFFER_POSTER_SEED POSTER_VERIFY_BUDGET_S
 
   # A host address the scripts can actually connect to. BIND_ADDR may be 0.0.0.0, which
   # is a valid bind target but not a valid connect target.
@@ -341,8 +362,9 @@ load_env() {
   RELAY_URL="http://${HOST_ADDR}:${RELAY_HTTP_HOST_PORT}"
   SOLVER_FRONTEND_URL="http://${HOST_ADDR}:${SOLVER_FRONTEND_HOST_PORT}"
   SHIELDED_NIGHT_URL="http://${HOST_ADDR}:${SHIELDED_NIGHT_HOST_PORT}"
+  POSTER_URL="http://${HOST_ADDR}:${POSTER_HEALTH_HOST_PORT}"
   export NODE_RPC_URL INDEXER_GQL_URL KERNEL_URL BATCHER_URL RELAY_URL \
-         SOLVER_FRONTEND_URL SHIELDED_NIGHT_URL
+         SOLVER_FRONTEND_URL SHIELDED_NIGHT_URL POSTER_URL
 }
 
 # ── the PRIVATE relay source (spec FR-11, plan Q4) ───────────────────────────
@@ -435,10 +457,10 @@ assert_relay_source() {
 # `--profile`, so a service carrying one would be declared and then never start, which is a
 # uniquely quiet way to break a stack.
 #
-# There are exactly five: core, offerfiles, frontend, shielded-night, solver.
+# There are exactly six: core, offerfiles, frontend, shielded-night, solver, poster.
 
 # KNOWN_FUTURE_PROFILES are profiles this stack reserves ports and documentation for but has
-# not built yet. Empty: all four fragments exist. Keep the machinery for the next one.
+# not built yet. Empty: every fragment exists. Keep the machinery for the next one.
 # Both are read by up.sh, which shellcheck cannot see from inside this sourced library.
 # shellcheck disable=SC2034
 KNOWN_FUTURE_PROFILES=""
@@ -511,7 +533,12 @@ pending_profiles() {
 # node, indexer, proof server, and nothing else. Placing it at the END would make rendering it
 # pull in `solver`, whose services take the kernel image as a named build context, and a
 # failed render is silently indistinguishable from "this fragment declares no services".
-PROFILE_LAYER_ORDER="core shielded-night offerfiles frontend solver"
+#
+# `poster` sits immediately above `offerfiles`, which is exactly what it depends on: the
+# kernel it posts into, the deploy one-shot's contract address, and nothing else. Putting it
+# ABOVE `solver` would make rendering it pull the solver in, and with it the private relay
+# build context — for a profile that has no relay in it (00011 Q1).
+PROFILE_LAYER_ORDER="core shielded-night offerfiles poster frontend solver"
 
 # _layer_files <profile> [--below] — the `-f <fragment>` arguments for every layer up to and
 # including <profile>, or strictly below it, one word per line.

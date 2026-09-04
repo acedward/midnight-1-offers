@@ -30,7 +30,7 @@ Usage: ./up.sh [options]
 Brings up the core Midnight 1.x stack (node + indexer + proof-server + postgres) and waits
 until each is serving. Reads .env for image pins and host ports (see .env.example).
 
-PROFILES — there are exactly four, and a profile IS a compose fragment in compose/, named
+PROFILES — there are exactly six, and a profile IS a compose fragment in compose/, named
 after the file. No compose \`profiles:\` key is used anywhere in this repository.
 
   core           ALWAYS on. midnight-node ${NODE_VERSION}, indexer-standalone ${INDEXER_VERSION},
@@ -44,6 +44,10 @@ after the file. No compose \`profiles:\` key is used anywhere in this repository
                  in execution mode with its read-only status listener, the solver MONITOR
                  (:${SOLVER_FRONTEND_HOST_PORT}) and the intents browser UI (:${INTENTS_UI_HOST_PORT}).
                  BUILDS FROM A PRIVATE CLONE YOU SUPPLY — see RELAY_SOURCE_DIR below.
+  poster         the OFFER POSTER (health :${POSTER_HEALTH_HOST_PORT}) — one funded, dedicated wallet that mints a
+                 faucet coin a minute and posts ONE sponsored, individually takeable offer
+                 spending exactly that coin, so the book fills itself. Needs \`offerfiles\`;
+                 needs neither the relay nor the solver.
 
 Options:
   --with <profile>   ALSO bring up an optional profile; repeatable, and additive — see below.
@@ -82,6 +86,7 @@ Examples:
   ./up.sh --with offerfiles     # …and Celestia + kernel + batcher
   ./up.sh --with frontend       # …and the zswap-da SPA
   ./up.sh --with shielded-night # …and the Shielded NIGHT dApp (needs nothing but core)
+  ./up.sh --with offerfiles --with poster   # …and a book that supplies itself
   ./up.sh --all                 # everything (needs RELAY_SOURCE_DIR for solver)
   ./up.sh --converge            # core ONLY: stop every optional profile that is up
   ENV_FILE=.env.ci ./up.sh      # a second, port-shifted instance
@@ -248,7 +253,7 @@ if [[ -z "${RENDERED_SERVICES//[[:space:]]/}" ]]; then
   echo
   warn "no services are declared yet — this repository is at its P0 scaffold"
   info "the compose fragments are valid placeholders; services land in P1 (core), P2"
-  info "(offerfiles), P3 (frontend) and P4 (solver). Nothing was started."
+  info "(offerfiles), P3 (frontend), P4 (solver) and 00011 PR C (poster). Nothing was started."
   exit 0
 fi
 
@@ -389,6 +394,15 @@ if (( ! FAILED )) \
     info "(nothing else is affected; ./verify.sh --shielded-night reports it too)"
   fi
 fi
+# The poster. Its health server binds only AFTER wallet sync, DUST registration, the bounded
+# dust wait and the contract join, which is why POSTER_WAIT_TIMEOUT is minutes and not seconds
+# — and why compose gives its healthcheck a 15-minute start_period. Reaching healthy here means
+# the poster is ALIVE, not that it has posted anything: /health answers 200 while it is still
+# `starting` and while it is `degraded` (no dust yet), on purpose. Whether it actually mints
+# and posts is ./verify.sh's poster section, which carries a budget for exactly that.
+if (( ! FAILED )) && [[ " $PROFILES " == *" poster "* ]] && service_present offer-poster; then
+  wait_compose_healthy offer-poster "$POSTER_WAIT_TIMEOUT" || FAILED=1
+fi
 if (( ! FAILED )) && [[ " $PROFILES " == *" solver "* ]] && service_present relay; then
   wait_compose_healthy relay "$RELAY_WAIT_TIMEOUT" || FAILED=1
 fi
@@ -432,6 +446,7 @@ service_present shielded-night && info "Shielded NIGHT    http://${HOST_ADDR}:${
 service_present relay        && info "intents relay     ${RELAY_URL}   (solver WS :${RELAY_WS_HOST_PORT})"
 service_present solver-frontend && info "solver monitor    ${SOLVER_FRONTEND_URL}"
 service_present intents-ui   && info "intents UI        http://${HOST_ADDR}:${INTENTS_UI_HOST_PORT}"
+service_present offer-poster && info "offer poster      ${POSTER_URL}/health   (also /metrics /journal)"
 echo
 info "next: ./verify.sh    (assert the stack is usable, not merely running)"
 info "      ./down.sh -v   (stop and wipe all chain/indexer/kernel state)"

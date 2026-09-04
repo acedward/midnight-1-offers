@@ -190,6 +190,16 @@ services:
     volumes:
       - 'offerfiles-deploy:/srv/offerfiles-deploy:ro'
       - 'solver-config:/srv/solver-config'
+      # The genesis-1 facade mutex (00011 Q7). bootstrap-dev.ts funds the solver's NIGHT from
+      # genesis before it mints, so this one-shot is one of THREE that drive that wallet —
+      # with `maker-offer` below and `poster-provision` in compose/poster.yml. The first two
+      # are ordered by `depends_on`; the third is in another fragment, which `depends_on`
+      # cannot reach across (a dependency on a service outside the merged set does not render,
+      # and `--with poster` without `--with solver` is supported). So all three take a `flock`
+      # on a file on this volume, declared IDENTICALLY in both fragments — compose merges
+      # duplicate declarations, which is what lets them share a lock without referencing each
+      # other. See take_genesis_lock() in images/offerfiles-kernel/entrypoint-common.sh.
+      - 'genesis-lock:/srv/genesis-lock'
     depends_on:
       node: { condition: service_healthy }
       indexer: { condition: service_healthy }
@@ -225,6 +235,10 @@ services:
     volumes:
       - 'offerfiles-deploy:/srv/offerfiles-deploy:ro'
       - 'maker-offer-state:/var/lib/maker-offer'
+      # MAKER_SEED is the GENESIS seed by default (the deploy one-shot's mint credited exactly
+      # that wallet), so this one-shot is the third genesis-1 facade — see the note on
+      # solver-provision's volumes above and 00011 Q7.
+      - 'genesis-lock:/srv/genesis-lock'
     depends_on:
       kernel: { condition: service_healthy }
       offerfiles-deploy: { condition: service_completed_successfully }
@@ -503,3 +517,10 @@ volumes:
   solver-config:      # the ladder generated against THIS chain's contract address; carried
                       # across a reset it points the solver at token colours that do not exist.
   maker-offer-state:  # the marker recording that this chain's book was already seeded.
+  #
+  # AND ONE THAT IS NOT CHAIN STATE AT ALL:
+  genesis-lock:       # the genesis-1 facade mutex (00011 Q7), holding one empty lock file.
+                      # Declared IDENTICALLY in compose/poster.yml so `poster-provision` takes
+                      # the same lock as `solver-provision` and `maker-offer` without either
+                      # fragment referencing the other. It carries no state worth keeping and
+                      # is removed by `./down.sh -v` with the rest.
