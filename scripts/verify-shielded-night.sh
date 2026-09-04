@@ -58,6 +58,12 @@ ARTIFACTS="${BASE}/contract/compiled/shielded-night"
 CIRCUITS="convertToShielded convertToUnshielded decimals depositShielded depositUnshielded \
 getBalance name symbol tokenColor withdrawShielded withdrawUnshielded"
 
+# The colour kernel `main` @ c293ebd SEEDS into every fresh database for the name SNIGHT: the
+# PREVIEW contract's (000-init.sql). It cannot exist on an `undeployed` devnet, where this stack
+# deploys its own wrapper contract, so its presence anywhere in the registry means the
+# shielded-night-token-name one-shot's patch did not run (00015; organizer issues/00012).
+PREVIEW_SNIGHT_COLOR="793c29c94f72972bfbd861e8e84e55480ccc8e57a7b74067f35a5672c816f99c"
+
 FAILURES=0
 fail() { err "$*"; FAILURES=$(( FAILURES + 1 )); }
 
@@ -332,6 +338,13 @@ else
   # without it the book shows 64 hex characters and nothing connects them to the NIGHT the
   # operator wrapped one page over.
   #
+  # SINCE 00015 that one-shot PATCHES before it posts: the kernel seeds a SNIGHT row at the
+  # PREVIEW contract's colour, which cannot exist here, so the row is UPDATEd to this stack's
+  # own colour first (issues/00012). Four assertions follow from that, and they are the point
+  # of this block: the name and the DERIVED colour meet on one record; there is exactly one
+  # such record; the preview colour is gone; and running the one-shot a second time changes
+  # nothing (step 0b).
+  #
   # The kernel UPPERCASES a registered name (`String(body.name).trim().toUpperCase()`), so the
   # match is case-insensitive on purpose — `sNight` is stored as `SNIGHT`.
   if run_book_step "step 0/5  the sNight colour is named in the kernel's token registry" \
@@ -361,6 +374,27 @@ else
     # match a name registered on some other colour.
     if printf '%s' "$KNOWN" | tr '{' '\n' | grep -Eqi "(${SNIGHT_COLOR}.*snight|snight.*${SNIGHT_COLOR})"; then
       ok "GET /v1/known-tokens names this colour sNight"
+
+      # ── THE PATCH DID ITS JOB, AND ONLY ITS JOB (00015, spec FR-004) ────────
+      # The kernel seeds a SNIGHT row at the PREVIEW contract's colour and the registry one-shot
+      # patches it to this stack's own (images/shielded-night/sql/snight-registry-patch.sql;
+      # organizer issues/00012). The assertion above proves the name and the derived colour meet
+      # on ONE record; these two prove nothing else is left behind. `|| true` on the count:
+      # `grep -c` exits 1 on zero, which is a legitimate answer and must not kill the script
+      # under `pipefail`.
+      SNIGHT_ROW_COUNT="$(printf '%s' "$KNOWN" | tr '{' '\n' | grep -ci '"name":"snight"' || true)"
+      if [[ "${SNIGHT_ROW_COUNT:-0}" == "1" ]]; then
+        ok "exactly one registry row is named SNIGHT"
+      else
+        fail "the registry holds ${SNIGHT_ROW_COUNT:-0} rows named SNIGHT, expected exactly 1"
+        BOOK_FAILED=1
+      fi
+      if printf '%s' "$KNOWN" | grep -q "$PREVIEW_SNIGHT_COLOR"; then
+        fail "the kernel's seeded PREVIEW sNight colour ${PREVIEW_SNIGHT_COLOR:0:16}… is still in the registry — the patch did not run (issues/00012)"
+        BOOK_FAILED=1
+      else
+        ok "the seeded PREVIEW sNight colour ${PREVIEW_SNIGHT_COLOR:0:16}… is absent from the registry"
+      fi
 
       # ── priced, not just named, at the FIXED 6 decimals (phase G, hardened in phase H2) ──
       # The registration one-shot posts the literal constant 6 (Q14's resolution: kernel PR #60
@@ -397,6 +431,26 @@ else
         ok "GET /v1/quote sNight->NIGHT market_rate is exactly 1 — the same asset, priced the same way"
       else
         fail "GET /v1/quote sNight->NIGHT is not ~1:1: ${QUOTE:0:300}"
+        BOOK_FAILED=1
+      fi
+
+      # ── IDEMPOTENCE, PROVEN BY RUNNING IT AGAIN (spec FR-004 / SC-002) ──────
+      # The registry one-shot is re-run on every `./up.sh`, so "it is safe to run twice" is a
+      # claim this stack depends on rather than a nicety. It is asserted the only way that
+      # means anything: run it, and require the patch to report `UPDATE 0` — the SQL is
+      # idempotent by its own WHERE clause, not by a marker file (a marker would have to be
+      # invalidated whenever ./down.sh -v gives the stack a new contract and a new colour).
+      # The POST it makes afterwards is the same-colour 409, which is success.
+      if run_book_step "step 0b/5 the registry patch is idempotent (a second run updates 0 rows)" \
+           dc run --rm --no-deps -T shielded-night-token-name; then
+        if grep -q 'registry patch: UPDATE 0' "$BOOK_OUT"; then
+          ok "a second run of shielded-night-token-name reports UPDATE 0 and exits 0"
+        else
+          fail "the registry one-shot re-ran and exited 0, but did not report 'registry patch: UPDATE 0' — it patched something on a stack that was already patched"
+          BOOK_FAILED=1
+        fi
+      else
+        fail "re-running shielded-night-token-name failed — the one-shot is not idempotent, and up.sh runs it on every bring-up"
         BOOK_FAILED=1
       fi
     else

@@ -283,12 +283,20 @@ supply on this chain, and this stack's real sNight colour cannot be registered u
 name. Left alone, the failure is silent: every registration path treats a 409 as "already
 registered".
 
-`up.sh` works around it — the one-shot exits **75** when the name is held by a different colour,
-`up.sh` deletes the row by name and re-runs the one-shot once (see `docs/OPERATIONS.md`). Both
-steps log. **What remains a limitation**: the workaround runs only when BOTH `offerfiles` and
-`shielded-night` are up, so on an `--with offerfiles`-only stack the phantom `SNIGHT` row stays in
-the registry, listed by `GET /v1/known-tokens` and priceable, for a colour nothing on this chain
-holds. It is harmless (no offer can reference it) but it is visible in the SPA's token list.
+**The `shielded-night-token-name` one-shot patches it** with the kernel's own prescribed
+`UPDATE known_tokens … WHERE name = 'SNIGHT'` (versioned as
+`images/shielded-night/sql/snight-registry-patch.sql`), after the kernel is healthy, reports
+itself synced and the chain is past block 1 — then registers as before. See
+`docs/OPERATIONS.md`; every step logs. Nothing deletes a registry row any more (the exit-75
+protocol and `up.sh`'s `DELETE FROM known_tokens` were both removed in 00015).
+
+**What remains a limitation**: the patch runs only when BOTH `offerfiles` and `shielded-night`
+are up, because it belongs to the `shielded-night` profile — the one that knows the colour. On an
+`--with offerfiles`-only stack the phantom `SNIGHT` row stays in the registry, listed by
+`GET /v1/known-tokens` and priceable, for a colour nothing on this chain holds. It is harmless
+(no offer can reference it, and no coin of it can exist) but it is visible in the SPA's token
+list. `./verify.sh`'s `kernel` section only asserts the row's absence when `shielded-night` is up,
+for the same reason.
 
 The upstream fix — stop seeding the row and let `price-map.ts`'s `SNIGHT` NAME entry price it
 wherever it is registered — belongs to the kernel repository and is recorded there, not here.
