@@ -14,10 +14,15 @@
     "is no error naming the cause: it presents as 'the batcher stopped submitting' or 'the",
     "solver went quiet', hours later, and looks like a node or network fault.",
     "",
-    "That is why the batcher, the solver, the e2e maker and the e2e taker are FOUR DIFFERENT",
-    "seeds here, and why the solver's is dedicated rather than borrowed from the genesis set.",
+    "That is why the batcher, the solver, the e2e maker, the e2e taker and the offer POSTER",
+    "are FIVE DIFFERENT seeds here, and why the solver's and the poster's are dedicated rather",
+    "than borrowed from the genesis set.",
     "Adding a new long-lived wallet facade to this stack means adding a new seed to this file,",
-    "never reusing one that is already assigned a role."
+    "never reusing one that is already assigned a role.",
+    "",
+    "The poster is the one facade that ENFORCES the rule on itself: `poster-config.ts` exits 78",
+    "when OFFER_POSTER_SEED matches any of the seven seed variables it can see in its own",
+    "environment. Everything else here relies on this file being read."
   ],
   "networkId": "undeployed",
   "$verification": {
@@ -373,6 +378,55 @@
         "dust": "mn_dust_undeployed1w02hhsvyyuwwada98hhafugw0s86see8789nfqlcfkc5qnv5lzv9w4zn0cg",
         "userAddress": "16718d7513d18100a2cc6c5133c4813e90473fae7db2c556955363d27aaee978",
         "coinPublic": "040bc285e7306d1c208124dac27aa7dcc31a7caa2b03907460414ca220108a4f"
+      }
+    },
+    {
+      "name": "poster",
+      "role": "THE OFFER POSTER's wallet — mints one faucet coin per tick and posts one sponsored ZSwap offer spending exactly that coin",
+      "envVar": "OFFER_POSTER_SEED",
+      "$comment": [
+        "A DEDICATED, NON-GENESIS seed, added by project 00011 PR C with the `poster` profile.",
+        "",
+        "  1. THE FACADE HAZARD AT THE TOP OF THIS FILE APPLIES IN FULL. `offer-poster` is a",
+        "     LOOP, not a one-shot: it holds a wallet open for the whole life of the stack,",
+        "     exactly like the batcher and the solver do. The poster ENFORCES this itself —",
+        "     `deploy/scripts/lib/poster-config.ts` exits 78 (EX_CONFIG) when POSTER_SEED",
+        "     equals any of MIDNIGHT_WALLET_SEED, MIDNIGHT_GENESIS_SEED, BATCHER_WALLET_SEED,",
+        "     SOLVER_SEED, MAKER_SEED, MAKER_OFFER_SEED or TAKER_SEED as those variables are",
+        "     seen IN ITS OWN ENVIRONMENT. So OFFER_POSTER_SEED must never equal any other",
+        "     seed in this roster, and nothing else may ever open a facade on this one.",
+        "",
+        "  2. It is NOT funded at genesis (measured: only genesis-1, genesis-2, batcher and",
+        "     lace-test are). `poster-provision` sends it four large NIGHT UTXOs from",
+        "     genesis-1 under a flock on the shared `genesis-lock` volume, and registers them",
+        "     for DUST; the poster then re-registers at startup, needs no other funding, and",
+        "     pays for every mint out of the DUST that NIGHT generates.",
+        "",
+        "  3. It holds shielded coins ON PURPOSE — one faucet WBTC coin per un-offered tick.",
+        "     That is the opposite of the `solver` wallet's rule (which must hold ZERO of every",
+        "     shielded colour), so do not copy the solver's provisioning assertions here.",
+        "",
+        "  4. `…0041` continues the roster's placeholder pattern (solver `…21`, e2e-maker",
+        "     `…31`, e2e-taker `…32`) and is deliberately far from every genesis seed."
+      ],
+      "seed": "0000000000000000000000000000000000000000000000000000000000000041",
+      "seedBytes": 32,
+      "funding": "provisioned by poster-provision (NIGHT from genesis-1, then DUST registration by the poster wallet itself)",
+      "provisionedBy": "poster-provision (compose/poster.yml, profile `poster`)",
+      "expect": {
+        "measuredOn": "2026-09-03",
+        "node": "midnight-node 1.0.0, CFG_PRESET=dev",
+        "emptyAtGenesis": true,
+        "unshielded": { "utxoCount": 0 },
+        "shieldedCoins": [],
+        "dust": { "registeredAtGenesis": false, "utxoCount": 0 }
+      },
+      "addresses": {
+        "unshielded": "mn_addr_undeployed10st3wtrrxr9efmwpclxggq46lrczcn9l6kq5e0eppze8dyqj345szxe0ua",
+        "shielded": "mn_shield-addr_undeployed15eqe6u2k0c5au32kafsxy9cl2xu48hmfxe5mxkxpejt48hzezsrxtvlkclzqwulqglfnhv2au5r7dzkve38vp9q5qwan72essjxzv9gtmljdx",
+        "dust": "mn_dust_undeployed1wwcwp08a6yter3d4mnh9878t0gkp6nkse8qdl2rkfsr2sh52a4sp6y22u04",
+        "userAddress": "7c17172c6330cb94edc1c7cc8402baf8f02c4cbfd5814cbf2108b27690128d69",
+        "coinPublic": "a6419d71567e29de4556ea6062171f51b953df693669b358c1cc9753dc591406"
       }
     }
   ]

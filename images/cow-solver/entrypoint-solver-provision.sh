@@ -89,6 +89,16 @@ wait_http "${MIDNIGHT_PROOF_SERVER_URL}" "proof-server" "${PROOF_WAIT_TIMEOUT_S:
 # The mint is a contract call, so this needs the deployed contract's identity.
 adopt_contract_address
 
+# ── the genesis-1 facade mutex (00011 Q7) ────────────────────────────────────
+# bootstrap-dev.ts funds the solver's NIGHT from GENESIS before it mints, so this one-shot
+# drives a facade on the same seed `maker-offer` posts from and `poster-provision` funds
+# from. The first two are ordered by `depends_on` inside this fragment; the third lives in
+# compose/poster.yml, which `depends_on` cannot reach across — a dependency on a service
+# outside the merged set does not render, and `--with poster` WITHOUT `--with solver` is a
+# supported combination. So all three take this lock instead. See take_genesis_lock() in
+# images/offerfiles-kernel/entrypoint-common.sh.
+take_genesis_lock
+
 cd "${REPO_ROOT}" || die "no ${REPO_ROOT}"
 log "provisioning the solver wallet (bootstrap-dev.ts) — mints BOTH sides of the pair"
 if bun run packages/solver/scripts/bootstrap-dev.ts; then
