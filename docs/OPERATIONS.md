@@ -226,7 +226,41 @@ docker compose … exec solver bun -e 'const r = await fetch(
 To publish it for a debugging session, uncomment the `ports:` block in `compose/solver.yml`
 (`SOLVER_STATUS_HOST_PORT`, default `19100`) — and never with a non-loopback `BIND_ADDR`: the
 bearer would then be the only thing between the solver's whole internal state and the network.
-`scripts/pick-ports.sh` deliberately emits no port for it.
+`scripts/pick-ports.sh` deliberately emits no port for it. **`curl http://127.0.0.1:<port>/health`
+from the host does not work** unless you have uncommented that block — the two ways in are the
+`docker compose exec` above and the monitor.
+
+### What "the solver is healthy" means (00015)
+
+The `solver` container's healthcheck is the `GET /health` above: **200 with `ready: true`**, and
+nothing else. `ready` is upstream's combined readiness and it is a **startup latch** — true once
+the book mirror's first sync, the kernel's backend projection and the wallet inventory have all
+come good; false again only when the solver stops. Read it as *"this solver finished starting up
+and is still running"*.
+
+| question | does a healthy `solver` container answer it? |
+|---|---|
+| did the solver start up completely? | **yes** — that is exactly the latch |
+| is the process still alive and its listener answering? | **yes** |
+| is the relay connected? | **no.** Stop the relay and this container stays healthy; the socket is not part of `ready` |
+| is a ladder published right now? | **no**, and deliberately: a fail-closed empty ladder is the solver *working* |
+| does the relay advertise this solver? | **not here** — `./verify.sh`'s `solver` section asserts it directly, which is where a three-service claim belongs |
+
+Before 00015 the healthcheck probed the *relay's* `GET /tokens` and flipped 0/1 roughly once a
+minute on a perfectly healthy stack, because a fail-closed empty ladder looks identical to a
+missing solver from outside. Thirty consecutive unlucky samples would have marked a correct
+solver `unhealthy`. If you are diffing an old stack against a new one, that is the behaviour
+change; nothing else about the service moved.
+
+To see it go red on purpose, and to time both transitions:
+
+```sh
+SOLVER_VERIFY_HEALTH_TRANSITION=1 ./scripts/verify-solver.sh
+```
+
+That stops the relay for a minute (and records that the solver stays healthy — the honest
+measurement of what `ready` covers), then stops and starts the **solver** and reports how long
+each transition took.
 
 ### Knobs
 

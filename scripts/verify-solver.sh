@@ -52,6 +52,14 @@
 #                     container with `bun -e`, for the same reason /state is: this host has
 #                     no jq and no bun, and the verify scripts take no dependency a stock
 #                     macOS box lacks.
+#   health            THE CONTAINER HEALTHCHECK ITSELF, because a healthcheck is a thing that
+#                     can be wrong. Since 00015 it asks the solver's own /health for `ready`
+#                     (issues/00013); the claim worth checking is not "healthy now" but "stays
+#                     healthy while the book churns", so `Health.Log` is SAMPLED every 10 s
+#                     across a window longer than the five probes docker retains, and every
+#                     non-zero exit ever seen is accumulated. Runs last, after minutes of real
+#                     churn. `SOLVER_VERIFY_HEALTH_TRANSITION=1` additionally stops and starts
+#                     the relay and then the solver, and records what each does.
 #
 # WHAT IT DELIBERATELY DOES NOT PROVE. The UI's swap flow needs a Midnight WALLET EXTENSION
 # to sign an intent (`window.midnight`, the dapp-connector API), which no script on this host
@@ -785,6 +793,180 @@ if service_present intents-ui; then
     fail "the served page names the compose-internal host 'relay' — a browser cannot resolve it"
   else
     ok "the served page names no compose-internal hostname"
+  fi
+fi
+
+# ── the container healthcheck itself (00015 PR B; issues/00013) ──────────────
+#
+# THE HEALTHCHECK IS A THING THAT CAN BE WRONG, so it is checked rather than trusted. Since
+# 00015 it probes the solver's own `GET /health` and passes iff the answer is 200 with
+# `ready: true`; before that it probed the RELAY's /tokens and called the solver unhealthy
+# whenever that list was empty while the kernel book was not — a state the solver enters BY
+# DESIGN on every fail-closed empty ladder, measured at ~1 flip per minute on an idle stack.
+#
+# So the assertion that matters is not "is it healthy now" but "does it STAY healthy while the
+# book churns": zero exit-1 samples in the container's health log. Docker keeps the last 5
+# probe results there, at 10 s apart, i.e. a ~50 s window — so the log is SAMPLED repeatedly and
+# every exit code seen is accumulated, rather than read once at the end where 4 of 5 flips would
+# already have aged out.
+#
+# It runs LAST on purpose: by the time this section reaches here, the book, ladder, quote,
+# refusal, journal and listener blocks have all run — minutes of real churn, including a
+# re-seeded maker offer — which is exactly the traffic that used to make the old probe flip.
+if service_present solver; then
+  echo
+  log "solver: the container healthcheck (does it stay green while the book churns?)"
+
+  SOLVER_CID="$(docker ps -aq \
+    --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME}" \
+    --filter "label=com.docker.compose.service=solver" 2>/dev/null | head -1 || true)"
+
+  # health_field <go-template> — one field of .State.Health, or the empty string. `|| true`
+  # everywhere: a container that has gone away must be reportable, not fatal under `set -e`.
+  health_field() {
+    [[ -n "$SOLVER_CID" ]] || { printf ''; return 0; }
+    docker inspect -f "$1" "$SOLVER_CID" 2>/dev/null || true
+  }
+  # The exit codes of the probes docker still remembers, newest last, one per line. An empty
+  # answer (no health block at all) prints nothing rather than failing.
+  health_exit_codes() {
+    health_field '{{if .State.Health}}{{range .State.Health.Log}}{{.ExitCode}}{{"\n"}}{{end}}{{end}}' \
+      | grep -E '^[0-9]+$' || true
+  }
+
+  if [[ -z "$SOLVER_CID" ]]; then
+    fail "no solver container for project '${COMPOSE_PROJECT_NAME}' — this section should not have run"
+  else
+    H_STATUS="$(health_field '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}')"
+    H_STREAK="$(health_field '{{if .State.Health}}{{.State.Health.FailingStreak}}{{else}}-1{{end}}')"
+
+    if [[ "$H_STATUS" == "healthy" ]]; then
+      ok "the solver container reports Health.Status=healthy"
+    else
+      fail "the solver container reports Health.Status=${H_STATUS:-unreadable} — its /health says ready is not true, or the listener is not bound (SOLVER_STATUS_PORT)"
+    fi
+    if [[ "$H_STREAK" == "0" ]]; then
+      ok "Health.FailingStreak is 0"
+    else
+      fail "Health.FailingStreak is ${H_STREAK:-unreadable}, expected 0"
+    fi
+
+    # ── the flap window ──────────────────────────────────────────────────────
+    # SOLVER_HEALTH_SAMPLE_S seconds of sampling every 10 s (one docker inspect per sample,
+    # which costs nothing), accumulating every exit code the log has shown. 200 s by default:
+    # comfortably longer than the ~50 s the log itself retains, so the samples overlap and
+    # nothing can slip between them, and long enough that the old check — which flipped about
+    # once a minute — would have been caught several times over.
+    SOLVER_HEALTH_SAMPLE_S="${SOLVER_HEALTH_SAMPLE_S:-200}"
+    info "sampling Health.Log every 10 s for ${SOLVER_HEALTH_SAMPLE_S}s (the log holds the last 5 probes, so the windows overlap)"
+    HEALTH_SAMPLES=0
+    HEALTH_BAD=0
+    HEALTH_DEADLINE=$(( SECONDS + SOLVER_HEALTH_SAMPLE_S ))
+    while (( SECONDS < HEALTH_DEADLINE )); do
+      # `|| true` on the count: `grep -c` exits 1 when it counts zero, which is the ANSWER we
+      # want most of the time.
+      CODES="$(health_exit_codes)"
+      BAD_NOW="$(printf '%s\n' "$CODES" | grep -c -v '^0$' || true)"
+      # printf of an empty string still emits one (empty) line, which `grep -v '^0$'` counts.
+      [[ -n "$CODES" ]] || BAD_NOW=0
+      if (( BAD_NOW > HEALTH_BAD )); then HEALTH_BAD="$BAD_NOW"; fi
+      HEALTH_SAMPLES=$(( HEALTH_SAMPLES + 1 ))
+      sleep 10
+    done
+    FINAL_CODES="$(health_exit_codes | tr '\n' ' ')"
+    if [[ "$HEALTH_BAD" == "0" ]]; then
+      ok "${HEALTH_SAMPLES} samples over ${SOLVER_HEALTH_SAMPLE_S}s: every remembered probe exited 0 (last window: ${FINAL_CODES:-none})"
+    else
+      fail "${HEALTH_SAMPLES} samples over ${SOLVER_HEALTH_SAMPLE_S}s: up to ${HEALTH_BAD} of the 5 remembered probes had exited non-zero (last window: ${FINAL_CODES:-none}).
+          The healthcheck is flapping. Since 00015 it asks the solver's own /health for \`ready\`, which is a
+          startup latch — a flap here means the listener is dropping requests or the solver is restarting."
+    fi
+
+    # ── the transition, opt-in because it disturbs the stack ─────────────────
+    # SOLVER_VERIFY_HEALTH_TRANSITION=1 only. Two halves, and the SECOND one is the surprise
+    # worth writing down (00015 question Q5):
+    #
+    #   1. stopping the RELAY does NOT change anything. `ready` is `solverIsReady` in
+    #      packages/solver/src/run.ts — a one-way latch (first book sync + backend projection
+    #      current + inventory read) cleared only by the solver's own stop(). The relay socket
+    #      is not part of it. This half MEASURES that rather than asserting a transition the
+    #      code cannot make, so a future re-pin where upstream does clear the latch shows up
+    #      here as a changed measurement instead of a silent pass.
+    #   2. stopping the SOLVER is the transition this check actually gates on: the listener
+    #      goes with the process, the probe fails, the container turns unhealthy — and comes
+    #      back healthy after `start`, once startup has re-latched `ready`. Both times recorded.
+    if [[ "${SOLVER_VERIFY_HEALTH_TRANSITION:-}" == "1" || "${SOLVER_VERIFY_HEALTH_TRANSITION:-}" == "true" ]]; then
+      echo
+      log "solver: health transitions (SOLVER_VERIFY_HEALTH_TRANSITION is set — this stops and starts containers)"
+
+      if service_present relay; then
+        info "stopping the relay for 60 s and watching the solver's health"
+        dc stop relay >/dev/null 2>&1 || true
+        RELAY_OBS_DEADLINE=$(( SECONDS + 60 ))
+        RELAY_SAW_UNHEALTHY=0
+        while (( SECONDS < RELAY_OBS_DEADLINE )); do
+          [[ "$(health_field '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}')" == "healthy" ]] || RELAY_SAW_UNHEALTHY=1
+          sleep 10
+        done
+        dc start relay >/dev/null 2>&1 || true
+        if (( RELAY_SAW_UNHEALTHY )); then
+          info "MEASURED: the solver left 'healthy' while the relay was down — upstream's \`ready\` now tracks the relay socket; update the fragment comment and 00015 Q5"
+        else
+          ok "MEASURED: the solver stayed healthy for 60 s with the relay STOPPED — \`ready\` is a startup latch and does not track the relay socket (00015 Q5); the relay/ladder assertions above are where that guarantee lives"
+        fi
+        dc start relay >/dev/null 2>&1 || true
+      fi
+
+      # ── DOWN: what this half does and does not measure ────────────────────
+      # Docker marks a STOPPED container `unhealthy` itself, the moment it exits (measured on
+      # this daemon with a throwaway container). So the number below is the stop's own latency,
+      # not a probe-failure latency — what it proves is that the container leaves `healthy`
+      # when the solver goes away, i.e. that nothing here can report a dead solver as fine.
+      # The genuine probe-in-the-red measurement is the UP half, below.
+      info "stopping the solver and waiting for the container to leave 'healthy'"
+      T0=$SECONDS
+      dc stop solver >/dev/null 2>&1 || true
+      DOWN_SECS=""
+      DOWN_DEADLINE=$(( SECONDS + 180 ))
+      while (( SECONDS < DOWN_DEADLINE )); do
+        if [[ "$(health_field '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}')" != "healthy" ]]; then
+          DOWN_SECS=$(( SECONDS - T0 )); break
+        fi
+        sleep 2
+      done
+      if [[ -n "$DOWN_SECS" ]]; then
+        ok "the solver left 'healthy' ${DOWN_SECS}s after \`docker compose stop solver\` (docker marks a stopped container unhealthy itself) — health=$(health_field '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}')"
+      else
+        fail "the solver container was still 'healthy' 180 s after it was stopped — this healthcheck cannot go red"
+      fi
+
+      # ── UP: the real red-then-green measurement, and Q3's number ──────────
+      # The listener binds BEFORE the wallet (upstream, on purpose), so from the moment the
+      # container is up its /health answers 200 with `ready: false` — every probe in that
+      # window is a genuine exit 1 against a live listener, which is exactly the red path this
+      # check must have. The time to `healthy` is what `start_period: 180s` has to cover, so it
+      # is reported whether or not it is inside the window.
+      info "starting the solver again and waiting for ready:true and healthy"
+      T0=$SECONDS
+      dc start solver >/dev/null 2>&1 || true
+      UP_SECS=""
+      UP_DEADLINE=$(( SECONDS + 600 ))
+      while (( SECONDS < UP_DEADLINE )); do
+        if [[ "$(health_field '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}')" == "healthy" ]]; then
+          UP_SECS=$(( SECONDS - T0 )); break
+        fi
+        sleep 5
+      done
+      if [[ -n "$UP_SECS" ]]; then
+        if (( UP_SECS <= 180 )); then
+          ok "the solver was healthy again ${UP_SECS}s after \`docker compose start solver\` — inside the 180 s start_period"
+        else
+          warn "the solver took ${UP_SECS}s to become healthy again, LONGER than start_period (180 s). On a host this slow the container would be marked unhealthy during a cold start; consider raising start_period in compose/solver.yml."
+        fi
+      else
+        fail "the solver did not return to 'healthy' within 600 s of being started"
+      fi
+    fi
   fi
 fi
 
