@@ -412,11 +412,17 @@ if (( ! FAILED )) && [[ " $PROFILES " == *" solver "* ]] && service_present rela
   wait_compose_healthy relay "$RELAY_WAIT_TIMEOUT" || FAILED=1
 fi
 if (( ! FAILED )) && [[ " $PROFILES " == *" solver "* ]] && service_present solver; then
-  # The solver's healthcheck is a RUNTIME assertion, not a liveness one: on the default path
-  # it requires the relay to be advertising a non-empty token set, i.e. that this solver
-  # connected, mirrored the seeded book and published a ladder. Reaching healthy here is
-  # therefore the profile's real "it works", and it implicitly covers both one-shots —
-  # compose will not start the solver until solver-provision has exited 0.
+  # Since 00015 the solver's healthcheck asks the SOLVER, not the relay: `GET /health` on its
+  # own status listener, healthy iff `ready` is true. That flag is upstream's startup latch —
+  # the book mirror's first sync, the kernel's backend projection and the wallet inventory have
+  # all come good — so reaching healthy here means "the solver finished starting up", which is
+  # a real and honest bring-up gate, and it still implicitly covers `solver-provision` (compose
+  # will not start the solver until that one-shot has exited 0).
+  #
+  # It no longer means "the relay is advertising this solver's ladder". That is a claim about
+  # three services and it is asserted where it belongs, in ./verify.sh's solver section — the
+  # old healthcheck made it here and flapped 0/1 on every fail-closed empty ladder as a result
+  # (issues/00013). `./verify.sh --solver` is what says the profile WORKS; this says it is UP.
   wait_compose_healthy solver "$SOLVER_WAIT_TIMEOUT" || FAILED=1
 fi
 if (( ! FAILED )) && [[ " $PROFILES " == *" solver "* ]] && service_present solver-frontend; then

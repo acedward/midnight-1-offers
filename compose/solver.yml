@@ -320,9 +320,12 @@ services:
       # is DISPLAY ONLY — the authoritative identity assertion is
       # scripts/verify-source-pins.sh against /app/.kernel-commit in the image.
       GIT_COMMIT: '${KERNEL_REF:-c293ebd57937c0065663b08b2c244438be8989a5}'
-      # Read ONLY by the healthcheck below, to decide how strict it may be.
-      MAKER_OFFER_ENABLED: '${MAKER_OFFER_ENABLED:-true}'
-      SOLVER_PROVISION_ENABLED: '${SOLVER_PROVISION_ENABLED:-true}'
+      # MAKER_OFFER_ENABLED / SOLVER_PROVISION_ENABLED USED TO BE HERE, read ONLY by the old
+      # healthcheck to decide how strict it could be about an empty relay token list. That probe
+      # is gone (00015 PR B), and with it their only reader on THIS service — the solver process
+      # itself has never heard of either name. They remain where they are actually read: on the
+      # `maker-offer` and `solver-provision` one-shots above, and in `scripts/verify-solver.sh`,
+      # which still adjusts what it expects of the book when an operator turns a seeder off.
     # NO PUBLISHED PORT FOR :9100, deliberately (00011 Q4).
     #
     # The status snapshot is the solver's whole internal state. `solver-frontend` reaches it
@@ -348,22 +351,42 @@ services:
       # against is worse than no journal.
       - 'solver-journal:/var/lib/cow-solver'
     healthcheck:
-      # RUNTIME READINESS, not process existence. The relay's /tokens is the union of what
-      # every connected solver advertises, so a non-empty list proves this solver connected,
-      # authenticated, mirrored a book and published capabilities — the whole chain, from
-      # outside. An empty list is the exact silent failure the two one-shots exist to prevent,
-      # so it is UNHEALTHY rather than quietly fine.
+      # ── THE SOLVER'S OWN ANSWER, AND NOTHING ELSE (00015 PR B; issues/00013) ──
       #
-      # TWO conditions relax that, and both are states where an empty ladder is CORRECT rather
-      # than broken:
+      # `GET /health` on the status listener returns {status, ready, mode, contractVersion} and
+      # is OPEN by design — a healthcheck must not need the bearer. `ready` is upstream's own
+      # combined readiness, and its comment beside it says exactly what this check is for:
+      # "the solver's combined readiness, which is what a Compose healthcheck should gate on".
       #
-      #   1. the operator turned a seeding one-shot off, i.e. said the inventory or the book
-      #      comes from somewhere this stack cannot see;
-      #   2. the kernel book has no live offer at all. The ladder is DERIVED from the book, so
-      #      with nothing to quote an empty publication is the honest answer — and this is
-      #      exactly the state a successful demo LEAVES BEHIND, because a settled take consumes
-      #      the offer it filled. Without this clause the solver would go unhealthy minutes
-      #      after the stack did precisely what it was built to do.
+      # WHAT `ready` MEANS, read at the pinned kernel (packages/solver/src/run.ts) rather than
+      # assumed: it is `solverIsReady`, a ONE-WAY LATCH set true once — when the book mirror's
+      # first sync has completed AND the kernel's backend projection has reported `current` AND
+      # the wallet inventory has been read — and cleared only by the solver's own `stop()`. So
+      # this check answers "did this solver finish starting up, and is it still running".
+      #
+      # WHAT IT DOES NOT COVER, said plainly so nobody reads more into a green tick: the RELAY
+      # SOCKET is not part of `ready`, and a backend projection lost LATER does not clear it
+      # (`solverReadySettled` stops the latch re-evaluating). Stopping the relay leaves this
+      # container healthy. The end-to-end "the relay advertises this solver's ladder" guarantee
+      # lives in scripts/verify-solver.sh, which asserts it directly — that is the right place
+      # for it, because it is a claim about three services rather than about this one.
+      #
+      # WHY THE OLD CHECK WAS WRONG. It probed the RELAY's GET /tokens and called this solver
+      # unhealthy whenever that list was empty while the kernel book was not. The solver enters
+      # exactly that state BY DESIGN every time it publishes a fail-closed empty ladder
+      # (`cache-not-current`, ~5 s at a time — measured 25 times in 27 minutes on an IDLE
+      # stack), so the check flipped 0/1 continually and 30 consecutive unlucky samples would
+      # have marked a perfectly correct solver unhealthy. A fail-closed withdrawal is the
+      # solver working, not failing. issues/00013.
+      #
+      # It also needed MAKER_OFFER_ENABLED and SOLVER_PROVISION_ENABLED to decide how strict it
+      # could be; that logic is gone with the probe it served, and so are those two variables on
+      # THIS service — they stay on the one-shots that actually read them (see the note where
+      # they used to be).
+      #
+      # DEPENDS ON SOLVER_STATUS_PORT, which m1 sets unconditionally above (00011 PR B). Unset,
+      # the listener would not bind at all, no probe could succeed, and this check would fail
+      # closed — which is the correct answer for a solver nothing can ask.
       test:
         - 'CMD'
         - 'bun'
@@ -372,11 +395,14 @@ services:
         # compose interpolates `${…}` in every value it renders, and `${process.env.X}` is not
         # a variable name it can resolve — the whole file then fails to render, which up.sh
         # sees as "this profile declares no services". String concatenation instead.
-        - 'const strict = (process.env.MAKER_OFFER_ENABLED ?? "true") === "true" && (process.env.SOLVER_PROVISION_ENABLED ?? "true") === "true"; const r = await fetch("http://relay:3000/tokens").catch(() => null); if (!r || !r.ok) process.exit(1); const j = await r.json().catch(() => ({})); const n = Array.isArray(j.tokens) ? j.tokens.length : 0; if (!strict || n > 0) process.exit(0); const b = await fetch(process.env.ZSWAP_API + "/v1/offers?limit=1").catch(() => null); if (!b || !b.ok) process.exit(1); const book = await b.json().catch(() => ({})); process.exit((Array.isArray(book.offers) ? book.offers.length : 0) > 0 ? 1 : 0)'
+        - 'const r = await fetch("http://127.0.0.1:9100/health").catch(() => null); if (!r || !r.ok) process.exit(1); const j = await r.json().catch(() => null); process.exit(j && j.ready === true ? 0 : 1)'
       interval: 10s
       timeout: 10s
-      # The first ladder cannot appear before the solver has synced its wallet and mirrored
-      # the book, which is minutes on a cold stack.
+      # UNCHANGED (00015 question Q3 -> A). The listener binds before the wallet, so it answers
+      # `ready: false` for the whole of startup rather than refusing connections — the container
+      # stays `starting` until the solver is genuinely up, which is what start_period is for.
+      # Measured on the 00015 PR B gate: see the plan's B.6 block for the bind and ready times
+      # against this 180 s window.
       retries: 30
       start_period: 180s
     depends_on:
