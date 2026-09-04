@@ -30,7 +30,7 @@ Usage: ./up.sh [options]
 Brings up the core Midnight 1.x stack (node + indexer + proof-server + postgres) and waits
 until each is serving. Reads .env for image pins and host ports (see .env.example).
 
-PROFILES — there are exactly six, and a profile IS a compose fragment in compose/, named
+PROFILES — there are exactly seven, and a profile IS a compose fragment in compose/, named
 after the file. No compose \`profiles:\` key is used anywhere in this repository.
 
   core           ALWAYS on. midnight-node ${NODE_VERSION}, indexer-standalone ${INDEXER_VERSION},
@@ -48,6 +48,11 @@ after the file. No compose \`profiles:\` key is used anywhere in this repository
                  faucet coin a minute and posts ONE sponsored, individually takeable offer
                  spending exactly that coin, so the book fills itself. Needs \`offerfiles\`;
                  needs neither the relay nor the solver.
+  prices         the PRICE FEED — one CoinGecko \`simple/price\` call a day into \`asset_prices\`,
+                 the USD reference behind GET /v1/prices, GET /v1/quote and the sponsorship
+                 gate. No port, no volume. Needs \`offerfiles\`. WITHOUT \`COINGECKO_API_KEY\` in
+                 .env it comes up and IDLES with a warning — the schema's seeded prices already
+                 quote real ratios — and ./verify.sh reports its section SKIPPED, not passed.
 
 Options:
   --with <profile>   ALSO bring up an optional profile; repeatable, and additive — see below.
@@ -87,6 +92,7 @@ Examples:
   ./up.sh --with frontend       # …and the zswap-da SPA
   ./up.sh --with shielded-night # …and the Shielded NIGHT dApp (needs nothing but core)
   ./up.sh --with offerfiles --with poster   # …and a book that supplies itself
+  ./up.sh --with offerfiles --with prices   # …and live reference prices (needs COINGECKO_API_KEY)
   ./up.sh --all                 # everything (needs RELAY_SOURCE_DIR for solver)
   ./up.sh --converge            # core ONLY: stop every optional profile that is up
   ENV_FILE=.env.ci ./up.sh      # a second, port-shifted instance
@@ -403,6 +409,18 @@ fi
 if (( ! FAILED )) && [[ " $PROFILES " == *" poster "* ]] && service_present offer-poster; then
   wait_compose_healthy offer-poster "$POSTER_WAIT_TIMEOUT" || FAILED=1
 fi
+# The price feed. It has NO healthcheck and cannot sensibly have one (compose/prices.yml says
+# why: a loop that sleeps 24 h between cycles has no cheap in-container liveness signal, and
+# the honest question — "did the last cycle succeed" — is a row in the database that the
+# kernel serves, which is ./verify.sh's job). So this waits for the weaker but real property:
+# the container is RUNNING and STAYS running, restart count unchanged. That is exactly the
+# failure this profile can have — a configuration error under `restart: unless-stopped`, i.e.
+# a crash loop `docker compose up -d` reports as success. A missing key is NOT that: the
+# service idles by design and this wait passes, which is the intended behaviour on a clean
+# host with no .env.
+if (( ! FAILED )) && [[ " $PROFILES " == *" prices "* ]] && service_present price-feed; then
+  wait_compose_running price-feed "${PRICES_SETTLE_S:-10}" "${PRICES_WAIT_TIMEOUT:-120}" || FAILED=1
+fi
 if (( ! FAILED )) && [[ " $PROFILES " == *" solver "* ]] && service_present relay; then
   wait_compose_healthy relay "$RELAY_WAIT_TIMEOUT" || FAILED=1
 fi
@@ -447,6 +465,9 @@ service_present relay        && info "intents relay     ${RELAY_URL}   (solver W
 service_present solver-frontend && info "solver monitor    ${SOLVER_FRONTEND_URL}"
 service_present intents-ui   && info "intents UI        http://${HOST_ADDR}:${INTENTS_UI_HOST_PORT}"
 service_present offer-poster && info "offer poster      ${POSTER_URL}/health   (also /metrics /journal)"
+# No URL of its own — it serves nothing. What it did is read through the kernel, and the
+# one-off refresh is worth naming here because the loop's own next cycle is a day away.
+service_present price-feed   && info "price feed        ${KERNEL_URL}/v1/prices?tokens=<colour>   (one refresh now: docker compose run --rm --no-deps price-feed --once)"
 echo
 info "next: ./verify.sh    (assert the stack is usable, not merely running)"
 info "      ./down.sh -v   (stop and wipe all chain/indexer/kernel state)"
