@@ -41,7 +41,8 @@ after the file. No compose \`profiles:\` key is used anywhere in this repository
   shielded-night the Shielded NIGHT dApp (:${SHIELDED_NIGHT_HOST_PORT}) — NIGHT <-> sNight, wrapped
                  1:1 by a contract this profile deploys ONCE per stack. Depends only on core.
   solver         the Midnight Intents relay (:${RELAY_HTTP_HOST_PORT} HTTP, :${RELAY_WS_HOST_PORT} WS), the COW solver
-                 in execution mode, and the intents browser UI (:${INTENTS_UI_HOST_PORT}).
+                 in execution mode with its read-only status listener, the solver MONITOR
+                 (:${SOLVER_FRONTEND_HOST_PORT}) and the intents browser UI (:${INTENTS_UI_HOST_PORT}).
                  BUILDS FROM A PRIVATE CLONE YOU SUPPLY — see RELAY_SOURCE_DIR below.
 
 Options:
@@ -399,6 +400,13 @@ if (( ! FAILED )) && [[ " $PROFILES " == *" solver "* ]] && service_present solv
   # compose will not start the solver until solver-provision has exited 0.
   wait_compose_healthy solver "$SOLVER_WAIT_TIMEOUT" || FAILED=1
 fi
+if (( ! FAILED )) && [[ " $PROFILES " == *" solver "* ]] && service_present solver-frontend; then
+  # The MONITOR, waited for AFTER the solver but not because it needs it: it depends on the
+  # kernel alone and renders "SOLVER UNREACHABLE" perfectly happily. The order is only so a
+  # green line here means "open this and the page is already telling you something".
+  # Its /health is the SITE's own liveness and never follows the solver's state.
+  wait_compose_healthy solver-frontend "$RELAY_WAIT_TIMEOUT" || FAILED=1
+fi
 if (( ! FAILED )) && [[ " $PROFILES " == *" solver "* ]] && service_present intents-ui; then
   wait_compose_healthy intents-ui "$RELAY_WAIT_TIMEOUT" || FAILED=1
 fi
@@ -422,6 +430,7 @@ service_present batcher      && info "batcher           ${BATCHER_URL}"
 service_present frontend     && info "zswap-da SPA      http://${HOST_ADDR}:${FRONTEND_HOST_PORT}"
 service_present shielded-night && info "Shielded NIGHT    http://${HOST_ADDR}:${SHIELDED_NIGHT_HOST_PORT}   contract ${SHIELDED_NIGHT_CONTRACT:-unknown}"
 service_present relay        && info "intents relay     ${RELAY_URL}   (solver WS :${RELAY_WS_HOST_PORT})"
+service_present solver-frontend && info "solver monitor    ${SOLVER_FRONTEND_URL}"
 service_present intents-ui   && info "intents UI        http://${HOST_ADDR}:${INTENTS_UI_HOST_PORT}"
 echo
 info "next: ./verify.sh    (assert the stack is usable, not merely running)"

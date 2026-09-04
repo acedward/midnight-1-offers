@@ -1,8 +1,9 @@
 # Operations
 
-> **Scope.** This file documents the **`shielded-night`** profile, plus the `offerfiles`-profile
-> notes that each kernel re-pin makes unavoidable for anyone running an existing stack forward.
-> The rest of the `offerfiles` profile's operating notes are still to be written.
+> **Scope.** This file documents the **`solver`** profile's monitor and status listener, the
+> **`shielded-night`** profile, and the `offerfiles`-profile notes that each kernel re-pin makes
+> unavoidable for anyone running an existing stack forward. The rest of the `offerfiles`
+> profile's operating notes are still to be written.
 
 ## Re-pin to kernel `main` @ `c293ebd` (00011 PR A) — **BREAKING for an EXISTING stack**
 
@@ -138,6 +139,82 @@ repository (an operator with direct DB access on a live, non-devnet deployment c
 the one-line `UPDATE known_tokens SET decimals = 6 WHERE name IN ('NIGHT', 'USDC');` that kernel
 PR #60's own body documents — not applicable here, since this profile only ever runs a
 disposable devnet).
+
+## The solver monitor, and reading the solver's status listener (00011 PR B)
+
+```sh
+./up.sh --with offerfiles --with solver
+open http://127.0.0.1:${SOLVER_FRONTEND_HOST_PORT:-10800}     # the monitor
+```
+
+`up.sh` prints the URL as **`solver monitor`** when the stack is up. The page is read-only, has
+no authentication of its own, and binds `BIND_ADDR` (127.0.0.1) like everything else here.
+
+**Open it when the solver is misbehaving, not only when it is fine.** It depends on the kernel
+alone, so it renders the book, the kernel's sync state and the token registry even with the
+solver stopped — and says `SOLVER UNREACHABLE` with the time it was last seen instead of going
+blank. The six-stage health strip (kernel sync → book cache → inventory → journal & DUST →
+relay socket → published ladder) is designed to answer *which* stage is red, and an empty ladder
+is labelled with the solver's own reason (`cache-not-current` = the fail-closed withdrawal;
+`withdrawn` = a deliberate one) rather than as "no liquidity".
+
+### Reading the status listener by hand
+
+The listener is on `:9100` **inside the compose network only** — it is not published, because
+`/status/*` serves the solver's entire internal state and the monitor is its intended reader:
+
+```sh
+# the open liveness route: no bearer, nothing internal in the body
+docker compose … exec solver bun -e \
+  'const r = await fetch("http://127.0.0.1:9100/health"); console.log(await r.text());'
+
+# the full snapshot: bearer required, read from the container's own environment
+docker compose … exec solver bun -e 'const r = await fetch(
+  "http://127.0.0.1:9100/status/snapshot",
+  { headers: { authorization: "Bearer " + process.env.SOLVER_STATUS_AUTH_TOKEN } });
+  console.log(await r.text());'
+```
+
+To publish it for a debugging session, uncomment the `ports:` block in `compose/solver.yml`
+(`SOLVER_STATUS_HOST_PORT`, default `19100`) — and never with a non-loopback `BIND_ADDR`: the
+bearer would then be the only thing between the solver's whole internal state and the network.
+`scripts/pick-ports.sh` deliberately emits no port for it.
+
+### Knobs
+
+| variable | default | what it does |
+|---|---|---|
+| `SOLVER_FRONTEND_HOST_PORT` | `10800` | published port for the monitor (`BASE+11` from `pick-ports.sh`) |
+| `SOLVER_STATUS_AUTH_TOKEN` | a committed devnet value, 49 chars | the ONE bearer both sides read. **≥ 32 characters, enforced at startup**: with the status port set, a missing or short value is one of the problems `start.solver.ts` lists before it binds. `pick-ports.sh` emits a random 64-hex one |
+| `SOLVER_FRONTEND_POLL_MS` | blank → `4000` | kernel/relay poll interval (250–300 000). The solver half prefers SSE and polls only while the stream is down |
+| `SOLVER_FRONTEND_HISTORY_LIMIT` | blank → `500` | transitions kept in memory (1–5000); never persisted |
+| `SOLVER_MONITOR_BUDGET_S` | `180` | `verify.sh`: how long the monitor may take to report a relay-connected solver with a non-empty ladder |
+| `SOLVER_LADDER_BUDGET_S` | `300` | `verify.sh`: how long the relay may take to advertise both colours after a re-seed |
+| `SOLVER_VERIFY_RESEED` | `true` | `verify.sh`: re-seed the book when no live maker offer is left. `false` makes an empty book a FAILURE instead — never a skip |
+| `MAKER_OFFER_RESEED` | `false` | the `maker-offer` one-shot: post another offer even though the marker exists. `verify.sh` sets it; an operator restart still JOINs |
+
+**`SOLVER_REPO` / `SOLVER_REF` are retired.** The solver is the kernel commit; set either and
+`scripts/lib/common.sh` warns that it is ignored. Move `KERNEL_REF` instead.
+
+### Why `./verify.sh` sometimes posts an offer
+
+The seeded maker offer is not permanent, and neither reason is a defect:
+
+* **expiry** — on this chain an offer lives `min(ROOT_WINDOW_SECONDS, OFFER_TTL_SECONDS)` = **1
+  hour**, whatever `MAKER_OFFER_TTL_MINUTES` asks for, because a shielded input can only be
+  proved against a Merkle root still inside the chain's window. A long `./up.sh --all` plus a
+  full `./verify.sh` can exceed that by itself;
+* **consumption** — the kernel archives an offer the moment **any** on-chain transaction spends
+  its input nullifier. A settled take does that, and so does an unrelated transfer from the
+  maker's own wallet whose coin selection happens to pick the coin the offer reserved. That is
+  what the `shielded-night` book chain's taker funding does on an `--all` run: it moves the
+  maker's give colour out of the maker's own genesis wallet.
+
+Before 00011 the `solver` section answered an empty book with a WARN and skipped its ladder and
+exact-quote assertions — its strongest ones — while still exiting 0. It now reports the offer's
+actual terminal status (by hash, from the one-shot's marker), re-seeds through
+`maker-offer` with `MAKER_OFFER_RESEED=true`, and fails if that does not restore a ladder inside
+`SOLVER_LADDER_BUDGET_S`.
 
 ## Bringing the `shielded-night` profile up
 

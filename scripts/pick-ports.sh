@@ -36,6 +36,17 @@ block_free() {
   return 0
 }
 
+# A fresh bearer per generated stack, for the solver's read-only status listener. The
+# committed default in .env.example is a devnet convenience; a disposable stack gets a real
+# random one, exactly as upstream's bootstrap.sh generates both of its tokens.
+#
+# `od`, not `xxd`/`openssl`/`sha256sum`: od is POSIX and present on the macOS acceptance host,
+# where the other three are variously absent or differently spelled. 32 bytes -> 64 hex chars,
+# comfortably above the solver's 32-CHARACTER minimum.
+random_hex_64() {
+  od -An -tx1 -N32 /dev/urandom 2>/dev/null | tr -d ' \n'
+}
+
 BASE=""
 for _ in $(seq 1 200); do
   cand=$(( BASE_MIN + (RANDOM % (BASE_MAX - BASE_MIN - BLOCK)) ))
@@ -106,6 +117,14 @@ RELAY_HTTP_HOST_PORT=$(( BASE + 7 ))
 RELAY_WS_HOST_PORT=$(( BASE + 8 ))
 INTENTS_UI_HOST_PORT=$(( BASE + 9 ))
 SHIELDED_NIGHT_HOST_PORT=$(( BASE + 10 ))
+# The COW solver's MONITOR. The solver's own status listener (:9100 in the container) is
+# deliberately not published, so no port is emitted for it — see compose/solver.yml.
+SOLVER_FRONTEND_HOST_PORT=$(( BASE + 11 ))
+
+# The status listener's bearer, random per generated stack. Both sides read this ONE value
+# (the solver enforces it; solver-frontend sends it), and the solver REFUSES TO START with
+# fewer than 32 characters whenever its status port is set.
+SOLVER_STATUS_AUTH_TOKEN=$(random_hex_64)
 
 # THE BROWSER RUNS OUTSIDE COMPOSE, so every endpoint the page touches has to be a HOST
 # endpoint. The SPA's own fallbacks (http://<pageHost>:9999, :3334) and the kernel-config

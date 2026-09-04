@@ -11,9 +11,12 @@
 #     content-addressed, so equality here means the bytes are the pinned ones — no tag
 #     lookup, no registry trust, and no "it was right when we rendered it".
 #
-#   SOURCE PINS — for everything built from source (kernel, batcher, solver, frontend,
-#     relay, intents UI), the commit baked into the image at build time must equal the
-#     configured full SHA. A `:local` tag says nothing about what is inside it.
+#   SOURCE PINS — for everything built from source (kernel, batcher, solver, solver monitor,
+#     frontend, relay, intents UI), the commit baked into the image at build time must equal
+#     the configured full SHA. A `:local` tag says nothing about what is inside it.
+#     Since 00011 PR B the solver side has NO pin of its own: images/cow-solver is
+#     `FROM kernel-image` plus entrypoints, so it is asserted against KERNEL_REF, together
+#     with the ABSENCE of the retired overlay's second commit file.
 #
 # Every expectation is READ FROM config/artifact-decisions.json rather than duplicated here,
 # so this script cannot drift from the matrix it is enforcing.
@@ -73,6 +76,22 @@ assert_pin() {
   fi
 }
 
+# assert_absent <label> <image> <path in image> — the file must NOT exist.
+#
+# A negative identity assertion, and it needs its own helper rather than a `! assert_pin`:
+# `docker run --entrypoint cat` on a missing file fails the same way an unreadable image
+# does, so "absent" has to be established by a `test ! -f` INSIDE the container, whose exit
+# code separates the two.
+assert_absent() {
+  local label="$1" image="$2" path="$3"
+  if docker run --rm --entrypoint sh "$image" -c "test ! -e '$path'" >/dev/null 2>&1; then
+    ok "${label}: no ${path} in the image"
+    return
+  fi
+  err "${label}: ${image} still carries ${path} — the retired source overlay is back"
+  FAILURES=$(( FAILURES + 1 ))
+}
+
 # ── external runtime images ──────────────────────────────────────────────────
 assert_image_ref node "node" \
   "$(pin 'components[midnight-node].oci.repository')@$(pin 'components[midnight-node].oci.indexDigest')"
@@ -85,7 +104,6 @@ assert_image_ref proof-server "proof-server" \
 # The env var wins if set (an operator may be testing a candidate ref), but the matrix is
 # the default AND the thing a clean checkout is measured against.
 KERNEL_EXPECTED="${KERNEL_REF:-$(pin 'sources[offerfiles-kernel].ref')}"
-SOLVER_EXPECTED="${SOLVER_REF:-$(pin 'sources[cow-solver].ref')}"
 FRONTEND_EXPECTED="${FRONTEND_REF:-$(pin 'sources[zswap-da-template].ref')}"
 RELAY_EXPECTED="${RELAY_REF:-$(pin 'sources[intents-relay].ref')}"
 SHIELDED_NIGHT_EXPECTED="${SHIELDED_NIGHT_REF:-$(pin 'sources[shielded-night].ref')}"
@@ -94,15 +112,16 @@ if service_present kernel; then
   assert_pin kernel "${KERNEL_IMAGE:-midnight-1-offers/offerfiles-kernel:local}" \
     /app/.kernel-commit "$KERNEL_EXPECTED"
 fi
-if service_present solver; then
+# THE SOLVER IS THE KERNEL COMMIT (00011 PR B). images/cow-solver is `FROM kernel-image` plus
+# four entrypoints, so there is exactly ONE commit identity to assert — and the second half of
+# the assertion is a NEGATIVE one: the retired overlay's `/app/.solver-commit` must be gone.
+# That file is the fingerprint of the mixed tree this PR removed (a second commit COPYd over
+# the kernel's), so its reappearance is the regression worth naming.
+if service_present solver || service_present solver-frontend; then
   assert_pin solver "${SOLVER_IMAGE:-midnight-1-offers/cow-solver:local}" \
-    /app/.solver-commit "$SOLVER_EXPECTED"
-  # The solver image is overlaid onto the kernel image so it can reuse the already-compiled
-  # Compact artifacts. That makes the kernel commit part of the SOLVER's identity too: a
-  # solver built against a different kernel would rebuild maker bytes with mismatched
-  # artifacts, which fails at settlement rather than at build.
-  assert_pin solver-kernel-base "${SOLVER_IMAGE:-midnight-1-offers/cow-solver:local}" \
     /app/.kernel-commit "$KERNEL_EXPECTED"
+  assert_absent solver-overlay-retired "${SOLVER_IMAGE:-midnight-1-offers/cow-solver:local}" \
+    /app/.solver-commit
 fi
 if service_present frontend; then
   assert_pin zswap-da "${FRONTEND_IMAGE:-midnight-1-offers/zswap-da:local}" \

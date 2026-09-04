@@ -737,7 +737,7 @@ def _fx_private_source_loses_source_dir(doc):
 
 
 def _fx_public_source_claims_privacy(doc):
-    _src(doc, "cow-solver")["privateRepository"] = "someone/else"
+    _src(doc, "offerfiles-kernel")["privateRepository"] = "someone/else"
     return doc
 
 
@@ -747,7 +747,7 @@ def _fx_subtree_without_sha(doc):
 
 
 def _fx_source_id_collides(doc):
-    _src(doc, "cow-solver")["id"] = "midnight-node"
+    _src(doc, "offerfiles-kernel")["id"] = "midnight-node"
     return doc
 
 

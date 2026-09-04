@@ -58,11 +58,14 @@ OFFICIAL_OCI_SERVICES = {
 }
 
 # Build argument -> the matrix source pin it must equal.
+# There is deliberately NO SOLVER_REF entry: since 00011 PR B images/cow-solver is
+# `FROM kernel-image` plus its entrypoints and takes no build arg at all, so the solver has no
+# pin of its own to bind. Its provenance is asserted on the running image instead
+# (scripts/verify-source-pins.sh: /app/.kernel-commit == KERNEL_REF, and no /app/.solver-commit).
 BUILD_ARG_SOURCES = {
     "KERNEL_REF": "offerfiles-kernel",
     "FRONTEND_REF": "zswap-da-template",
     "SHIELDED_NIGHT_REF": "shielded-night",
-    "SOLVER_REF": "cow-solver",
     "RELAY_REF": "intents-relay",
 }
 
@@ -418,10 +421,12 @@ def synthetic_base(matrix: dict) -> dict:
                           "additional_contexts": {"reference": "/home/op/clone/phase1-native-swaps"},
                           "args": {"RELAY_REF": _source(matrix, "intents-relay")["ref"]}},
             },
+            # No build args at all — the solver image is the kernel image plus entrypoints
+            # (00011 PR B). It stays in the fixture because _fx_new_ref_arg_on_a_branch adds a
+            # *_REF arg to it, which is the "a new pin appeared and nobody bound it" case.
             "solver": {
                 "image": LOCAL_IMAGE_PREFIX + "cow-solver:local",
-                "build": {"context": "images/cow-solver",
-                          "args": {"SOLVER_REF": _source(matrix, "cow-solver")["ref"]}},
+                "build": {"context": "images/cow-solver"},
             },
         },
         "volumes": {PROOF_CACHE_VOLUME: {"name": "synthetic_proof-data"}},

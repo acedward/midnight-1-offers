@@ -42,6 +42,27 @@ MARKER_DIR="${MAKER_OFFER_MARKER_DIR:-/var/lib/maker-offer}"
 MARKER="${MARKER_DIR}/.posted"
 mkdir -p "${MARKER_DIR}"
 
+# offer_hash_for_prefix <12-hex prefix> — the FULL offer hash of a live book entry.
+#
+# post-maker-offer.ts prints `offer <first 12 hex>… is LIVE` and nothing longer, so the full
+# content hash has to be recovered from the book. It is worth recovering: the marker is the
+# only durable record connecting THIS chain's seeded offer to a hash, and ./verify.sh reads it
+# to say whether a vanished offer was CONSUMED or EXPIRED instead of guessing (00011 B.5b),
+# rather than assuming the book holds exactly one offer.
+#
+# `bun -e`, not curl: the oven/bun base image ships neither curl nor wget (see wait-for.sh).
+offer_hash_for_prefix() {
+  bun -e '
+    const [api, prefix] = [process.argv[1], process.argv[2]];
+    const r = await fetch(api + "/v1/offers?limit=100").catch(() => null);
+    if (!r || !r.ok) process.exit(1);
+    const body = await r.json().catch(() => ({}));
+    const hit = (body.offers ?? []).find((o) => String(o.offerId ?? "").startsWith(prefix));
+    if (!hit) process.exit(1);
+    console.log(hit.offerId);
+  ' "${ZSWAP_API}" "$1" 2>/dev/null
+}
+
 if [ "${MAKER_OFFER_ENABLED:-true}" != "true" ]; then
   log "MAKER_OFFER_ENABLED=${MAKER_OFFER_ENABLED:-} — not seeding the order book"
   log "NOTE: with an empty book the solver publishes an EMPTY ladder and the relay quotes"
@@ -51,10 +72,27 @@ fi
 
 # Idempotent for the same reason as the other one-shots: a restart must not re-prove and
 # re-post an offer (tens of seconds of proving) or silently deepen the book on every bounce.
-if [ -f "${MARKER}" ]; then
+#
+# MAKER_OFFER_RESEED IS THE DELIBERATE EXCEPTION (00011 B.5b). The seeded offer does not live
+# forever: an `undeployed` chain expires offers at min(ROOT_WINDOW_SECONDS, OFFER_TTL_SECONDS)
+# = 1 h whatever TTL_MINUTES asks for, and the kernel marks an offer CONSUMED the moment any
+# on-chain transaction spends its input nullifier — a settled take, but equally an unrelated
+# transfer from the maker's own wallet that happens to select the reserved coin. So a long
+# stack legitimately ends up with an empty book and a marker that says "already seeded", and
+# ./verify.sh used to WARN-skip its ladder and quote assertions there. It now re-runs this
+# one-shot with MAKER_OFFER_RESEED=true instead, which is the only sanctioned way past the
+# marker: an operator restart still JOINs, exactly as before.
+if [ -f "${MARKER}" ] && [ "${MAKER_OFFER_RESEED:-false}" != "true" ]; then
   log "JOIN: ${MARKER} exists — a maker offer was already posted against this chain"
   log "$(cat "${MARKER}")"
+  log "NOTE: set MAKER_OFFER_RESEED=true to post another one (./verify.sh does this itself"
+  log "NOTE: when the book has no live maker offer left)."
   exit 0
+fi
+
+if [ -f "${MARKER}" ]; then
+  log "MAKER_OFFER_RESEED=true — re-seeding the book even though ${MARKER} exists"
+  log "previous marker: $(tr '\n' ' ' < "${MARKER}")"
 fi
 
 adopt_contract_address
@@ -64,9 +102,34 @@ wait_http "${ZSWAP_API}/v1/health" "kernel API" "${KERNEL_WAIT_TIMEOUT_S:-600}" 
 
 cd "${REPO_ROOT}" || die "no ${REPO_ROOT}"
 log "posting one maker offer into the kernel book (proving — this takes a while)"
-if bun run deploy/scripts/post-maker-offer.ts; then
-  date -u +%Y-%m-%dT%H:%M:%SZ > "${MARKER}"
-  log "maker offer live; marker written to ${MARKER}"
+
+# tee, so the offer's own identity can be recovered from the output while the operator still
+# sees every line as it happens. `pipefail` is set by the prelude, so the posting script's
+# exit status is what this pipeline reports.
+POST_LOG="${MARKER_DIR}/.last-post.log"
+POST_RC=0
+bun run deploy/scripts/post-maker-offer.ts 2>&1 | tee "${POST_LOG}" || POST_RC=$?
+
+if [ "${POST_RC}" -eq 0 ]; then
+  # `offer <12 hex>… is LIVE in the kernel order book` is the line; anything else means the
+  # script changed and the marker simply carries no hash — which verify.sh handles.
+  PREFIX="$(grep -oE 'offer [0-9a-f]{12}' "${POST_LOG}" | tail -1 | sed 's/^offer //' || true)"
+  OFFER_HASH=""
+  if [ -n "${PREFIX}" ]; then
+    OFFER_HASH="$(offer_hash_for_prefix "${PREFIX}" || true)"
+  fi
+  {
+    date -u +%Y-%m-%dT%H:%M:%SZ
+    if [ -n "${OFFER_HASH}" ]; then
+      echo "offerHash=${OFFER_HASH}"
+    fi
+    echo "give=${GIVE_AMOUNT:-500000} want=${WANT_AMOUNT:-750000}"
+  } > "${MARKER}"
+  if [ -n "${OFFER_HASH}" ]; then
+    log "maker offer live as ${OFFER_HASH}; marker written to ${MARKER}"
+  else
+    log "maker offer live; marker written to ${MARKER} (offer hash not resolvable from the log)"
+  fi
   exit 0
 fi
 

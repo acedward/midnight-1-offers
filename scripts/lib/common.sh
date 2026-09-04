@@ -140,6 +140,14 @@ load_env() {
       warn "${retired} is IGNORED — this repository has no AA/EVM profile, no PGLite and no solver sink"
     fi
   done
+  # 00011 PR B: the solver is no longer a second source pin. images/cow-solver is
+  # `FROM kernel-image` plus its entrypoints, so these two configure nothing at all — and an
+  # operator who still sets SOLVER_REF in .env believes they are choosing which solver runs.
+  for retired in SOLVER_REPO SOLVER_REF; do
+    if [[ -n "${!retired-}" ]]; then
+      warn "${retired} is RETIRED and IGNORED — the solver IS the kernel commit; set KERNEL_REF instead"
+    fi
+  done
   # There are THREE Compact toolchains here (kernel 0.30.0, zswap-da 0.31.0, shielded-night
   # 0.31.1), so one variable could never have configured them. Each is pinned where it is
   # enforced — a Dockerfile ARG in images/offerfiles-kernel, a literal in compose/frontend.yml
@@ -174,11 +182,13 @@ load_env() {
   # reference-price service and the batcher sponsorship gate (kernel PR #54/#56) — see
   # .env.example.
   #
-  # SOLVER_REF now EQUALS KERNEL_REF (00011 PR A). It used to pin kernel PR #52, which was a
-  # descendant of the kernel pin of the day; since #48 that inverted and the overlay reverted
-  # 25 solver files, and at c293ebd it stops building at all (`bun install --frozen-lockfile`
-  # against a lockfile that has never seen packages/solver-frontend). The solver IS the kernel
-  # commit, exactly as the kernel repository's own deploy/compose.yml runs it.
+  # THERE IS NO SOLVER PIN ANY MORE (00011 PR B). images/cow-solver is `FROM kernel-image`
+  # plus four entrypoints, so the solver, its monitor and its two one-shots all carry
+  # KERNEL_REF and nothing else. SOLVER_REPO/SOLVER_REF are retired above rather than
+  # silently ignored. (They used to pin kernel PR #52, a DESCENDANT of the kernel pin of the
+  # day; kernel #48 inverted that, the overlay then reverted 25 solver files, and at c293ebd
+  # it stopped building at all — `bun install --frozen-lockfile` against a lockfile that has
+  # never seen packages/solver-frontend.)
   #
   # 00011 PR A moved both to THE WHOLE-COIN LINE, and they move together: kernel #63 makes
   # `known_tokens.decimals` default to 6 and every faucet mint whole coins; effectstream #918
@@ -188,8 +198,6 @@ load_env() {
   : "${KERNEL_REF:=c293ebd57937c0065663b08b2c244438be8989a5}"
   : "${FRONTEND_REPO:=https://github.com/effectstream/effectstream.git}"
   : "${FRONTEND_REF:=58ab921be5513b77937a37be86bf724a41888302}"
-  : "${SOLVER_REPO:=https://github.com/effectstream/zswap-offerfiles-kernel.git}"
-  : "${SOLVER_REF:=c293ebd57937c0065663b08b2c244438be8989a5}"
   # The Shielded NIGHT dApp. A first-party public repository already on this stack's 1.x line
   # (ledger-v8 8.1.0 / midnight-js 4.1.1 / compact-runtime 0.16.0), so nothing here is
   # patched — see config/artifact-decisions.json -> sources[shielded-night].
@@ -219,6 +227,9 @@ load_env() {
   : "${RELAY_HTTP_HOST_PORT:=13000}"
   : "${RELAY_WS_HOST_PORT:=19001}"
   : "${INTENTS_UI_HOST_PORT:=10700}"
+  # The COW solver's MONITOR. The solver's own status listener (:9100 in the container) is
+  # deliberately NOT published — the monitor is its reader; see compose/solver.yml.
+  : "${SOLVER_FRONTEND_HOST_PORT:=10800}"
   : "${SHIELDED_NIGHT_HOST_PORT:=10900}"
 
   # ── the shared PostgreSQL (Q7) ─────────────────────────────────────────────
@@ -306,12 +317,12 @@ load_env() {
          SNIGHT_BOOK_TAKER_SEED SNIGHT_BOOK_FUNDER_SEED \
          SHIELDED_NIGHT_NAME SHIELDED_NIGHT_SYMBOL SHIELDED_NIGHT_DECIMALS \
          SHIELDED_NIGHT_LOCK SHIELDED_NIGHT_WAIT_TIMEOUT \
-         SOLVER_REPO SOLVER_REF RELAY_REF RELAY_SOURCE_DIR \
+         RELAY_REF RELAY_SOURCE_DIR \
          WAREHOUSE_REPO WAREHOUSE_RELEASE CELESTIA_APP_VERSION CELESTIA_NODE_VERSION \
          BIND_ADDR NODE_HOST_PORT INDEXER_HOST_PORT PROOF_HOST_PORT \
          KERNEL_HOST_PORT BATCHER_HOST_PORT CELESTIA_HOST_PORT FRONTEND_HOST_PORT \
          RELAY_HTTP_HOST_PORT RELAY_WS_HOST_PORT INTENTS_UI_HOST_PORT \
-         SHIELDED_NIGHT_HOST_PORT \
+         SOLVER_FRONTEND_HOST_PORT SHIELDED_NIGHT_HOST_PORT \
          INDEXER_API_PATH OFFERFILES_PG_USER OFFERFILES_PG_DB PROOF_WARM_TIMEOUT \
          NODE_WAIT_TIMEOUT INDEXER_WAIT_TIMEOUT PROOF_WAIT_TIMEOUT POSTGRES_WAIT_TIMEOUT \
          CELESTIA_WAIT_TIMEOUT KERNEL_WAIT_TIMEOUT FRONTEND_WAIT_TIMEOUT \
@@ -328,8 +339,10 @@ load_env() {
   KERNEL_URL="http://${HOST_ADDR}:${KERNEL_HOST_PORT}"
   BATCHER_URL="http://${HOST_ADDR}:${BATCHER_HOST_PORT}"
   RELAY_URL="http://${HOST_ADDR}:${RELAY_HTTP_HOST_PORT}"
+  SOLVER_FRONTEND_URL="http://${HOST_ADDR}:${SOLVER_FRONTEND_HOST_PORT}"
   SHIELDED_NIGHT_URL="http://${HOST_ADDR}:${SHIELDED_NIGHT_HOST_PORT}"
-  export NODE_RPC_URL INDEXER_GQL_URL KERNEL_URL BATCHER_URL RELAY_URL SHIELDED_NIGHT_URL
+  export NODE_RPC_URL INDEXER_GQL_URL KERNEL_URL BATCHER_URL RELAY_URL \
+         SOLVER_FRONTEND_URL SHIELDED_NIGHT_URL
 }
 
 # ── the PRIVATE relay source (spec FR-11, plan Q4) ───────────────────────────

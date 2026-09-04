@@ -33,8 +33,14 @@ require_env ZSWAP_API SOLVER_JOURNAL_PATH
 # NONE of the solver's seven mandatory boundaries appear below. An empty one must reach
 # `launch.ts` still empty so it is reported as missing — that is the fail-fast negative
 # control this deployment relies on, and softening it here would delete it.
+#
+# The DUST admission group is here for a second reason on top of that: `packages/solver/env.ts`
+# refuses a PARTIAL group (all three or none), and three empty strings are three PRESENT values
+# — so a blank .env entry would turn a knob nobody set into a startup failure.
 unset_if_empty SOLVER_LADDER_CONFIG SOLVER_SUPPORTED_PAIRS SOLVER_MIN_JOB_OUTPUT \
-               SOLVER_DRY_RUN SOLVER_ENABLED
+               SOLVER_DRY_RUN SOLVER_ENABLED \
+               SOLVER_DUST_MAX_PER_JOB SOLVER_DUST_MAX_PER_WINDOW SOLVER_DUST_WINDOW_MS \
+               SOLVER_FEE_SIZING_TAKER_INPUTS GIT_COMMIT
 
 # The journal is fail-closed SQLite on a per-instance volume, and `runSolver` opens it rather
 # than creating its directory. `launch.ts` has already been shown the same value and rejects

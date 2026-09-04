@@ -11,7 +11,11 @@
 #   shielded-night  the dApp serves, /config.js carries THIS stack's contract address, the 11
 #               circuits' ZK artifacts answer with binary, the on-chain verifier keys equal the
 #               served ones, and a funded wallet completes both NIGHT <-> sNight round trips
-#   solver      relay /tokens carries both dev colours, one connected solver, quote round trip
+#   solver      relay /tokens carries both dev colours, one connected solver, quote round trip,
+#               the read-only status listener answering 200 with its bearer and 401 without,
+#               and the solver MONITOR reporting a reachable solver with a published ladder.
+#               It RE-SEEDS the book when no live maker offer is left rather than skipping its
+#               ladder assertions — see the header of scripts/verify-solver.sh.
 #
 # Every optional section runs IF AND ONLY IF that profile's containers exist for this compose
 # project, so `./verify.sh` needs no argument to do the right thing after any `./up.sh`.
