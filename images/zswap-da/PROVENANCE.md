@@ -4,10 +4,10 @@
 
 The image fetches `templates/zswap-da` directly from
 [`effectstream/effectstream`](https://github.com/effectstream/effectstream) at the immutable
-commit `f20a38cfccd4f2dec5c886e5c8bb321712d37924` — the head of the
+commit `58ab921be5513b77937a37be86bf724a41888302` — the head of the
 [`midnight-1`](https://github.com/effectstream/effectstream/tree/midnight-1) branch, the line
 maintained for midnight-node 1.x / ledger-v8 / `@effectstream` 0.1xx — whose template subtree
-is `99b871f7aac2e8dc2b3a2172990f1a82bca13360`. BOTH identities are verified before checkout —
+is `3ca1d56ffc29f03c73cf43432bdfeeaf3ab43c6b`. BOTH identities are verified before checkout —
 the commit alone does not prove which bytes of it were extracted — and the resolved commit is
 recorded as `/.zswap-da-commit` inside the runtime image, so "what is in here?" never depends
 on remembering which tag it was built as. No third-party SPA source is stored in this
@@ -50,6 +50,27 @@ One function, `api.getMidnightConfig` in `src/services/api.ts`, was carried here
 **This image now applies no patch of any kind.** It asserts the pinned tree carries the fix
 (one marker per half, in the source and again in the emitted bundle) so a re-pin to a tree
 without it fails the build. The description below is of that upstream change.
+
+### Re-pin (00011 PR A) to the branch head after #918 — the whole-coin line
+
+`FRONTEND_REF` moved to `58ab921` (from `f20a38c`), subtree `3ca1d56f` (from `99b871f7`), for
+[effectstream#918](https://github.com/effectstream/effectstream/pull/918), *"amounts are whole
+coins — token decimals from the registry"*. **This is the UI half of kernel PR #63 and moves
+together with `KERNEL_REF`**: the kernel now defaults `known_tokens.decimals` to 6 and mints
+whole coins, and the SPA now reads each token's `decimals` off `GET /v1/known-tokens`, scales
+every amount it displays and every amount it submits by `10^decimals`, sends an explicit
+`decimals` when it registers a freshly minted colour, and mints **1 000 whole coins**
+(`parseWholeCoins('1000', 6)` = `1_000_000_000` base units) where it used to mint 1 000 base
+units. A stack carrying only one half of the pair is wrong by exactly `10^6`.
+
+The two commits between the refs touch only `src/**` (new `src/state/{amount,swapAmounts}.ts`
+and their tests, plus the screens/hooks/services that consume them) and `README.md` — **no
+`package.json`, no `bun.lock`, no `.compact` source, no build script, no `vite.config.ts`** —
+so every assertion above was re-checked against the new subtree BEFORE building and holds
+verbatim (`ledger-v8 8.1.0`, no `ledger-v9` in `package.json` or the resolved `bun.lock`,
+`compact-runtime 0.16.0`, `@effectstream/{midnight-contracts,wallets} 0.104.0`, no `0.200.x`,
+the #912 `pageHost` / `'proofServerUri'` markers, both LICENSE files), and the compactc 0.31.0
+toolchain and the committed contract manifest this image verifies byte-for-byte are unaffected.
 
 ### Re-pin (phase G) to the branch head after #916
 

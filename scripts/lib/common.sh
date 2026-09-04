@@ -170,16 +170,26 @@ load_env() {
   # ── source pins (full 40-hex commit SHAs; see config/artifact-decisions.json) ─
   # KERNEL_REF is `main` (re-pinned from `feat/cow-solver` in phase G, once kernel PR #48
   # merged the whole solver line into it — `git merge-base --is-ancestor` confirms the old pin
-  # is an ancestor of this one, a pure fast-forward). SOLVER_REF below is UNCHANGED and stays a
-  # strict ancestor of this ref too, so the kernel and the solver in this stack are still two
-  # views of ONE tree. `main` also now carries the seeded reference-price service and the
-  # batcher sponsorship gate (kernel PR #54/#56) — see .env.example.
+  # is an ancestor of this one, a pure fast-forward). `main` also carries the seeded
+  # reference-price service and the batcher sponsorship gate (kernel PR #54/#56) — see
+  # .env.example.
+  #
+  # SOLVER_REF now EQUALS KERNEL_REF (00011 PR A). It used to pin kernel PR #52, which was a
+  # descendant of the kernel pin of the day; since #48 that inverted and the overlay reverted
+  # 25 solver files, and at c293ebd it stops building at all (`bun install --frozen-lockfile`
+  # against a lockfile that has never seen packages/solver-frontend). The solver IS the kernel
+  # commit, exactly as the kernel repository's own deploy/compose.yml runs it.
+  #
+  # 00011 PR A moved both to THE WHOLE-COIN LINE, and they move together: kernel #63 makes
+  # `known_tokens.decimals` default to 6 and every faucet mint whole coins; effectstream #918
+  # is its UI half. BREAKING for an existing `postgres` volume — `./down.sh -v`. See
+  # .env.example and docs/OPERATIONS.md.
   : "${KERNEL_REPO:=https://github.com/effectstream/zswap-offerfiles-kernel.git}"
-  : "${KERNEL_REF:=61f055e83ae1ac4cb6e45031fb38c93c07f2d4d4}"
+  : "${KERNEL_REF:=c293ebd57937c0065663b08b2c244438be8989a5}"
   : "${FRONTEND_REPO:=https://github.com/effectstream/effectstream.git}"
-  : "${FRONTEND_REF:=f20a38cfccd4f2dec5c886e5c8bb321712d37924}"
+  : "${FRONTEND_REF:=58ab921be5513b77937a37be86bf724a41888302}"
   : "${SOLVER_REPO:=https://github.com/effectstream/zswap-offerfiles-kernel.git}"
-  : "${SOLVER_REF:=c37bfa68cb944d883f52af7fa8ea533896a34654}"
+  : "${SOLVER_REF:=c293ebd57937c0065663b08b2c244438be8989a5}"
   # The Shielded NIGHT dApp. A first-party public repository already on this stack's 1.x line
   # (ledger-v8 8.1.0 / midnight-js 4.1.1 / compact-runtime 0.16.0), so nothing here is
   # patched — see config/artifact-decisions.json -> sources[shielded-night].

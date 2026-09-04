@@ -1,8 +1,33 @@
 # cow-solver — the COW posted-price solver in EXECUTION mode, overlaid onto the kernel image.
 #
-# Source: https://github.com/effectstream/zswap-offerfiles-kernel PR #52, at the exact SHA
-# SOLVER_REF below (publicly fetchable as refs/pull/52/head). No solver source is copied into
-# this repository; a clean clone fetches that commit itself.
+# Source: https://github.com/effectstream/zswap-offerfiles-kernel at the exact SHA SOLVER_REF
+# below. No solver source is copied into this repository; a clean clone fetches that commit
+# itself.
+#
+# ── SOLVER_REF IS NOW KERNEL_REF (00011 PR A), AND THE OVERLAY IS ON ITS WAY OUT ──────────
+#
+# This image used to pin kernel PR #52 (`c37bfa68`), a branch that was a DESCENDANT of the
+# kernel pin of the day. Since kernel PR #48 merged the whole solver line into `main` the
+# relationship INVERTED: `c37bfa68` became an ANCESTOR of `KERNEL_REF`, 44 commits behind it,
+# so overlaying it REVERTED 25 solver files (`packages/solver/src/{run,launch,relay-client,
+# swap-job-executor,ladder-source,stock,operation-journal}.ts`, `packages/solver-core/
+# {ladder-derivation,offer-files}.ts` and the root `package.json`/`bun.lock`) to their pre-#53
+# state while leaving the 7 files added after it in place — a mixed tree whose executable code
+# was the PR #52 solver, without #53's capital-free fee sizing and without #58's status
+# listener.
+#
+# At `KERNEL_REF=c293ebd…` that stopped being merely wrong and became a BUILD FAILURE: the
+# base image's tree carries workspace packages the old `bun.lock` has never seen
+# (`packages/solver-frontend`, the poster's `deploy/scripts/lib/poster-*.ts`), so
+# `bun install --frozen-lockfile` below refuses with "lockfile had changes, but lockfile is
+# frozen" — measured on this exact pin, 2026-09-03.
+#
+# So SOLVER_REF now equals KERNEL_REF: the solver IS the kernel commit, which is what the
+# kernel repository's own `deploy/compose.yml` runs. The fetch-and-overlay machinery below is
+# consequently redundant (it copies the tree the base image already has) and 00011 PR B
+# deletes it outright, together with `.solver-commit`, in favour of `FROM kernel-image` plus
+# the entrypoints. Keeping the pin move here, in the PR that moves KERNEL_REF, is what keeps
+# `./up.sh --all` building at every commit.
 #
 # ONE IMAGE, THREE CONTAINERS — the same pattern images/offerfiles-kernel uses:
 #
@@ -19,18 +44,18 @@
 #     than recompiled. They are gitignored upstream, so they exist only because the kernel
 #     image compiled them — and compiling a second, independent copy would put two sets of
 #     verifier keys in one stack, which fails at settlement rather than at build.
-#   * The solver ref is a DESCENDANT of the pinned kernel main (`git merge-base` at
-#     SOLVER_REF and KERNEL_REF is KERNEL_REF itself, verified 2026-09-01), and the contract
-#     source is byte-identical on both sides (same blob for src/offer-files.compact). So
-#     overlaying the branch over the kernel tree cannot silently pair one commit's contract
-#     with another's artifacts.
+#   * SOLVER_REF and KERNEL_REF are now the SAME commit, so the tree copied over the base
+#     image is the tree that is already there and no file can be reverted by the copy. That
+#     is the strongest form of the property this bullet used to argue for ("one commit's
+#     contract can never be paired with another's artifacts") — there is only one commit.
 #
-# The overlay is source-first: the branch's own bun.lock decides the final dependency graph,
-# and the kernel image's node_modules survive underneath it purely as an install cache.
+# The overlay is source-first: the pinned tree's own bun.lock decides the final dependency
+# graph, and the kernel image's node_modules survive underneath it purely as an install cache.
+# With the two refs equal, that install is a no-op that re-proves the lockfile.
 
 ARG DEBIAN_BASE=debian:trixie-slim@sha256:f6e2cfac5cf956ea044b4bd75e6397b4372ad88fe00908045e9a0d21712ae3ba
 ARG SOLVER_REPO=https://github.com/effectstream/zswap-offerfiles-kernel.git
-ARG SOLVER_REF=c37bfa68cb944d883f52af7fa8ea533896a34654
+ARG SOLVER_REF=c293ebd57937c0065663b08b2c244438be8989a5
 
 # ── stage 1: fetch the solver branch at a FULL commit SHA ────────────────────
 FROM ${DEBIAN_BASE} AS source

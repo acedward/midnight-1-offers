@@ -51,7 +51,7 @@ ARG DEBIAN_BASE=debian:trixie-slim@sha256:f6e2cfac5cf956ea044b4bd75e6397b4372ad8
 ARG BUN_BASE=oven/bun:1.3.11@sha256:0733e50325078969732ebe3b15ce4c4be5082f18c4ac1a0f0ca4839c2e4e42a7
 
 ARG KERNEL_REPO=https://github.com/effectstream/zswap-offerfiles-kernel.git
-ARG KERNEL_REF=61f055e83ae1ac4cb6e45031fb38c93c07f2d4d4
+ARG KERNEL_REF=c293ebd57937c0065663b08b2c244438be8989a5
 ARG COMPACT_VERSION=0.30.0
 
 # ── stage 1: fetch the kernel source at a FULL commit SHA ────────────────────
@@ -184,6 +184,11 @@ RUN bun install --frozen-lockfile
 # ~20-minute key generation.
 COPY wait-for.sh           /usr/local/bin/wait-for.sh
 COPY entrypoint-common.sh  /usr/local/lib/offerfiles/entrypoint-common.sh
+# A PROBE, not an entrypoint: `verify-kernel.sh` runs it with `docker compose exec kernel bun
+# run …` to read the faucet allotment out of THIS image's own pinned tree and to make the two
+# preset faucet colours nameable/priceable. It lives OUTSIDE /app on purpose — the kernel tree
+# stays exactly the pinned commit — and imports what it needs by absolute path.
+COPY faucet-probe.ts       /usr/local/lib/offerfiles/faucet-probe.ts
 COPY entrypoint-deploy.sh entrypoint-kernel.sh entrypoint-batcher.sh \
      entrypoint-token-names.sh /usr/local/bin/
 RUN chmod 0755 /usr/local/bin/wait-for.sh \
@@ -191,7 +196,8 @@ RUN chmod 0755 /usr/local/bin/wait-for.sh \
                /usr/local/bin/entrypoint-kernel.sh \
                /usr/local/bin/entrypoint-batcher.sh \
                /usr/local/bin/entrypoint-token-names.sh \
- && chmod 0644 /usr/local/lib/offerfiles/entrypoint-common.sh
+ && chmod 0644 /usr/local/lib/offerfiles/entrypoint-common.sh \
+               /usr/local/lib/offerfiles/faucet-probe.ts
 
 # :9999 sync-node API, :3334 batcher. Which one a container serves is decided by the
 # entrypoint compose selects, never by this image.
