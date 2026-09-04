@@ -54,11 +54,17 @@
 #                   contract address and so cannot be seeded, are registered idempotently at 6
 #                   decimals and their PER-BASE-UNIT prices asserted as exact decimal strings
 #                   (0.077387 and 0.00239328). See images/offerfiles-kernel/faucet-probe.ts.
-#   prices          GET /v1/prices?tokens=<NIGHT colour> answers a SEEDED price (source
+#   prices          GET /v1/prices?tokens=<NIGHT colour> answers a REAL price (source
 #                   feed|seed|manual, never fallback) for `midnight-3` — kernel PR #54's
 #                   reference-price table, seeded offline by 000-init.sql with no CoinGecko
-#                   network dependency. The standalone price-feed REFRESH service is not part
-#                   of this stack (.env.example); this is what proves the seed alone is enough.
+#                   network dependency, and REFRESHED from CoinGecko when the `prices` profile
+#                   is up (00014). This section is deliberately indifferent to WHICH of the two
+#                   is live: `seed` proves the offline seed alone is enough to quote, `feed`
+#                   proves the refresh landed, and the arithmetic rule it asserts
+#                   (per-base-unit == coin / 10^decimals, exactly) holds on both. The
+#                   seeded 2026-09-02 LITERALS in the faucet block below are therefore asserted
+#                   only while `source` is `seed`/`fixed` — a live price is supposed to move.
+#                   scripts/verify-prices.sh is what proves a refresh actually happened.
 #   zk assets       /keys/* is mounted — the browser prover fetches from there.
 #   batcher         GET /health on the batcher answers `{"status":"ok"}`. batcher-sdk 0.103.1
 #                   DOES serve a health route (the v9 SDK's did not, which is why the sibling
@@ -88,39 +94,12 @@ BATCHER="http://${BIND}:${BATCHER_HOST_PORT:-3334}"
 FAILURES=0
 fail() { err "$*"; FAILURES=$(( FAILURES + 1 )); }
 
-# decimal_shift_left <value> <n> — EXACT decimal-string division by 10^n (i.e. "shift the
-# decimal point left by n places"), mirroring packages/database/price-map.ts's
-# `tokenPriceFromAsset()`/`renderDecimal()` on the kernel side. Pure bash + sed, no bc/python3/
-# jq — this must run on a clean macOS box. Used to prove NIGHT's per-base-unit `price_usd`
-# (GET /v1/prices `tokens[]`) equals its coin `price_usd` (GET /v1/prices `assets[]`) divided by
-# 10^decimals, as an EXACT STRING, never a float comparison (the whole reason this reads decimal
-# strings via grep/sed instead of parsing them into shell arithmetic, which is integer-only).
-decimal_shift_left() {
-  local value="$1" n="$2" int_part frac_part digits pointpos before after pad
-  if [[ "$value" == *.* ]]; then
-    int_part="${value%%.*}"; frac_part="${value#*.}"
-  else
-    int_part="$value"; frac_part=""
-  fi
-  digits="${int_part}${frac_part}"
-  pointpos=${#int_part}
-  pointpos=$(( pointpos - n ))
-  if (( pointpos < 0 )); then
-    pad=$(( -pointpos ))
-    digits="$(printf '%0*d' "$pad" 0)${digits}"
-    pointpos=0
-  fi
-  before="${digits:0:pointpos}"
-  after="${digits:pointpos}"
-  before="$(printf '%s' "$before" | sed 's/^0*\(.\)/\1/')"
-  [[ -n "$before" ]] || before="0"
-  after="$(printf '%s' "$after" | sed 's/0*$//')"
-  if [[ -z "$after" ]]; then
-    printf '%s' "$before"
-  else
-    printf '%s.%s' "$before" "$after"
-  fi
-}
+# `decimal_shift_left <value> <n>` — EXACT decimal-string division by 10^n — used to be
+# defined right here. It MOVED TO scripts/lib/common.sh in 00014, unchanged, because
+# scripts/verify-prices.sh needs the identical routine for FED prices and two copies of a
+# numeric function that must agree to the last digit (and that both mirror
+# packages/database/price-map.ts) is a drift waiting to happen. It is still the same function
+# with the same contract; this script simply gets it from the library it already sources.
 
 log "kernel: endpoints"
 info "api      ${API}"
@@ -341,9 +320,11 @@ fi
 # ── reference prices (kernel PR #54) ──────────────────────────────────────────
 # GET /v1/prices?tokens= is REQUIRED and bounded (Q-11 of the kernel's own plan), so this asks
 # for exactly NIGHT's own colour (0x00…00, seeded unconditionally) rather than the unfiltered
-# form main no longer serves. A `source` of `feed` or `seed` (never `fallback`) is what "the
-# seed is enough, no live CoinGecko feed needed" actually means — `fallback` is the $1
-# unknown-token path and would mean the seed migration did not run.
+# form main no longer serves. A `source` of `feed` or `seed` (never `fallback`) is what "this
+# stack has a REAL reference price for NIGHT" means — `fallback` is the $1 unknown-token path
+# and would mean the seed migration did not run. Both are accepted on purpose: `seed` says the
+# offline seed alone is enough to quote (which is why the `prices` profile is optional), and
+# `feed` says the 00014 refresh landed. Which one is live is not this section's business.
 echo
 log "kernel: prices"
 NIGHT_COLOR="0000000000000000000000000000000000000000000000000000000000000000"
@@ -419,7 +400,11 @@ fi
 #        WETH  2393.28  / 10^6 = 0.00239328
 #      Those two coin prices are the values seeded by packages/database/migrations/000-init.sql
 #      at KERNEL_REF; the expectation is DERIVED from the assets[] row the kernel itself serves,
-#      not hard-coded, and then cross-checked against the literal the spec names.
+#      not hard-coded, and then cross-checked against the literal the spec names — but ONLY
+#      while the row is still the seed. With the 00014 `prices` profile up, a CoinGecko refresh
+#      moves both coin prices and flips `source` to `feed`; the derived exactness rule still
+#      holds (and is still asserted), and the literal becomes context rather than an
+#      expectation. See the `case "$P_SOURCE"` below.
 #
 # The probe mints nothing, holds no wallet and signs nothing — it is a derivation plus two
 # idempotent registry POSTs, so it is safe on every ./verify.sh run.
@@ -454,6 +439,18 @@ if [[ -n "$KERNEL_ADDR" ]]; then
       else
         # One row per preset: <name> <colour> <asset id> <the literal the whole-coin line names>.
         # Read field by field rather than `set --`, which would clobber this script's own "$@".
+        #
+        # THE SEEDED LITERAL IS ONLY AN EXPECTATION WHILE THE PRICE IS SEEDED (00014 FR-005).
+        # `0.077387` and `0.00239328` are 000-init.sql's 2026-09-02 captures, and the `prices`
+        # profile exists to replace them: after one CoinGecko refresh WBTC reads whatever
+        # bitcoin costs today, `source` moves from `seed` to `feed`, and comparing against the
+        # literal would fail a stack that is working exactly as designed. So the literal is
+        # asserted for `seed`/`fixed` rows and REPORTED for `feed`/`manual` ones.
+        #
+        # The assertion that holds either way — and the one that actually encodes the whole-coin
+        # line — is the EXACTNESS rule directly above it: per-base-unit == coin / 10^decimals,
+        # as decimal strings. That is checked on whichever value is live, and
+        # scripts/verify-prices.sh checks it again on FED values with the same helper.
         while read -r P_NAME P_COLOUR P_ASSET P_WANT; do
           [[ -n "$P_NAME" ]] || continue
           P_TOKEN_ROW="$(printf '%s' "$PP" | tr '{' '\n' | grep -E "\"token_color\":\"${P_COLOUR}\"" | head -1)"
@@ -469,6 +466,7 @@ if [[ -n "$KERNEL_ADDR" ]]; then
           P_DEC="$(printf '%s' "$P_TOKEN_ROW" | sed -n 's/.*"decimals":\([0-9][0-9]*\).*/\1/p' | head -1)"
           P_UNIT="$(printf '%s' "$P_TOKEN_ROW" | sed -n 's/.*"price_usd":"\([0-9.]*\)".*/\1/p' | head -1)"
           P_COIN="$(printf '%s' "$P_ASSET_ROW" | sed -n 's/.*"price_usd":"\([0-9.]*\)".*/\1/p' | head -1)"
+          P_SOURCE="$(printf '%s' "$P_TOKEN_ROW" | sed -n 's/.*"source":"\([a-z-]*\)".*/\1/p' | head -1)"
           if [[ "$P_DEC" != "6" ]]; then
             fail "${P_NAME} is registered at ${P_DEC:-none} decimals, expected exactly 6"
             continue
@@ -479,13 +477,30 @@ if [[ -n "$KERNEL_ADDR" ]]; then
           fi
           P_EXPECTED="$(decimal_shift_left "$P_COIN" "$P_DEC")"
           if [[ "$P_UNIT" != "$P_EXPECTED" ]]; then
-            fail "${P_NAME}'s per-base-unit price is ${P_UNIT}, expected ${P_COIN} / 10^${P_DEC} = ${P_EXPECTED} exactly"
-          elif [[ "$P_UNIT" != "$P_WANT" ]]; then
-            fail "${P_NAME} prices at ${P_UNIT} per base unit, but the whole-coin line specifies ${P_WANT}
-                  (seeded ${P_ASSET} coin price in 000-init.sql is ${P_COIN}) — the seed moved"
-          else
-            ok "${P_NAME} per base unit is ${P_UNIT} == ${P_COIN} / 10^${P_DEC}, exactly"
+            fail "${P_NAME}'s per-base-unit price is ${P_UNIT}, expected ${P_COIN} / 10^${P_DEC} = ${P_EXPECTED} exactly
+                  (source=${P_SOURCE:-none})"
+            continue
           fi
+          case "$P_SOURCE" in
+            feed|manual)
+              # A REFRESH HAPPENED (or an operator set the row). The exactness rule above is
+              # what the whole-coin line means here, and it passed; the seeded literal is
+              # printed as context, never asserted, because a live price is supposed to move.
+              ok "${P_NAME} per base unit is ${P_UNIT} == ${P_COIN} / 10^${P_DEC}, exactly (source=${P_SOURCE}; the 2026-09-02 seed was ${P_WANT})" ;;
+            seed|fixed|"")
+              if [[ "$P_UNIT" == "$P_WANT" ]]; then
+                ok "${P_NAME} per base unit is ${P_UNIT} == ${P_COIN} / 10^${P_DEC}, exactly (source=${P_SOURCE:-seed})"
+              else
+                fail "${P_NAME} prices at ${P_UNIT} per base unit, but the whole-coin line specifies ${P_WANT}
+                      (seeded ${P_ASSET} coin price in 000-init.sql is ${P_COIN}, source=${P_SOURCE:-seed}) — the seed moved"
+              fi ;;
+            *)
+              # `fallback` (or `demo-fallback`) means the colour is not priced from an asset at
+              # all — the deterministic colour-hash demo price. It is NOT a market price and
+              # the sponsorship gate treats it as unpriced, so it must not pass here.
+              fail "${P_NAME}'s price has source='${P_SOURCE}' — expected a real price (seed/feed/manual/fixed).
+                    'fallback' is the colour-derived demo value and means this preset is not mapped to ${P_ASSET}." ;;
+          esac
         done <<EOF
 WBTC ${WBTC_COLOUR} bitcoin 0.077387
 WETH ${WETH_COLOUR} ethereum 0.00239328
