@@ -25,7 +25,8 @@
 #                     margin: rungs are the book's own whole-offer cumulative sums, and the
 #                     relay's interpolation returns a rung's output verbatim when amountIn
 #                     lands exactly on it. With the seeded offer that makes
-#                     quote(WANT_AMOUNT) == GIVE_AMOUNT, to the unit.
+#                     quote(WANT_AMOUNT) == GIVE_AMOUNT, to the unit — and WHOSE want and
+#                     give those are is read from the maker offer itself (below).
 #   refusals          three of them, because "it quoted something" is a weak claim on its
 #                     own: below the ladder's first rung is 422 `unfulfillable`, the reverse
 #                     direction and an unpriced colour are 503 `no_solver`, and tokenIn ==
@@ -59,6 +60,31 @@
 #
 # ALSO NOT HERE: settlement itself. A take CONSUMES the offer it fills, so a script that
 # settled would make its own next run fail with an empty book.
+#
+# ── LIVING BESIDE THE `poster` PROFILE (00011 FR-014) ───────────────────────
+# The `poster` profile keeps a spread of its own offers on the same kernel book. Nothing this
+# script asserts may depend on the book holding exactly one offer, and two things used to:
+#
+#   1. the re-seed decision, which asked "is the book EMPTY?". With a poster running the book
+#      is never empty, so a stack that had lost its maker offer would have skipped the
+#      re-seed and then failed the quote assertion for a reason the message did not name.
+#      It now asks "is THE MAKER OFFER live?", by the content hash the one-shot's marker
+#      records, and reports the total book size separately.
+#   2. the exact-quote expectation, which came from MAKER_OFFER_GIVE_AMOUNT /
+#      _WANT_AMOUNT in the environment. It now comes from `GET /v1/offers/<maker hash>` —
+#      the offer's OWN legs — and the two dev colours resolved from minted-tokens.json are
+#      cross-checked against that same offer, so a marker pointing at somebody else's offer
+#      is a failure rather than a wrong expectation.
+#
+# The ladder assertion ("the relay advertises both dev colours") is unaffected by design: it
+# asks whether two specific colours are in the relay's union, not how many are.
+#
+# The poster's own pair CANNOT collide with the maker's on this stack, and that is a property
+# of the two sources rather than of a lucky choice: the poster mints its give leg from the
+# FAUCET, which derives a colour from a preset NAME (WBTC), while the maker gives a colour
+# `mint-test-tokens.ts` minted from a fixed domain separator that no preset name maps to. The
+# assertions above do not rely on that — they identify the offer by hash — but it is why a
+# poster offer can never be mistaken for the seeded one.
 #
 # ── THE ONE SIDE EFFECT THIS SCRIPT DOES HAVE (00011 B.5b) ──────────────────
 # It re-seeds the book when there is no live maker offer left, and it does so LOUDLY.
@@ -216,15 +242,9 @@ maker_marker() {
   dc run --rm --no-deps -T --entrypoint cat maker-offer /var/lib/maker-offer/.posted 2>/dev/null || true
 }
 
-# offer_status <64-hex hash> — the kernel's own verdict: live | consumed | expired | cancelled
-# | not_found. A terminal status is a fact about the chain, not an opinion of this script's.
-offer_status() {
-  # `|| true` for the same reason as book_live_count: an unreadable answer must produce an
-  # empty string for the caller to report, never a `set -e` exit.
-  curl -fsS --max-time 10 "${KERNEL}/v1/offers/$1/status" 2>/dev/null \
-    | grep -oE '"status"[[:space:]]*:[[:space:]]*"[a-z_]+"' \
-    | sed 's/.*"status"[[:space:]]*:[[:space:]]*"//; s/"$//' | head -1 || true
-}
+# NOTE: `GET /v1/offers/<hash>/status` used to be read here on its own. It is not any more —
+# maker_offer_fields() below reads the FULL offer, which carries the same status plus both
+# legs, and FR-014 needs the legs. One round trip, one source of truth.
 
 # wait_relay_advertises <budget_s> — both dev colours present in the relay's /tokens union.
 #
@@ -248,18 +268,82 @@ wait_relay_advertises() {
   return 1
 }
 
-echo
-log "solver: the book behind the ladder"
-LIVE_OFFERS="$(book_live_count)"
-if [[ "$SEEDED" == "yes" && "${LIVE_OFFERS:-0}" == "0" ]]; then
-  warn "the kernel book holds no live offer — nothing for the solver to quote"
-  MARKER="$(maker_marker)"
+# maker_offer_fields <64-hex hash> — the maker offer AS THE KERNEL HAS IT: its terminal
+# status and both legs, flattened to key=value lines. Read from inside the solver container
+# with `bun -e`, because `computed.gives[]` / `computed.wants[]` are NESTED and this host has
+# neither jq nor bun.
+#
+# It never exits non-zero: a soft failure prints `fetch=…` for the caller to report, rather
+# than ending the run through `set -e`.
+#
+# A QUOTED heredoc, for the reason given at STATUS_PROBE_JS further down.
+read -r -d '' MAKER_PROBE_JS <<'MAKER_JS' || true
+const hash = process.argv[1];
+const r = await fetch("http://kernel:9999/v1/offers/" + hash,
+                      { signal: AbortSignal.timeout(10000) }).catch(() => null);
+if (!r) { console.log("fetch=unreachable"); process.exit(0); }
+if (r.status === 404) { console.log("fetch=ok"); console.log("status=not_found"); process.exit(0); }
+if (!r.ok) { console.log("fetch=http" + r.status); process.exit(0); }
+const o = await r.json().catch(() => null);
+if (!o || !o.computed) { console.log("fetch=unparseable"); process.exit(0); }
+const g = (o.computed.gives ?? [])[0] ?? {};
+const w = (o.computed.wants ?? [])[0] ?? {};
+console.log([
+  "fetch=ok",
+  "status=" + o.computed.status,
+  "giveToken=" + (g.token ?? "?"),
+  "giveAmount=" + (g.amount ?? "?"),
+  "wantToken=" + (w.token ?? "?"),
+  "wantAmount=" + (w.amount ?? "?"),
+].join(String.fromCharCode(10)));
+MAKER_JS
+
+maker_offer_fields() {
+  # `|| true`: a solver that is down makes `dc exec` fail, and the caller must be able to
+  # report "nothing" rather than have `set -e` end the run.
+  dc exec -T solver bun -e "$MAKER_PROBE_JS" "$1" 2>/dev/null || true
+}
+
+# maker_hash — the seeded offer's full content hash, from the one-shot's own marker.
+maker_hash() {
   # A marker written before 00011 PR B carries no hash; grep then exits 1 and, under
   # `pipefail` + `set -e`, would take the script with it.
-  MAKER_HASH="$(printf '%s' "$MARKER" | grep -oE 'offerHash=[0-9a-f]{64}' | sed 's/^offerHash=//' | head -1 || true)"
-  if [[ -n "${MAKER_HASH:-}" ]]; then
-    MAKER_STATUS="$(offer_status "$MAKER_HASH")"
-    case "${MAKER_STATUS:-unknown}" in
+  printf '%s' "$1" | grep -oE 'offerHash=[0-9a-f]{64}' | sed 's/^offerHash=//' | head -1 || true
+}
+
+# mfield <key> — one flat key=value line out of MAKER_FIELDS.
+mfield() { printf '%s\n' "${MAKER_FIELDS:-}" | sed -n "s/^$1=//p" | head -1 || true; }
+
+echo
+log "solver: the book behind the ladder"
+# ── WHY THIS KEYS ON THE MAKER OFFER AND NOT ON THE BOOK'S SIZE (00011 FR-014) ──
+# Until PR C this section asked "is the book empty?" and re-seeded if it was. That question
+# stopped being the right one the moment the `poster` profile existed: the poster keeps a
+# spread of its OWN offers live, so the book is never empty on an `--all` stack — and a book
+# with ten poster offers and NO maker offer would have sailed past the re-seed and then
+# failed the exact-quote assertion for a reason the message did not name.
+#
+# So the question is now "is THE MAKER OFFER live?", asked by its own content hash from the
+# one-shot's marker, and the quote expectation below is read from THAT OFFER rather than from
+# .env defaults or from "the first offer in the book".
+LIVE_OFFERS="$(book_live_count)"
+MARKER="$(maker_marker)"
+MAKER_HASH="$(maker_hash "$MARKER")"
+MAKER_FIELDS=""
+MAKER_STATUS=""
+if [[ -n "${MAKER_HASH:-}" ]]; then
+  MAKER_FIELDS="$(maker_offer_fields "$MAKER_HASH")"
+  [[ "$MAKER_FIELDS" == *"fetch=ok"* ]] && MAKER_STATUS="$(mfield status)"
+fi
+info "the kernel book holds ${LIVE_OFFERS:-0} live offer(s) in total"
+
+if [[ "$SEEDED" == "yes" && "${MAKER_STATUS:-}" != "live" ]]; then
+  if [[ -z "${MAKER_HASH:-}" ]]; then
+    warn "the maker-offer marker carries no offer hash, so the seeded offer cannot be identified"
+    info "(a marker written before 00011 PR B, or a one-shot that never completed)"
+  else
+    warn "the seeded maker offer is not live — nothing of the maker's for the solver to quote"
+    case "${MAKER_STATUS:-unreadable}" in
       consumed)
         info "the seeded offer ${MAKER_HASH:0:16}… is CONSUMED: its input nullifier was spent on"
         info "chain. A settled take does that — and so does an unrelated transfer from the"
@@ -269,30 +353,44 @@ if [[ "$SEEDED" == "yes" && "${LIVE_OFFERS:-0}" == "0" ]]; then
         info "the seeded offer ${MAKER_HASH:0:16}… is EXPIRED. On this chain an offer lives"
         info "min(ROOT_WINDOW_SECONDS, OFFER_TTL_SECONDS) = 1 h whatever TTL_MINUTES asked for."
         ;;
+      not_found)
+        info "the kernel has never heard of ${MAKER_HASH:0:16}… — a marker from another chain"
+        info "(a volume that outlived a ./down.sh without -v)"
+        ;;
       *)
         info "the seeded offer ${MAKER_HASH:0:16}… reports status '${MAKER_STATUS:-unreadable}'"
         ;;
     esac
-  else
-    info "the maker-offer marker carries no offer hash, so its terminal status cannot be read"
-    info "(a marker written before 00011 PR B, or a one-shot that never completed)"
+  fi
+  if (( ${LIVE_OFFERS:-0} > 0 )); then
+    info "the book is NOT empty — ${LIVE_OFFERS} other offer(s) are live (the poster profile"
+    info "keeps its own spread up). None of them is the offer this section's exact-quote"
+    info "assertion describes, which is why the count alone cannot answer this."
   fi
 
   if [[ "${SOLVER_VERIFY_RESEED:-true}" != "true" ]]; then
     fail "no live maker offer and SOLVER_VERIFY_RESEED=false — the ladder and quote assertions"
-    info "cannot be run against an empty book, and skipping them would pass this section"
-    info "without testing it. Re-run with SOLVER_VERIFY_RESEED=true, or './down.sh -v'."
+    info "cannot be run without it, and skipping them would pass this section without testing"
+    info "it. Re-run with SOLVER_VERIFY_RESEED=true, or './down.sh -v'."
     exit 1
   fi
 
   log "re-seeding the book (maker-offer with MAKER_OFFER_RESEED=true — proving, ~1-3 min)"
   if dc run --rm --no-deps -T -e MAKER_OFFER_RESEED=true maker-offer; then
-    LIVE_OFFERS="$(book_live_count)"
-    if [[ "${LIVE_OFFERS:-0}" == "0" ]]; then
-      fail "the re-seed reported success but the kernel book is still empty"
+    MARKER="$(maker_marker)"
+    MAKER_HASH="$(maker_hash "$MARKER")"
+    MAKER_FIELDS=""
+    MAKER_STATUS=""
+    if [[ -n "${MAKER_HASH:-}" ]]; then
+      MAKER_FIELDS="$(maker_offer_fields "$MAKER_HASH")"
+      [[ "$MAKER_FIELDS" == *"fetch=ok"* ]] && MAKER_STATUS="$(mfield status)"
+    fi
+    if [[ "${MAKER_STATUS:-}" != "live" ]]; then
+      fail "the re-seed reported success but the new maker offer is '${MAKER_STATUS:-unreadable}'"
       exit 1
     fi
-    ok "the book was re-seeded: ${LIVE_OFFERS} live offer(s)"
+    LIVE_OFFERS="$(book_live_count)"
+    ok "the book was re-seeded: maker offer ${MAKER_HASH:0:16}… is live (${LIVE_OFFERS} live offer(s) in total)"
   else
     fail "could not re-seed the book — the ladder and quote assertions below cannot be trusted"
     info "the maker-offer one-shot's own output is above; it names the cause."
@@ -301,7 +399,43 @@ if [[ "$SEEDED" == "yes" && "${LIVE_OFFERS:-0}" == "0" ]]; then
   RESEEDED="yes"
 else
   RESEEDED="no"
-  info "the kernel book holds ${LIVE_OFFERS:-0} live offer(s)"
+  if [[ "$SEEDED" == "yes" ]]; then
+    ok "the seeded maker offer ${MAKER_HASH:0:16}… is live"
+  fi
+fi
+
+# ── the expectation, read from the OFFER rather than from configuration ──────
+# `quote(want) == give` holds because the derivation applies no fee and no margin: a rung IS
+# the offer's own cumulative sums, and the relay returns a rung's output verbatim when
+# amountIn lands exactly on it. WHOSE give and want, though, is the whole of FR-014 — with a
+# poster on the same stack the book carries other offers, and reading the numbers off .env
+# defaults would silently describe an offer that is not there.
+if [[ "$SEEDED" == "yes" && "$MAKER_FIELDS" == *"fetch=ok"* ]]; then
+  MAKER_GIVE_TOKEN="$(mfield giveToken)"
+  MAKER_WANT_TOKEN="$(mfield wantToken)"
+  MAKER_GIVE_AMOUNT="$(mfield giveAmount)"
+  MAKER_WANT_AMOUNT="$(mfield wantAmount)"
+  if [[ "$MAKER_GIVE_AMOUNT" =~ ^[0-9]+$ && "$MAKER_WANT_AMOUNT" =~ ^[0-9]+$ ]]; then
+    if [[ "$MAKER_GIVE_AMOUNT" != "$GIVE_AMOUNT" || "$MAKER_WANT_AMOUNT" != "$WANT_AMOUNT" ]]; then
+      info "the maker offer on the book gives ${MAKER_GIVE_AMOUNT} for ${MAKER_WANT_AMOUNT};"
+      info "the configured defaults say ${GIVE_AMOUNT}/${WANT_AMOUNT}. THE OFFER WINS — the"
+      info "assertions below follow the book, not .env."
+    fi
+    GIVE_AMOUNT="$MAKER_GIVE_AMOUNT"
+    WANT_AMOUNT="$MAKER_WANT_AMOUNT"
+    ok "the exact-quote expectation comes from offer ${MAKER_HASH:0:16}… itself: quote(${WANT_AMOUNT}) must be ${GIVE_AMOUNT}"
+  else
+    fail "could not read the maker offer's own legs from the kernel (${MAKER_FIELDS:-no output})"
+  fi
+  # The colours the ladder and refusal assertions use come from minted-tokens.json; the offer
+  # is the second, independent witness. A mismatch means the marker points at somebody else's
+  # offer, and every assertion below would be describing the wrong one.
+  if [[ -n "${MAKER_GIVE_TOKEN:-}" && "$MAKER_GIVE_TOKEN" != "$GIVE_TOKEN" ]]; then
+    fail "the seeded offer gives ${MAKER_GIVE_TOKEN:0:16}…, but this stack's minted give colour is ${GIVE_TOKEN:0:16}…"
+  fi
+  if [[ -n "${MAKER_WANT_TOKEN:-}" && "$MAKER_WANT_TOKEN" != "$WANT_TOKEN" ]]; then
+    fail "the seeded offer wants ${MAKER_WANT_TOKEN:0:16}…, but this stack's minted want colour is ${WANT_TOKEN:0:16}…"
+  fi
 fi
 
 if [[ "$SEEDED" == "yes" ]]; then
