@@ -195,11 +195,15 @@ info "=> the solver's pair is tokenIn=${WANT_TOKEN:0:8}… tokenOut=${GIVE_TOKEN
 
 # book_live_count — how many LIVE offers the kernel lists. `GET /v1/offers` returns only live
 # ones, and every entry carries exactly one "offerId", so counting that key counts offers.
-# `|| true`: grep exits 1 on no match, and this script runs under `pipefail`.
+#
+# THE `|| true` IS LOAD-BEARING, and its absence cost one gate run: on an EMPTY book `grep -o`
+# matches nothing and exits 1, `pipefail` makes that the pipeline's status, the status becomes
+# the function's, and `set -e` then kills the script inside `$( )` — silently, at exactly the
+# moment this section exists to handle. `wc` still prints 0, which is the answer wanted.
 book_live_count() {
   local body
   body="$(curl -fsS --max-time 10 "${KERNEL}/v1/offers?limit=100" 2>/dev/null || true)"
-  printf '%s' "$body" | grep -o '"offerId"' | wc -l | tr -d '[:space:]'
+  printf '%s' "$body" | grep -o '"offerId"' | wc -l | tr -d '[:space:]' || true
 }
 
 # maker_marker — the maker-offer one-shot's durable marker, from its own volume.
@@ -215,9 +219,11 @@ maker_marker() {
 # offer_status <64-hex hash> — the kernel's own verdict: live | consumed | expired | cancelled
 # | not_found. A terminal status is a fact about the chain, not an opinion of this script's.
 offer_status() {
+  # `|| true` for the same reason as book_live_count: an unreadable answer must produce an
+  # empty string for the caller to report, never a `set -e` exit.
   curl -fsS --max-time 10 "${KERNEL}/v1/offers/$1/status" 2>/dev/null \
     | grep -oE '"status"[[:space:]]*:[[:space:]]*"[a-z_]+"' \
-    | sed 's/.*"status"[[:space:]]*:[[:space:]]*"//; s/"$//' | head -1
+    | sed 's/.*"status"[[:space:]]*:[[:space:]]*"//; s/"$//' | head -1 || true
 }
 
 # wait_relay_advertises <budget_s> — both dev colours present in the relay's /tokens union.
@@ -248,7 +254,9 @@ LIVE_OFFERS="$(book_live_count)"
 if [[ "$SEEDED" == "yes" && "${LIVE_OFFERS:-0}" == "0" ]]; then
   warn "the kernel book holds no live offer — nothing for the solver to quote"
   MARKER="$(maker_marker)"
-  MAKER_HASH="$(printf '%s' "$MARKER" | grep -oE 'offerHash=[0-9a-f]{64}' | sed 's/^offerHash=//' | head -1)"
+  # A marker written before 00011 PR B carries no hash; grep then exits 1 and, under
+  # `pipefail` + `set -e`, would take the script with it.
+  MAKER_HASH="$(printf '%s' "$MARKER" | grep -oE 'offerHash=[0-9a-f]{64}' | sed 's/^offerHash=//' | head -1 || true)"
   if [[ -n "${MAKER_HASH:-}" ]]; then
     MAKER_STATUS="$(offer_status "$MAKER_HASH")"
     case "${MAKER_STATUS:-unknown}" in
@@ -437,7 +445,9 @@ PROBE_JS
   # status_code <path> <with|without> — the HTTP status of one request to the listener.
   # `bun -e`, not curl: the oven/bun base image ships neither curl nor wget.
   status_code() {
-    dc exec -T solver bun -e "$STATUS_PROBE_JS" "$1" "$2" 2>/dev/null | tr -d '[:space:]'
+    # `|| true`: a solver that is down makes `dc exec` fail, and the caller must be able to
+    # report "nothing" rather than have `set -e` end the run.
+    dc exec -T solver bun -e "$STATUS_PROBE_JS" "$1" "$2" 2>/dev/null | tr -d '[:space:]' || true
   }
 
   # /health is OPEN by design — a container healthcheck must not need the secret — and carries
