@@ -321,6 +321,148 @@ services to check.
 The service must never be scaled past one replica, for the same reason its seed is dedicated.
 Two posters on one seed would fight over the same coins and force each other's connection down.
 
+## The price feed (00014)
+
+```sh
+./up.sh --with offerfiles --with prices    # …and the reference prices refresh from CoinGecko
+```
+
+### Getting a key, and where it goes
+
+The feed needs a **CoinGecko Demo key** — free, from
+<https://www.coingecko.com/en/api> ("Demo" plan). It is **the only secret in this stack**;
+every other credential here is a public devnet placeholder.
+
+Put it in `.env` and nowhere else:
+
+```sh
+# .env  (gitignored — .gitignore covers .env and .env.*, and re-includes only .env.example)
+COINGECKO_API_KEY=CG-xxxxxxxxxxxxxxxxxxxxxxxx
+```
+
+There is deliberately **no compose default** for it. Four rules go with it:
+
+- **Header, never a query string.** The service sends `x-cg-demo-api-key`. A query parameter
+  would put the key in every access, proxy and browser-devtools log.
+- **Never printed.** The startup line renders the whole effective configuration with the key's
+  field as the literal `key=present` or `key=ABSENT`, and that is the only thing anything here
+  ever says about it. `scripts/verify-prices.sh` learns whether a key exists from the *exit
+  code* of `test -n` run inside the container, never by reading the value.
+- **Never in a rendered compose config.** `docker compose config` interpolates it. Do not
+  render one with your real `.env` into a log or a paste. `scripts/verify-compose-pins.sh`
+  renders with an empty env file and explicitly unsets the variable, so the repository's own
+  audit path is safe regardless of your shell.
+- **Rotate it if it leaks.** It is low-privilege — a read-only market-data key on a metered
+  free plan — but rotating is one click in the CoinGecko dashboard, and the old key stops
+  working immediately. Nothing in this stack caches it.
+
+### A refresh now, instead of waiting a day
+
+The loop's first cycle runs at startup and the next is `PRICE_FEED_INTERVAL_MS` (24 h) later,
+so the useful command is the one-off:
+
+```sh
+docker compose --env-file .env -f compose/core.yml -f compose/offerfiles.yml \
+  -f compose/prices.yml -p <project> run --rm --no-deps price-feed --once
+```
+
+or, with the repository's own env handling, simply what `./verify.sh` does. The exit code IS
+the result:
+
+| exit | meaning |
+|---|---|
+| `0` | every asset the cycle asked for was written |
+| `2` | the cycle ran and at least one asset did not land — read `feed.last_error` |
+| `64` | misconfiguration: no usable key, or a database without the kernel's `000-init.sql` schema |
+
+### Reading it
+
+```sh
+# the five assets, their source and their age, through the kernel
+curl -s "http://127.0.0.1:${KERNEL_HOST_PORT}/v1/prices?tokens=<NIGHT colour>,<WBTC colour>" | jq
+
+# the feed's own last cycle
+curl -s "http://127.0.0.1:${KERNEL_HOST_PORT}/v1/prices?tokens=0000000000000000000000000000000000000000000000000000000000000000" \
+  | jq '.feed'
+```
+
+```json
+{ "provider": "coingecko",
+  "last_run_at": "2026-09-04T12:20:11.412Z",
+  "last_ok_at":  "2026-09-04T12:20:11.412Z",
+  "last_error":  null }
+```
+
+**`feed.last_error` is where a partial failure lives.** Failures in this service are graded and
+deliberately non-fatal: one bad id fails only that id; a failed request is recorded against
+every id it carried; a `429` stops the cycle where it stands and keeps what it already wrote.
+None of that is an exit code and none of it is a crash, so a service that looks perfectly
+healthy can be failing every cycle — and this field is what says so. An all-null `feed` block
+means the feed has never run against this database.
+
+`source` is the other thing to read. Before a refresh every row is `seed` (the schema's
+2026-09-02 capture, which quotes correctly — that is why the profile is optional); after one it
+is `feed`, and `GET /v1/quote` follows on both legs (`from_source`, `to_source`,
+`prices_updated_at`).
+
+### Rate limits, and what each `./verify.sh` costs
+
+The demo plan allows roughly 30 requests a minute and 10 000 credits a month. One cycle is
+`ceil(assets / PRICE_FEED_BATCH_SIZE)` = **one request**, once a day. **Each `./verify.sh` run
+with a key present spends one more**, because the `prices` section takes a real `--once`. That
+is the cost of the section proving anything at all, and it is recorded in
+`docs/KNOWN-LIMITATIONS.md` so nobody meets it as a rate-limit error.
+
+### What `./verify.sh`'s `prices` section asserts
+
+```sh
+./verify.sh                # runs the prices section if the profile is up
+./verify.sh --prices       # …and FAILS if the profile is not up (the KEY is a separate matter
+                           #   — with no key the section still reports SKIPPED, not failed)
+./verify.sh --no-prices    # skip it entirely
+```
+
+With a key: one `--once` cycle exits 0; all five seeded assets read `source: feed` with an
+`updated_at` within `PRICES_VERIFY_MAX_AGE_S`; `feed.last_error` is null, `feed.provider` is
+`coingecko` and `feed.last_ok_at` is fresh; WBTC's and WETH's per-base-unit prices still equal
+their asset's coin price divided by `10^decimals` **exactly, as decimal strings** — now on
+fed values, which are far longer than the hand-picked seeds `verify-kernel.sh` checks; and
+`GET /v1/quote` for WBTC → WETH reports `feed` on both legs with a fresh `prices_updated_at`
+and a `market_rate` equal to the two fed prices' ratio.
+
+### With no key, nothing breaks
+
+The service comes up and **idles**: one warning at start, one on every tick, and no work.
+It does not crash-loop — that is a considered choice, not an oversight (see
+`docs/COMPONENTS.md`) — the stack keeps quoting from the seeds, and `./verify.sh` reports its
+`prices` section **SKIPPED**, never passed:
+
+```
+    SKIP no COINGECKO_API_KEY — the feed idles by design; set the key in .env to test the refresh
+    WARN prices SKIPPED — its assertions did NOT run (reason above); not counted as passed
+…
+    OK   verify.sh: every check that RAN passed — 1 section(s) SKIPPED: prices
+```
+
+`./verify.sh` still exits 0. A skipped section is not a failure — but it is never folded into
+"all checks passed" either.
+
+### Knobs
+
+| variable | blank means | what it does |
+|---|---|---|
+| `COINGECKO_API_KEY` | no key → idle | the only secret here. `.env` only |
+| `COINGECKO_BASE_URL` | `https://api.coingecko.com/api/v3` | point the service at a stub |
+| `PRICE_FEED_INTERVAL_MS` | `86400000` (24 h) | between cycles, loop mode only |
+| `PRICE_FEED_REQUEST_SPACING_MS` | `1000` | minimum gap between two requests in one cycle |
+| `PRICE_FEED_BATCH_SIZE` | `50` | asset ids per `simple/price` request |
+| `PRICE_FEED_REQUEST_TIMEOUT_MS` | `20000` | per-request timeout |
+| `PRICE_FEED_ASSETS` | the five seeded ids | comma-separated CoinGecko ids |
+| `PRICES_VERIFY_MAX_AGE_S` | `600` | how fresh `./verify.sh` requires a refreshed price to be |
+
+`PRICE_FEED_MAP` is **not** one of these. It is a kernel/batcher knob (name/colour → asset id)
+and lives with the sponsorship settings; the feed's own configuration never reads it.
+
 ## Bringing the `shielded-night` profile up
 
 ```sh
@@ -489,3 +631,10 @@ locked: …`) if you need to confirm the authority state directly.
 | the book subsection fails at step 0 with "the kernel's token registry does not name … sNight" | the `shielded-night-token-name` one-shot did not run (the profiles were brought up separately, so `up.sh` never saw both) or `ENABLE_TOKEN_REGISTRY` did not reach the kernel as the literal string `true`. Re-run `./up.sh --with offerfiles --with shielded-night`, or `docker compose … run --rm --no-deps shielded-night-token-name`. |
 | the book subsection fails at step 4 with "no live offer gives …" | the offer expired (`TTL_MINUTES`, 120 by default) or a previous run already consumed it. Re-run the section; step 2 posts a fresh one each time. |
 | the book subsection fails with `1010: Invalid Transaction: Custom error: 170` after every retry | the funder wallet is submitting faster than the chain confirms. It is retried 8 times, 15 s apart; if it still fails, the node is not producing blocks — check `docker compose … logs node`. |
+| `verify.sh` reports the `prices` section SKIPPED | there is no `COINGECKO_API_KEY` in the `.env` this stack was brought up with. That is a supported configuration, not a fault — set the key and re-run to test the refresh. |
+| `price-feed` logs `key=ABSENT` although `.env` has the key | the container was started before the key was added, or a different `ENV_FILE` was used. Compose reads `environment:` once, at create time: `docker compose … up -d --force-recreate price-feed`. |
+| `--once` exits `64` with the missing-key warning | same cause. The key reached neither the container nor the `run`. |
+| `--once` exits `64` naming `asset_prices` / `price_feed_status` | the database predates the kernel's 00005 schema. `000-init.sql` runs ONCE against an empty database and has no `IF NOT EXISTS`: `./down.sh -v` is the upgrade path. |
+| `--once` exits `2`, or `feed.last_error` is non-null after a green-looking run | a graded failure — one retired CoinGecko id, one failed request, or a `429`. The message names which. A `429` means the monthly/minute budget is spent; wait, or raise `PRICE_FEED_INTERVAL_MS` and stop taking `--once` runs. |
+| `GET /v1/prices` still says `source: seed` after the feed ran | the feed wrote a DIFFERENT database. Its `DB_*` must match the kernel's; `compose/prices.yml` states them identically to `compose/offerfiles.yml` on purpose, so this means a hand-edited fragment or a stray `.env` override. |
+| the `prices` section fails with "source='feed' but its updated_at is N s old" | `feed` is a sticky flag: the row was written by an earlier run (or by another stack against a reused `postgres` volume) and this run's `--once` did not update it. Read `feed.last_error`. |

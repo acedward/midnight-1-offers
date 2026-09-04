@@ -19,6 +19,17 @@
 # COMMITTED DEFAULTS rather than whatever happens to be in somebody's .env.
 set -euo pipefail
 
+# ── THE ONE SECRET IN THIS STACK MUST NOT REACH A RENDERED CONFIG ───────────
+# An empty `--env-file` is not sufficient on its own: Compose interpolates from the PROCESS
+# ENVIRONMENT too, and the process environment WINS over the env file. So a caller that had
+# already exported COINGECKO_API_KEY (load_env() exports every key it parses out of .env)
+# would have it interpolated into every render below — files this script writes to a temp
+# directory and quotes back on failure. Unset it here, before the first render, so the
+# property "no key ever reaches a rendered config this repository produces" is true by
+# construction rather than by the order in which ci-check.sh happens to call things.
+# Nothing here needs the value: this gate audits committed defaults.
+unset COINGECKO_API_KEY
+
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=scripts/lib/common.sh
 source "$REPO_ROOT/scripts/lib/common.sh"
@@ -48,6 +59,9 @@ trap 'rm -rf "$EMPTY_ENV" "$RENDER_DIR"' EXIT
 # rendered on `offerfiles` alone (its only dependency — it needs neither relay nor solver) AND
 # beside `solver`, because the two fragments declare the SAME `genesis-lock` volume and
 # compose merging those two declarations is what the genesis-1 mutex rests on (00011 Q7).
+# `prices` is rendered on `offerfiles` alone for the same reason (its only dependency: the
+# kernel image and the kernel's schema), beside `poster` (the pair an operator asking for a
+# self-supplying book on live prices actually brings up), and in the fullest stack.
 COMBOS=(
   "core"
   "core offerfiles"
@@ -57,9 +71,11 @@ COMBOS=(
   "core offerfiles shielded-night"
   "core offerfiles solver"
   "core offerfiles poster"
+  "core offerfiles prices"
+  "core offerfiles poster prices"
   "core offerfiles frontend solver"
   "core offerfiles poster solver"
-  "core offerfiles frontend solver shielded-night poster"
+  "core offerfiles frontend solver shielded-night poster prices"
 )
 
 FAILURES=0

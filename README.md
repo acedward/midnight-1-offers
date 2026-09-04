@@ -21,6 +21,11 @@ Two deltas beyond the version line:
   wallet that mints one faucet coin a minute and posts one sponsored, individually takeable
   ZSwap offer spending exactly that coin. The book supplies itself, so the SPA has something
   real to trade against without a human.
+- **added**: the `prices` profile — the kernel's own **price feed**, one CoinGecko
+  `simple/price` call a day into `asset_prices`, so the USD reference behind `GET /v1/prices`,
+  `GET /v1/quote` and the sponsorship gate is live rather than the schema's 2026-09-02 seeds.
+  It needs a free CoinGecko demo key in `.env` — the only secret in this stack — and without
+  one it comes up and idles, because the seeded prices already quote real ratios.
 - **added**: the `shielded-night` profile — [`effectstream/shielded-night`](https://github.com/effectstream/shielded-night),
   a Compact contract plus a page that wraps native unshielded NIGHT into a shielded token
   (**sNight**) 1:1 and back. It depends only on `core`, deploys its contract once per stack,
@@ -29,7 +34,7 @@ Two deltas beyond the version line:
   wraps it, posts a real MIP-0005 offer file carrying sNight, has a second wallet settle that
   offer, and has that wallet unwrap what it bought — with exact balances at every step.
 
-> **STATUS — shipped.** All six profiles run real services: `./up.sh --all` brings up the
+> **STATUS — shipped.** All seven profiles run real services: `./up.sh --all` brings up the
 > whole stack from a clean host and `./verify.sh` gates it end to end. The stack tracks the
 > offer-files kernel's own `main` — currently `c293ebd`, **the whole-coin line** (every token is
 > 6 decimals and one faucet press mints 1 000 whole coins = 1 000 000 000 base units), with the
@@ -40,7 +45,7 @@ Two deltas beyond the version line:
 ## Profiles
 
 A profile **is** a compose fragment in `compose/`, named after the file. There are exactly
-six, and `compose:` `profiles:` keys are never used anywhere in this repository — `up.sh`
+seven, and `compose:` `profiles:` keys are never used anywhere in this repository — `up.sh`
 never passes `--profile`, so a service carrying one would silently never start.
 
 | Profile | Fragment | What it runs |
@@ -51,6 +56,7 @@ never passes `--profile`, so a service carrying one would silently never start.
 | `shielded-night` | `compose/shielded-night.yml` | the **Shielded NIGHT** dApp (`:10900`): a deploy one-shot that mints the NIGHT ⇄ sNight wrapper contract **once per stack**, and an nginx page that learns that address at container start. Built from `effectstream/shielded-night` at a pinned commit, with the contract **recompiled in-image** (compactc 0.31.1) and required to reproduce the committed artifacts byte-for-byte. **Depends only on `core`.** With `offerfiles` also up it names the sNight colour in the kernel's token registry **and prices it** (`asset_id: midnight-3`, the same reference NIGHT itself uses — `GET /v1/quote` sNight↔NIGHT answers `market_rate: 1`), and `./verify.sh` drives the whole chain — NIGHT → sNight → an offer file on the book → taken → back to NIGHT. |
 | `solver` | `compose/solver.yml` | the Midnight Intents relay (`:13000` HTTP, `:19001` solver WS), the COW solver in execution mode with its read-only **status listener** (`:9100`, bearer-gated, network-internal by design), the **solver monitor** (`:10800` — the six-stage health strip, the published ladder and the book, read-only), the provisioning one-shots, and the intents browser UI (`:10700`). The solver **is the kernel commit**: `images/cow-solver` is the kernel image plus entrypoints, with no second source pin and no `.solver-commit` — see `docs/COMPONENTS.md`. |
 | `poster` | `compose/poster.yml` | the **offer poster** (`:19977` — read-only `/health`, `/metrics`, `/journal`) and the one-shot that funds its DEDICATED wallet with NIGHT from genesis. Every 60 s it either re-offers a coin that came back or mints one whole WBTC coin from the faucet circuit — paying the fee from its own DUST — and posts **one** ZSwap offer whose only input is that exact coin, sized from `GET /v1/quote` so the batcher sponsors it. Each offer spends its coin **whole**: no change output, so every offer is a complete, independently takeable swap. **Opt-in**, and included by `--all`; it needs `offerfiles` and needs neither the relay nor the solver. `./verify.sh` asserts the exact-coin guarantee from outside (`computed.inputNullifiers` == the journal coin's nullifier) and settles one of its offers with a second wallet. |
+| `prices` | `compose/prices.yml` | the **price feed** — one process, no port and no volume, on the kernel image. Every `PRICE_FEED_INTERVAL_MS` (24 h) it asks CoinGecko `simple/price` for the five seeded assets (`bitcoin`, `ethereum`, `usd-coin`, `midnight-3`, `usdm-2`) in **one batched request** and upserts `asset_prices`, so `GET /v1/prices`, `GET /v1/quote`'s `market_rate` and the batcher's sponsorship gate move from the schema's 2026-09-02 seeds (`source: seed`) to live prices (`source: feed`). `COINGECKO_API_KEY` in `.env` is the **only secret in this stack**: sent as the `x-cg-demo-api-key` header, never as a query parameter, never printed (the service logs `key=present`), never given a compose default. **Opt-in**, and included by `--all`; it needs `offerfiles` (the image, and the kernel's schema). **With no key it comes up and idles with a warning rather than crash-looping** — the seeded prices already quote real ratios — and `./verify.sh` reports its section **SKIPPED**, never passed. Take a refresh now with `docker compose run --rm --no-deps price-feed --once`. |
 
 ```sh
 ./up.sh                                    # core alone
@@ -58,6 +64,7 @@ never passes `--profile`, so a service carrying one would silently never start.
 ./up.sh --with offerfiles --with frontend  # …and the SPA
 ./up.sh --with shielded-night              # the Shielded NIGHT dApp (core is all it needs)
 ./up.sh --with offerfiles --with shielded-night   # …and sNight is tradable on the offer book
+./up.sh --with offerfiles --with prices    # …and live CoinGecko reference prices (needs a key)
 ./up.sh --all                              # every profile
 ./verify.sh                                # assert the stack is usable, not merely running
 ./down.sh -v                               # stop and wipe every volume of this project
@@ -124,7 +131,7 @@ All three are offline: no daemon, no network, no registry, no credential.
 
 ```
 compose/     core.yml, offerfiles.yml, frontend.yml, shielded-night.yml, solver.yml,
-             poster.yml — one fragment per profile
+             poster.yml, prices.yml — one fragment per profile
 images/      build contexts for the locally built images — one directory per image
 scripts/     verify-*.sh gates, pick-ports.sh, ci-check.sh, lib/ (shared bash + python)
 config/      artifact-decisions.json — the frozen pin record

@@ -21,9 +21,23 @@
 #               records (kernel inputNullifiers vs the journal's own nullifier), the offer as
 #               posted quoted `sponsored: true`, and one of them actually settled by e2e-taker
 #               with exact balances.
+#   prices      the price feed really REFRESHED: one `--once` cycle exits 0, then all five
+#               seeded assets read `source: feed` with a fresh `updated_at`, `feed.last_error`
+#               is null, the per-base-unit prices still equal coin / 10^decimals exactly on
+#               FED values, and a WBTC->WETH quote carries feed provenance on both legs.
+#               On a stack with NO COINGECKO_API_KEY it reports SKIPPED — see below.
 #
 # Every optional section runs IF AND ONLY IF that profile's containers exist for this compose
 # project, so `./verify.sh` needs no argument to do the right thing after any `./up.sh`.
+#
+# ── PASS, FAIL AND *SKIPPED* ARE THREE DIFFERENT ANSWERS ────────────────────
+# A section whose profile is not up is not run at all and says so. A section whose profile IS
+# up but which cannot make its assertions for a SUPPORTED reason is a third case, and it is
+# reported as SKIPPED, counted separately, and named in the summary line — never folded into
+# the pass. Today exactly one section can do that: `prices` without a key, because the stack
+# is designed to work on the schema's seeded prices and a demo host should not need a
+# third-party account. The mechanism is the section script exiting SECTION_SKIP_RC (77); see
+# `skip()` in scripts/lib/common.sh.
 #
 set -euo pipefail
 
@@ -38,6 +52,7 @@ FRONTEND_MODE=auto
 SHIELDED_NIGHT_MODE=auto
 SOLVER_MODE=auto
 POSTER_MODE=auto
+PRICES_MODE=auto
 
 usage() {
   cat <<'EOF'
@@ -58,6 +73,10 @@ Options:
   --no-solver    skip the solver section even if the profile is up
   --poster       require the poster section (fail if the profile is not up)
   --no-poster    skip the poster section even if the profile is up
+  --prices       require the prices section (fail if the profile is not up). It still reports
+                 SKIPPED, not passed, when the stack has no COINGECKO_API_KEY — "require the
+                 section" is about the PROFILE being up, not about the key being set.
+  --no-prices    skip the prices section even if the profile is up
   -h, --help     this text
 
 Environment:
@@ -67,7 +86,7 @@ EOF
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --core-only)   CORE_ONLY=1; CELESTIA_MODE=off; KERNEL_MODE=off; FRONTEND_MODE=off; SHIELDED_NIGHT_MODE=off; SOLVER_MODE=off; POSTER_MODE=off; shift ;;
+    --core-only)   CORE_ONLY=1; CELESTIA_MODE=off; KERNEL_MODE=off; FRONTEND_MODE=off; SHIELDED_NIGHT_MODE=off; SOLVER_MODE=off; POSTER_MODE=off; PRICES_MODE=off; shift ;;
     --celestia)    CELESTIA_MODE=on;  shift ;;
     --no-celestia) CELESTIA_MODE=off; shift ;;
     --kernel)      KERNEL_MODE=on;    shift ;;
@@ -80,6 +99,8 @@ while [[ $# -gt 0 ]]; do
     --no-solver)   SOLVER_MODE=off;   shift ;;
     --poster)      POSTER_MODE=on;    shift ;;
     --no-poster)   POSTER_MODE=off;   shift ;;
+    --prices)      PRICES_MODE=on;    shift ;;
+    --no-prices)   PRICES_MODE=off;   shift ;;
     -h|--help) usage; exit 0 ;;
     *) err "unknown option: $1"; echo; usage; exit 2 ;;
   esac
@@ -94,6 +115,10 @@ load_env
 use_all_profiles
 
 FAILURES=0
+# Sections that were up but did NOT test, and why the summary has to say so: see
+# "PASS, FAIL AND *SKIPPED*" in this file's header.
+SKIPPED=0
+SKIPPED_LABELS=""
 
 # run_section <label> <sentinel service> <mode> <script> <how to bring it up>
 #
@@ -103,8 +128,16 @@ FAILURES=0
 # A missing section script is a FAILURE, never a silent pass. During the phased build-out
 # these scripts land with their profiles, and a verify.sh that quietly reported success for
 # a section it could not run would be worse than useless.
+#
+# THREE OUTCOMES, not two. A section script's exit code means:
+#   0                  every assertion it makes passed
+#   SECTION_SKIP_RC    the profile is up but the section could not test, for a SUPPORTED
+#                      reason it printed itself (`skip` in scripts/lib/common.sh). Counted as
+#                      skipped, named in the summary, and NEVER counted as a pass.
+#   anything else      failed
 run_section() {
   local label="$1" sentinel="$2" mode="$3" script="$4" hint="$5"
+  local rc
   [[ "$mode" == "off" ]] && return 0
 
   if ! service_present "$sentinel"; then
@@ -127,8 +160,16 @@ run_section() {
     FAILURES=$(( FAILURES + 1 ))
     return 0
   fi
-  if "$REPO_ROOT/$script"; then
+  rc=0
+  "$REPO_ROOT/$script" || rc=$?
+  if (( rc == 0 )); then
     ok "${label} assertions passed"
+  elif (( rc == SECTION_SKIP_RC )); then
+    # The section printed its own reason with `skip` before exiting. Say the word here too,
+    # so the one-line-per-section reading of this run cannot be mistaken for a pass.
+    warn "${label} SKIPPED — its assertions did NOT run (reason above); not counted as passed"
+    SKIPPED=$(( SKIPPED + 1 ))
+    SKIPPED_LABELS="${SKIPPED_LABELS} ${label}"
   else
     err "${label} assertions failed"
     FAILURES=$(( FAILURES + 1 ))
@@ -293,12 +334,28 @@ if (( ! CORE_ONLY )); then
   # The sentinel is the LOOP, not the provisioning one-shot: the one-shot exits, and a stack
   # whose poster is gone but whose exited one-shot lingers must not report a passing section.
   run_section poster   offer-poster "$POSTER_MODE" scripts/verify-poster.sh "./up.sh --with offerfiles --with poster"
+  # The sentinel is the only service the fragment declares. It has no healthcheck by design
+  # (compose/prices.yml says why), so "present" is all that can be read off the container —
+  # whether the feed actually refreshed anything is the section's own first assertion.
+  run_section prices   price-feed   "$PRICES_MODE" scripts/verify-prices.sh "./up.sh --with offerfiles --with prices"
 fi
 
 echo
 if (( FAILURES == 0 )); then
+  if (( SKIPPED > 0 )); then
+    # Still exit 0 — a skipped section is not a failure — but the line says what was NOT
+    # tested, every time, and names it. "all checks passed" on a run that skipped a section
+    # would be the exact untruth the SKIPPED state exists to prevent.
+    ok "verify.sh: every check that RAN passed — ${SKIPPED} section(s) SKIPPED:${SKIPPED_LABELS}"
+    info "a SKIPPED section asserted nothing; the reason is printed in the section above"
+    exit 0
+  fi
   ok "verify.sh: all checks passed"
   exit 0
+fi
+if (( SKIPPED > 0 )); then
+  err "verify.sh: ${FAILURES} check(s) failed, and ${SKIPPED} section(s) SKIPPED:${SKIPPED_LABELS}"
+  exit 1
 fi
 err "verify.sh: ${FAILURES} check(s) failed"
 exit 1

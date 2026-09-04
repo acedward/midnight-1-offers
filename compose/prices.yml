@@ -1,0 +1,149 @@
+# compose/prices.yml — the `prices` profile: live reference prices, refreshed from CoinGecko.
+#
+#   ./up.sh --with offerfiles --with prices
+#
+# A profile IS this file's basename; no compose `profiles:` key is used here. up.sh never
+# passes `--profile`, so a service carrying one would be declared, rendered, verified — and
+# then silently never started. (Upstream's own block DOES carry `profiles: ["prices"]`, which
+# is where this profile's NAME comes from; in this repository the fragment is the profile, so
+# the key would be a second, contradictory gate.)
+#
+# ─── ONE SERVICE, ONE CONCERN ────────────────────────────────────────────────
+#   price-feed   THE LOOP: every PRICE_FEED_INTERVAL_MS (24 h by default) it asks CoinGecko
+#                `simple/price` for the five seeded asset ids and upserts `asset_prices` —
+#                the USD reference table behind GET /v1/prices, GET /v1/quote's `market_rate`
+#                and the batcher's fee-sponsorship gate. Ids are BATCHED (up to
+#                PRICE_FEED_BATCH_SIZE = 50 per request), so today's five assets are ONE
+#                request a day against the demo plan's 10 000 credits a month.
+#
+# It runs the KERNEL IMAGE that compose/offerfiles.yml builds, so `--with offerfiles` is not
+# optional: this fragment declares no kernel and no `build:` of its own. There is no host port
+# and no volume — the service serves nothing and its only durable state is two rows-worth of
+# database (`asset_prices`, `price_feed_status`), which live in the `postgres` volume with
+# everything else.
+#
+# ─── WHY IT IS OPT-IN, AND WHY IT IS STILL IN `--all` (00014 Q1) ─────────────
+# Upstream keeps it behind a native profile for one reason: it is the only service in the
+# stack that needs an internet-reachable THIRD PARTY and an API KEY. The stack is complete
+# without it — `packages/database/migrations/000-init.sql` seeds real prices captured on
+# 2026-09-02, so a fresh database already quotes 1 WBTC ≈ 32 WETH rather than a colour-hash
+# demo rate — and a development stack never runs it at all.
+#
+# In THIS repository a profile IS a fragment and `--all` means every fragment, and that is
+# kept: with no key the service comes up and IDLES (see below), so `./up.sh --all` on a clean
+# host with no `.env` still works, which is this repository's own contract. What changes
+# without a key is only what ./verify.sh reports — its `prices` section says
+# `SKIPPED — no COINGECKO_API_KEY`, and a skipped section is counted as skipped, never as
+# passed (scripts/verify-prices.sh, and run_section()'s SKIPPED state in verify.sh).
+#
+# ─── THE KEY IS THE ONLY SECRET IN THIS STACK ────────────────────────────────
+# `COINGECKO_API_KEY` reaches this service from the operator's `.env` and from nowhere else:
+# there is NO compose default (unlike every wallet seed here, which are public devnet
+# placeholders), it is never baked into the image, never put on a command line, and never
+# committed — `.gitignore` covers `.env` and `.env.*` with only `.env.example` re-included,
+# and `.env.example` carries the name with an EMPTY value.
+#
+# `packages/price-feed/src/coingecko.ts` sends it as the `x-cg-demo-api-key` HEADER and never
+# as a query parameter, which would put it in every access, proxy and browser-devtools log.
+# It is also never printed: `describeConfig()` renders the whole effective configuration and
+# the key's field is the literal `key=present` or `key=ABSENT`.
+#
+# ONE THING TO KNOW ABOUT `docker compose config`: compose INTERPOLATES this value into its
+# rendered output, so a rendered config produced with a real `.env` contains the key. Nothing
+# in this repository does that — `scripts/verify-compose-pins.sh` renders every combination
+# with a deliberately EMPTY env file, which is what keeps the audit path key-free — and no
+# gate should ever `docker compose config` with the operator's env into a log.
+#
+# ─── WITHOUT A KEY IT IDLES, AND THAT IS NOT AN OVERSIGHT ────────────────────
+# `restart: unless-stopped`, like the batcher and the poster: this process is DESIGNED never
+# to exit, its state is in the database, and an actual exit is a crash for which restarting is
+# the right answer. That is exactly why `packages/price-feed/src/run.ts` does NOT exit when
+# the key is missing in loop mode — it logs one WARNING at start and one on every tick and
+# does nothing else. A service that exited 64 here would restart-loop forever, printing the
+# same line, on a stack that quotes perfectly well from the seeds. `--once` is the mode that
+# reports through its exit code (0 every asset landed / 2 some did not / 64 no key, no schema
+# or a cycle that threw), which is what scripts/verify-prices.sh uses:
+#
+#     docker compose run --rm --no-deps -T price-feed --once
+#
+# ─── RATE LIMITS ─────────────────────────────────────────────────────────────
+# The demo tier allows ~30 requests a minute and 10 000 credits a month. One cycle is
+# `ceil(assets / PRICE_FEED_BATCH_SIZE)` = ONE request, once a day. Each `--once` (so each
+# ./verify.sh run with a key present) spends one more. A `429` stops the cycle where it
+# stands, keeps what was already written, and lands in GET /v1/prices `feed.last_error` — it
+# does not crash the service.
+
+services:
+  # ── price-feed ─────────────────────────────────────────────────────────────
+  price-feed:
+    # No `build:`, deliberately — the same reason compose/poster.yml has none. This IS the
+    # kernel image (upstream runs the feed on it too), which gives the feed ONE commit
+    # identity with the kernel whose table it writes, and keeps KERNEL_REF in one place
+    # instead of two. The fragment is never loaded without compose/offerfiles.yml, which
+    # builds the image before this service can start.
+    image: '${KERNEL_IMAGE:-midnight-1-offers/offerfiles-kernel:local}'
+    entrypoint: ['/usr/local/bin/entrypoint-price-feed.sh']
+    restart: 'unless-stopped'
+    environment:
+      # ── the database, the five names the kernel itself is given ────────────
+      # Identical to compose/offerfiles.yml's `kernel` block, variable for variable: this
+      # process is the only WRITER of asset_prices and the kernel is its reader, so a
+      # divergence here would be a feed quietly refreshing a different database.
+      DB_HOST: 'postgres'          # service name, never a host port
+      DB_PORT: '5432'
+      DB_NAME: '${OFFERFILES_PG_DB:-offerfiles}'
+      DB_USER: '${OFFERFILES_PG_USER:-offerfiles}'
+      # DB_PW, not DB_PASSWORD — see the same note on the kernel service.
+      DB_PW: '${OFFERFILES_PG_PASSWORD:-offerfiles}'
+      # ── the secret. NO DEFAULT, EVER ───────────────────────────────────────
+      # Blank means "no key", and the entrypoint UNSETS it so the process sees absent rather
+      # than "". Sent as the x-cg-demo-api-key header; never printed (`key=present|ABSENT`).
+      COINGECKO_API_KEY: '${COINGECKO_API_KEY:-}'
+      # ── every knob below is blank-by-default ON PURPOSE ────────────────────
+      # Blank means "the code's default", which is the single place those numbers are written
+      # down (packages/price-feed/src/config.ts). The entrypoint UNSETS the blank ones, so the
+      # container's environment never claims otherwise — `ENV.getString`/`ENV.getNumber` both
+      # treat "" as a real value.
+      #
+      # Override only to point the feed at a stub. Blank = https://api.coingecko.com/api/v3.
+      COINGECKO_BASE_URL: '${COINGECKO_BASE_URL:-}'
+      # 86400000 ms between cycles; >= 1000 ms between requests inside a cycle; up to 50 ids
+      # per simple/price request; a 20 s per-request timeout.
+      PRICE_FEED_INTERVAL_MS: '${PRICE_FEED_INTERVAL_MS:-}'
+      PRICE_FEED_REQUEST_SPACING_MS: '${PRICE_FEED_REQUEST_SPACING_MS:-}'
+      PRICE_FEED_BATCH_SIZE: '${PRICE_FEED_BATCH_SIZE:-}'
+      # Passed although upstream's own compose block does not: config.ts reads it, and a knob
+      # the code honours but the fragment drops is a knob an operator cannot reach.
+      PRICE_FEED_REQUEST_TIMEOUT_MS: '${PRICE_FEED_REQUEST_TIMEOUT_MS:-}'
+      # Comma-separated CoinGecko ids. Blank = SEEDED_ASSET_IDS, i.e. exactly the five the
+      # schema seeds: bitcoin, ethereum, usd-coin, midnight-3, usdm-2.
+      PRICE_FEED_ASSETS: '${PRICE_FEED_ASSETS:-}'
+      # NOT PASSED HERE, AND THAT IS NOT AN OMISSION: PRICE_FEED_MAP. It is a NODE-side knob
+      # (name/colour -> asset id) that compose/offerfiles.yml already gives the kernel and the
+      # batcher; the feed's own config.ts never reads it. Setting it here would look like
+      # configuration and do nothing.
+    depends_on:
+      postgres:
+        condition: service_healthy
+      # ORDERING ONLY, and only for the SCHEMA: the kernel applies 000-init.sql at startup,
+      # and asset_prices / price_feed_status have to exist before the first upsert. `run.ts`
+      # checks for both tables and says so plainly if they are absent, so this dependency is
+      # about not printing that message on every clean boot — not about needing the kernel.
+      # (It is also what makes `--with prices` without `--with offerfiles` refuse to render,
+      # which is correct: there would be no image to run and no schema to write into.)
+      kernel:
+        condition: service_healthy
+    # NO `ports:` — this service exposes nothing. Its output is rows in `asset_prices`, read
+    # through the kernel's GET /v1/prices, and its own last-cycle record is served there too
+    # as `feed.{provider,last_run_at,last_ok_at,last_error}`.
+    #
+    # NO `volumes:` — nothing container-local to keep. That is also why `./down.sh -v` needs
+    # no change for this profile: it declares no volume of its own.
+    #
+    # NO `healthcheck:` — and this one is a real decision rather than a gap. A loop that
+    # sleeps 24 h between cycles has no cheap liveness signal of its own: the honest probe is
+    # "did the last cycle succeed", which is `price_feed_status` in the database and is served
+    # by the kernel, not by this container. A process-liveness probe would report `healthy`
+    # for a feed that has been failing every cycle for a week (and `unhealthy` for a perfectly
+    # good one that simply has no key), so it would be worse than none. What answers the
+    # question instead is ./verify.sh's `prices` section, against GET /v1/prices.

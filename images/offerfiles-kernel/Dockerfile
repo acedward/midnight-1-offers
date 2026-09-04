@@ -22,6 +22,15 @@
 #                                   one faucet coin a tick and posts one sponsored offer
 #                                   spending exactly that coin
 #
+# AND SINCE 00014 IT IS ONE IMAGE, SIX CONTAINERS: the `prices` profile adds the kernel
+# repository's own reference-price refresher —
+#
+#   entrypoint-price-feed.sh        THE OTHER LOOP — `packages/price-feed/price-feed.dev.ts`,
+#                                   one CoinGecko `simple/price` call a day into
+#                                   `asset_prices`. The only process here that talks to the
+#                                   public internet, and the only one that holds a secret;
+#                                   it waits on the DATABASE and on nothing else
+#
 # WHY NO ORCHESTRATOR. The repository's own `bun run dev` is `bunx orchestrator start`, whose
 # launchMidnight()/launchCelestia() open with `stopProcessAtPort [9944, 8088, 6300, 26657,
 # 26658, 3334]` — pointed at a live stack it FIRST KILLS the listeners it was meant to use.
@@ -206,7 +215,7 @@ COPY faucet-probe.ts       /usr/local/lib/offerfiles/faucet-probe.ts
 COPY poster-provision.ts   /usr/local/lib/offerfiles/poster-provision.ts
 COPY entrypoint-deploy.sh entrypoint-kernel.sh entrypoint-batcher.sh \
      entrypoint-token-names.sh entrypoint-poster-provision.sh \
-     entrypoint-offer-poster.sh /usr/local/bin/
+     entrypoint-offer-poster.sh entrypoint-price-feed.sh /usr/local/bin/
 RUN chmod 0755 /usr/local/bin/wait-for.sh \
                /usr/local/bin/entrypoint-deploy.sh \
                /usr/local/bin/entrypoint-kernel.sh \
@@ -214,6 +223,7 @@ RUN chmod 0755 /usr/local/bin/wait-for.sh \
                /usr/local/bin/entrypoint-token-names.sh \
                /usr/local/bin/entrypoint-poster-provision.sh \
                /usr/local/bin/entrypoint-offer-poster.sh \
+               /usr/local/bin/entrypoint-price-feed.sh \
  && chmod 0644 /usr/local/lib/offerfiles/entrypoint-common.sh \
                /usr/local/lib/offerfiles/faucet-probe.ts \
                /usr/local/lib/offerfiles/poster-provision.ts
@@ -232,4 +242,4 @@ EXPOSE 9999 3334
 
 # No default command. Every service in compose/offerfiles.yml names its entrypoint
 # explicitly, so a service that forgot to must REFUSE rather than silently become a kernel.
-CMD ["/bin/sh", "-c", "echo 'this image has no default command — select one of /usr/local/bin/entrypoint-{deploy,kernel,batcher,token-names,poster-provision,offer-poster}.sh' >&2; exit 64"]
+CMD ["/bin/sh", "-c", "echo 'this image has no default command — select one of /usr/local/bin/entrypoint-{deploy,kernel,batcher,token-names,poster-provision,offer-poster,price-feed}.sh' >&2; exit 64"]

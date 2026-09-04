@@ -90,6 +90,61 @@ mints it), balances the poster's offer file and submits it. That consumes one po
 leaves the taker holding what it bought. On a throwaway devnet that is the point; set
 `POSTER_VERIFY_SKIP_TAKE=true` to skip it, and the section says out loud that it did.
 
+## `prices`
+
+### With no key the profile runs and does NOTHING — on purpose
+
+`COINGECKO_API_KEY` has no compose default and cannot have one, so `./up.sh --all` on a clean
+host brings up a `price-feed` container that logs one warning at start, one on every tick
+(24 h apart), and never refreshes anything. It is not broken and it must not be "fixed" by
+making it exit: under `restart: unless-stopped` a non-zero exit is a crash loop, printing the
+same line forever, on a stack whose seeded prices already quote real BTC/ETH ratios. That
+trade-off is upstream's and this repository keeps it.
+
+The visible consequences are exactly two: one idle container on every key-less `--all` stack,
+and `./verify.sh` reporting its `prices` section **SKIPPED**. The skip is loud, named, counted
+separately and never folded into "all checks passed" — but it does mean **a key-less gate has
+not tested the feature at all**. Only a run with a key proves the refresh.
+
+### Each `./verify.sh` with a key spends one CoinGecko request
+
+The section's first assertion is a real `--once` cycle, because nothing weaker proves a
+24-hour loop works. That is one `simple/price` request per `./verify.sh` run, against the demo
+plan's ~10 000 credits a month and ~30 requests a minute — so a tight loop of gate runs is the
+one way to meet a `429` here. A `429` is handled gracefully (the cycle stops where it stands,
+keeps what it wrote and reports in `feed.last_error`) but it will fail the section, correctly.
+
+### `source: feed` is a sticky flag, so freshness is the real assertion
+
+Nothing ever rewrites a `feed` row back to `seed`. A row written by an earlier run — or by
+another stack against a `postgres` volume that was reused instead of wiped — still reads
+`feed` days later. So `source` alone cannot answer "did the refresh work", and
+`./verify.sh`'s `prices` section asserts `updated_at` against `PRICES_VERIFY_MAX_AGE_S`
+(600 s) as well. The same reasoning is why `./down.sh -v` matters here as everywhere else.
+
+### The feed has no healthcheck, so `docker compose ps` cannot tell you it is working
+
+A loop that sleeps a day between cycles has no cheap in-container liveness signal, and the
+honest question — "did the last cycle succeed" — is a database row served by the *kernel*
+(`GET /v1/prices` `feed.last_error`). A process-liveness probe would call a feed that had been
+failing every cycle for a week `healthy`, and a perfectly good key-less one `unhealthy`, so
+the fragment declares none. `up.sh` asserts only that the container runs and stays running;
+`./verify.sh` asserts the rest. Reading `feed.last_error` is the operator-facing answer.
+
+### The dev colours stay unpriced, and the feed does not change that
+
+The feed refreshes the five *asset* rows, not the colour→asset map. DEVA/DEVB/DEVU still have
+no reference asset by design (see below), so a live feed makes the priced colours live and
+leaves the unpriced ones exactly as unpriced as before.
+
+### A price that moves is a price that moves
+
+`verify-kernel.sh` asserts the 2026-09-02 seed literals (`WBTC` `0.077387`, `WETH`
+`0.00239328`) **only while `source` is `seed`**. Once this profile has refreshed them the
+literals become context in the log and the surviving assertion is the arithmetic one —
+per-base-unit == coin price / 10^decimals, exactly. That is deliberate: any gate that pinned a
+live market price to a literal would be a gate that fails every morning.
+
 ## `shielded-night`
 
 ### The browser flow needs the DEFAULT port block

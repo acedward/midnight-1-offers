@@ -35,6 +35,73 @@ warn() { printf '%s\n' "    ${C_YELLOW}WARN${C_RESET} $*"; }
 err()  { printf '%s\n' "    ${C_RED}FAIL${C_RESET} $*" >&2; }
 die()  { err "$*"; exit 1; }
 
+# ── a section that DID NOT TEST, said out loud ───────────────────────────────
+#
+# `skip` is not a softer `warn`. A WARN means "something is odd, but the assertions below
+# still ran"; a SKIP means the assertions did NOT run — and verify.sh must never report or
+# count that as a pass (00011 B.5b: an untested section that exits 0 is worse than a red one,
+# because nobody looks at it again).
+#
+# The mechanism is an EXIT CODE, so it survives the process boundary between verify.sh and a
+# section script: the section prints its reason with `skip` and exits SECTION_SKIP_RC, and
+# run_section() counts it as skipped and names it in the final summary. 77 rather than a small
+# number so it cannot be confused with a failure count, and so it cannot collide with the
+# sysexits codes already meaningful in this repository (64 EX_USAGE, 75 EX_TEMPFAIL,
+# 78 EX_CONFIG).
+#
+# Today exactly one section uses it: `prices`, on a stack with no COINGECKO_API_KEY. That is a
+# SUPPORTED configuration — the schema's seeded prices quote real ratios — so it must not
+# fail; and the refresh the section exists to prove was never exercised, so it must not pass.
+# shellcheck disable=SC2034  # read by verify.sh and by the section scripts that source this
+SECTION_SKIP_RC=77
+skip() { printf '%s\n' "    ${C_YELLOW}SKIP${C_RESET} $*"; }
+
+# ── exact decimal arithmetic, because bash has none ──────────────────────────
+#
+# decimal_shift_left <value> <n> — EXACT decimal-string division by 10^n (i.e. "shift the
+# decimal point left by n places"), mirroring packages/database/price-map.ts's
+# `tokenPriceFromAsset()`/`renderDecimal()` on the kernel side. Pure bash + sed: no bc, no
+# python3, no jq — this must run on a clean macOS box.
+#
+# It exists so a token's PER-BASE-UNIT price (`GET /v1/prices` `tokens[]`) can be compared to
+# its asset's COIN price (`assets[]`) divided by 10^decimals as an EXACT STRING, never as a
+# float. Bash has no float arithmetic at all and that is deliberately not worked around: a
+# float comparison is precisely the class of bug this assertion exists to rule out on the
+# kernel side too.
+#
+# IT LIVES HERE, IN THE LIBRARY, RATHER THAN IN ONE SCRIPT (00014). It was written for
+# scripts/verify-kernel.sh's seeded-price assertions and scripts/verify-prices.sh needs the
+# identical function for the FED ones. Two copies of a 25-line numeric routine that must agree
+# to the last digit — and that both mirror one function in the kernel — is a drift waiting to
+# happen, and a drift that would show up as a passing gate on one side and a failing one on
+# the other.
+decimal_shift_left() {
+  local value="$1" n="$2" int_part frac_part digits pointpos before after pad
+  if [[ "$value" == *.* ]]; then
+    int_part="${value%%.*}"; frac_part="${value#*.}"
+  else
+    int_part="$value"; frac_part=""
+  fi
+  digits="${int_part}${frac_part}"
+  pointpos=${#int_part}
+  pointpos=$(( pointpos - n ))
+  if (( pointpos < 0 )); then
+    pad=$(( -pointpos ))
+    digits="$(printf '%0*d' "$pad" 0)${digits}"
+    pointpos=0
+  fi
+  before="${digits:0:pointpos}"
+  after="${digits:pointpos}"
+  before="$(printf '%s' "$before" | sed 's/^0*\(.\)/\1/')"
+  [[ -n "$before" ]] || before="0"
+  after="$(printf '%s' "$after" | sed 's/0*$//')"
+  if [[ -z "$after" ]]; then
+    printf '%s' "$before"
+  else
+    printf '%s.%s' "$before" "$after"
+  fi
+}
+
 # ── immutable image references ───────────────────────────────────────────────
 #
 # require_digest_ref VAR… — each named variable must hold a COMPLETE immutable image
@@ -457,7 +524,7 @@ assert_relay_source() {
 # `--profile`, so a service carrying one would be declared and then never start, which is a
 # uniquely quiet way to break a stack.
 #
-# There are exactly six: core, offerfiles, frontend, shielded-night, solver, poster.
+# There are exactly seven: core, offerfiles, frontend, shielded-night, solver, poster, prices.
 
 # KNOWN_FUTURE_PROFILES are profiles this stack reserves ports and documentation for but has
 # not built yet. Empty: every fragment exists. Keep the machinery for the next one.
@@ -538,7 +605,15 @@ pending_profiles() {
 # kernel it posts into, the deploy one-shot's contract address, and nothing else. Putting it
 # ABOVE `solver` would make rendering it pull the solver in, and with it the private relay
 # build context — for a profile that has no relay in it (00011 Q1).
-PROFILE_LAYER_ORDER="core shielded-night offerfiles poster frontend solver"
+#
+# `prices` sits directly above `poster` for exactly the same reason, and its own dependency is
+# `offerfiles` alone: the kernel image to run, and the kernel's 000-init.sql schema to write
+# into. It is placed AFTER `poster` rather than between `offerfiles` and `poster` purely so
+# that no EXISTING profile's layer stack changes — `profile_services poster` stays
+# `offer-poster poster-provision`, measured, and only the new profile gets a new answer
+# (`price-feed`). Above `frontend`/`solver` it would pull the private relay build context in
+# for a profile that has no relay in it.
+PROFILE_LAYER_ORDER="core shielded-night offerfiles poster prices frontend solver"
 
 # _layer_files <profile> [--below] — the `-f <fragment>` arguments for every layer up to and
 # including <profile>, or strictly below it, one word per line.
@@ -731,6 +806,61 @@ wait_node_rpc() {
     sleep 2
   done
   err "timeout waiting for node RPC at $url"
+  return 1
+}
+
+# wait_compose_running <service> [settle_secs] [timeout_secs]
+#
+# For a service that has NO healthcheck and cannot sensibly have one — today exactly one:
+# `price-feed`, a loop that sleeps 24 h between cycles, so the only honest liveness question
+# ("did the last cycle succeed") lives in the database and is answered by ./verify.sh's
+# `prices` section, not by a probe inside the container (see compose/prices.yml).
+#
+# What this asserts is narrower and still worth asserting: the container is RUNNING and STAYS
+# running for `settle_secs`, with its restart count unchanged. That is what separates "the
+# service is up" from the failure mode this profile actually has — a configuration error
+# (exit 78 from require_env, or a database that never answered) under
+# `restart: unless-stopped`, i.e. a crash loop that `docker compose up -d` reports as success
+# and nothing else in up.sh would ever look at.
+wait_compose_running() {
+  local service="$1" settle="${2:-10}" secs="${3:-120}"
+  local deadline=$(( SECONDS + secs ))
+  local cid state restarts before after
+  info "waiting for compose service '$service' to be running and stay up ${settle}s (up to ${secs}s)"
+  while (( SECONDS < deadline )); do
+    cid=$(docker ps -aq \
+      --filter "label=com.docker.compose.project=$COMPOSE_PROJECT_NAME" \
+      --filter "label=com.docker.compose.service=$service" 2>/dev/null | head -1)
+    if [[ -n "$cid" ]]; then
+      state=$(docker inspect -f '{{.State.Status}}' "$cid" 2>/dev/null || echo "")
+      if [[ "$state" == "exited" || "$state" == "dead" ]]; then
+        err "$service container $state — it did not stay up"
+        return 1
+      fi
+      if [[ "$state" == "running" ]]; then
+        # The SETTLE WINDOW, and the reason this helper is not just one inspect: a crash loop
+        # is `running` too, for a second at a time, so a single reading cannot tell the two
+        # apart. The restart count either side of the window is what does.
+        before=$(docker inspect -f '{{.RestartCount}}' "$cid" 2>/dev/null || echo "")
+        sleep "$settle"
+        state=$(docker inspect -f '{{.State.Status}}' "$cid" 2>/dev/null || echo "")
+        after=$(docker inspect -f '{{.RestartCount}}' "$cid" 2>/dev/null || echo "")
+        if [[ "$state" != "running" ]]; then
+          err "$service left the running state during its ${settle}s settle window (now ${state:-unreadable})"
+          return 1
+        fi
+        if [[ "$before" != "$after" ]]; then
+          err "$service restarted during its ${settle}s settle window (restart count ${before} -> ${after}) — look at 'docker compose logs ${service}'"
+          return 1
+        fi
+        restarts="$after"
+        ok "$service running, restart count ${restarts:-unreadable}"
+        return 0
+      fi
+    fi
+    sleep 3
+  done
+  err "timeout waiting for $service to be running"
   return 1
 }
 
