@@ -285,6 +285,27 @@ services:
       # configuration), so a status listener must never be able to come up open. A missing or
       # short value is one of the LISTED start.solver.ts launch problems, not a late 401.
       SOLVER_STATUS_AUTH_TOKEN: *solver_status_token
+      # ── DUST admission accounting (kernel PR #53 / 00006-V1) ───────────────
+      # ALL THREE OR NONE — `packages/solver/env.ts` refuses a partial group — and an EMPTY
+      # one is malformed rather than "unset", so entrypoint-solver.sh unsets the whole group
+      # when blank (compose cannot express "omit this variable").
+      #
+      # This is not a new mechanism and it does not gate anything here: the limits are the
+      # kernel deployment's own (`deploy/.env.example`), far above the measured per-job
+      # estimate of ~2.8e15 SPECKs, so admission RECORDS rather than refuses. Switching it on
+      # is the ONLY way the amount `estimateDustAmount` computed for each settled job becomes
+      # observable — `reserveDust` writes it to `journal_dust_reservations.amount_text`, which
+      # is what the canonical settlement driver reads. Without the group that assertion has
+      # nothing to read and the driver reports 17/18 (00011 Q14).
+      SOLVER_DUST_MAX_PER_JOB: '${SOLVER_DUST_MAX_PER_JOB:-100000000000000000}'
+      SOLVER_DUST_MAX_PER_WINDOW: '${SOLVER_DUST_MAX_PER_WINDOW:-10000000000000000000}'
+      SOLVER_DUST_WINDOW_MS: '${SOLVER_DUST_WINDOW_MS:-3600000}'
+      # Build provenance for the status snapshot, and through it the monitor's Configuration
+      # panel (00011 Q15). The solver reads GIT_COMMIT; unset, the page says "unknown commit"
+      # about a stack whose whole point is that every kernel-built process is ONE commit. It
+      # is DISPLAY ONLY — the authoritative identity assertion is
+      # scripts/verify-source-pins.sh against /app/.kernel-commit in the image.
+      GIT_COMMIT: '${KERNEL_REF:-c293ebd57937c0065663b08b2c244438be8989a5}'
       # Read ONLY by the healthcheck below, to decide how strict it may be.
       MAKER_OFFER_ENABLED: '${MAKER_OFFER_ENABLED:-true}'
       SOLVER_PROVISION_ENABLED: '${SOLVER_PROVISION_ENABLED:-true}'
