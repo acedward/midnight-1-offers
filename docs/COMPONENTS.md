@@ -93,6 +93,37 @@ with `SOLVER_STATUS_PORT` unset the solver behaves exactly as it did before. Set
 Collection reads **in-memory state only** — no wallet call, no proof, no kernel or relay I/O —
 and no route mutates anything.
 
+#### `GET /health` IS the solver's container healthcheck (00015)
+
+The `solver` service's compose healthcheck is exactly this route: **200 with `ready: true`, and
+nothing else**. What that flag means, read at the pinned kernel rather than inferred — `ready` is
+`solverIsReady` in `packages/solver/src/run.ts`, a **one-way latch**:
+
+| it becomes `true` | when all three hold: the book mirror's FIRST sync completed, the kernel's backend projection reported `current`, and the wallet inventory has been read |
+| --- | --- |
+| it becomes `false` | only in the solver's own `stop()` |
+
+So a healthy `solver` container means **"this solver finished starting up and is still running"**.
+Two things it deliberately does **not** mean:
+
+* it says nothing about the **relay socket** — the relay is not part of the latch, and stopping
+  the relay leaves the container healthy;
+* a backend projection lost *later* does not clear it either (the latch does not re-evaluate).
+
+The end-to-end guarantee — *the relay advertises this solver's ladder* — is asserted directly by
+`./verify.sh`'s `solver` section, which is the right place for a claim about three services.
+
+During startup the listener is bound **before** the wallet, so `/health` answers `ready: false`
+rather than refusing connections: the container sits in `starting` until the solver is genuinely
+up, which is what `start_period: 180s` is for.
+
+**Why it is not the old check.** Until 00015 the healthcheck probed the *relay's* `GET /tokens`
+and called the solver unhealthy whenever that list was empty while the kernel book was not. The
+solver enters exactly that state by design on every fail-closed empty ladder
+(`cache-not-current`), so the check flipped 0/1 about once a minute on an idle stack and 30
+consecutive unlucky samples would have marked a correct solver unhealthy. A fail-closed
+withdrawal is the solver working.
+
 `SOLVER_STATUS_AUTH_TOKEN` is **mandatory and ≥ 32 characters** whenever the port is set: a
 missing or short value is one of the problems `start.solver.ts` lists *before it binds*, not a
 late 401. `/status/*` carries the solver's entire internal state, so the listener must never be

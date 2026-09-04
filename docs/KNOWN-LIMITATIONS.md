@@ -40,6 +40,23 @@ the compose network and only with the bearer. Reading it from the host needs `do
 exec` (the idiom is in `docs/OPERATIONS.md`) or uncommenting the `SOLVER_STATUS_HOST_PORT` block
 in `compose/solver.yml`. The monitor on `:10800` is the intended reader.
 
+### A healthy `solver` container does not mean the relay is connected (00015)
+
+The healthcheck asks the solver's own `GET /health` for `ready`, which upstream implements as a
+**startup latch** (`solverIsReady` in `packages/solver/src/run.ts`): true once the book mirror's
+first sync, the kernel's backend projection and the wallet inventory have all come good, false
+again only when the solver stops. It therefore answers *"this solver finished starting up and is
+still running"* — and **not** "the relay socket is up", "a ladder is published", or "the backend
+projection is still current". `docker compose stop relay` leaves the container `healthy`.
+
+That is the right trade for a container healthcheck: the previous one probed the relay and
+flipped 0/1 about once a minute on a working stack, because a fail-closed empty ladder is
+indistinguishable from a missing solver when you ask from outside. The end-to-end claim lives in
+`./verify.sh`'s `solver` section, which asserts that the relay advertises this solver's colours,
+and in the monitor's health strip, whose last two stages are exactly *relay socket* and
+*published ladder*. Use those to answer "is it quoting"; use the container's health to answer "is
+it up".
+
 ## `poster`
 
 ### The first offer takes minutes, and nothing can make it faster
