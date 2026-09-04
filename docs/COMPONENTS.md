@@ -1,9 +1,9 @@
 # Components
 
 > **Scope.** This file documents the source pins that decide which LINE the stack runs, the
-> **`solver`** profile's own processes, and the **`shielded-night`** profile. The component
-> notes for `core`, `offerfiles` and `frontend` are still to be written; `README.md` remains the
-> map of the stack.
+> **`solver`** profile's own processes, the **`poster`** profile, the **`prices`** profile and
+> the **`shielded-night`** profile. The component notes for `core`, `offerfiles` and `frontend`
+> are still to be written; `README.md` remains the map of the stack.
 
 ## Source pins, and the line they put this stack on
 
@@ -224,6 +224,125 @@ It mints continuously and needs a funded wallet, so it is opt-in — exactly as 
 repository ships it (`docker compose --profile poster up`). It also needs neither the relay nor
 the solver, and putting it in `solver` would have coupled a book-filling service to the private
 relay clone that profile requires.
+
+## The `prices` profile — the price feed, so the reference is live
+
+### What it is
+
+`packages/price-feed` in the kernel repository: one long-running process that refreshes
+`asset_prices`, the USD reference table behind `GET /v1/prices`, `GET /v1/quote`'s
+`market_rate` and the batcher's fee-sponsorship gate. It is the kernel's own service, run here
+on the kernel image with one more entrypoint — `entrypoint-price-feed.sh` — exactly as the
+poster and the solver are.
+
+It is the **only process in this stack that talks to the public internet on purpose**, and the
+only one that holds a secret. It needs neither Midnight nor Celestia: it reads CoinGecko over
+HTTPS and writes PostgreSQL, which is why its entrypoint waits on the database and on nothing
+else.
+
+It also **holds no wallet and has no seed** — the only service here other than the frontend and
+the monitor that does not, so it appears in none of `docs/WALLETS.md`'s tables and takes no part
+in the genesis-1 facade mutex.
+
+### What it refreshes, and what `source` means
+
+One cycle asks CoinGecko `simple/price` for the **five seeded asset ids**, batched into as few
+requests as `PRICE_FEED_BATCH_SIZE` (default 50) allows — so today's five are **one request**:
+
+| asset id | what it prices here |
+|---|---|
+| `bitcoin` | `WBTC` / `WSBTC` / `BTC` — the faucet's BTC-priced presets |
+| `ethereum` | `WETH` / `WSETH` / `ETH` |
+| `usd-coin` | `USDC` |
+| `midnight-3` | `NIGHT`, and `SNIGHT` — the shielded-night wrapper is locked 1:1 against NIGHT, so it is the same asset and needs no second price |
+| `usdm-2` | `USDM` — Moneta's Cardano USDM, the asset the VIA Labs bridge carries to Midnight. It trades AROUND a dollar but is not a dollar, so it is observed like the rest: USD is the numeraire and nothing is pinned to it, which is what makes a depeg visible in the quotes |
+
+Tokens map to assets **by NAME**, not by colour: faucet colours derive from the contract
+address and change on every clean redeploy, so a colour-keyed map would be stale on every
+`./down.sh -v`. `known_tokens.asset_id` overrides the map and `PRICE_FEED_MAP` overrides the
+defaults — note that `PRICE_FEED_MAP` is a **kernel/batcher** knob (they read it), not a
+price-feed one, which is why it lives with the sponsorship settings in `.env.example` and not
+in this profile's block.
+
+Every price row carries a `source`, and the whole point of this profile is which one:
+
+| `source` | meaning |
+|---|---|
+| `seed` | the value shipped in `000-init.sql`, captured 2026-09-02. **A stack that never runs this profile still quotes real ratios** — that is why it is opt-in |
+| `feed` | fetched from CoinGecko by this service |
+| `manual` | an operator's row in `token_prices`. Wins over everything; nothing rewrites it |
+| `fallback` | the deterministic demo price derived from the token's colour. **Not a market price**, and the sponsorship gate treats it as *unpriced* |
+
+After a refresh, `GET /v1/prices` reports `source: feed` with a fresh `updated_at`, and
+`GET /v1/quote` follows on both legs (`from_source` / `to_source` / `prices_updated_at` — the
+older of the two legs, because a quote is only as fresh as its stalest side). Prices are served
+**per base unit**: a token's price is its asset's coin price divided by `10^decimals`, and since
+every token here is 6 decimals, `WBTC` at $79 518 a coin is `0.079518` per base unit.
+
+### The key, and the four rules around it
+
+`COINGECKO_API_KEY` is the only secret in this stack. Every other credential here is a public
+devnet placeholder.
+
+1. **`.env` and nowhere else.** There is deliberately **no compose default** for it, it is
+   never baked into an image, never put on a command line, and never committed — `.gitignore`
+   covers `.env` and `.env.*` and re-includes only `.env.example`, which carries the name with
+   an empty value.
+2. **Header, never a query string.** `packages/price-feed/src/coingecko.ts` sends it as
+   `x-cg-demo-api-key`. A query parameter would put it in every access, proxy and
+   browser-devtools log.
+3. **Never printed.** The service renders its whole effective configuration at startup with the
+   key's field as the literal `key=present` or `key=ABSENT`. Nothing in this repository prints
+   more than that either: `scripts/verify-prices.sh` learns whether a key exists from the *exit
+   code* of `test -n` run inside the container, so the value never crosses back into a script.
+4. **Never in a rendered compose config.** `docker compose config` interpolates it, so never
+   render one with your real `.env` into a log or a paste. `scripts/verify-compose-pins.sh`
+   renders every combination with an empty env file **and explicitly unsets the variable**, so
+   this repository's own audit path cannot pick it up whatever the caller's environment holds.
+
+### With no key it idles — that is the design, not a gap
+
+`restart: unless-stopped`, like the batcher and the poster: the process is meant never to exit,
+its state is in the database, and an exit is a crash for which restarting is right. So
+`packages/price-feed/src/run.ts` deliberately does **not** exit when the key is missing in loop
+mode — it logs one warning at start and one on every tick and does nothing else. A service that
+exited 64 there would restart-loop forever, printing the same line, on a stack that quotes
+perfectly well from the seeds. `--once` is the mode that reports through its exit code:
+
+| exit | meaning |
+|---|---|
+| `0` | every asset the cycle asked for was written |
+| `2` | the cycle ran and at least one asset did not land |
+| `64` | misconfiguration: no key, or a database without the kernel's `000-init.sql` schema |
+
+Failures are **graded**, and that is why `feed.last_error` exists. One bad id inside an
+otherwise good response fails only that id. A failed *request* is recorded against every id it
+carried — blaming one would be a guess — and the next batch is still made. A `429` stops the
+cycle where it stands, keeping what was already written. None of that is an exit code and none
+of it is a crash, so `GET /v1/prices` `feed.last_error` is the only place a partial failure is
+visible; `./verify.sh`'s `prices` section asserts it is null.
+
+### No port, no volume, and no healthcheck
+
+Nothing is published: the service serves no requests, and its output is rows the kernel already
+exposes. Nothing is mounted: its only durable state is `asset_prices` and `price_feed_status` in
+the shared `postgres` volume, which is also why `./down.sh -v` needs no change for this profile.
+
+And no healthcheck, deliberately. A loop that sleeps 24 h between cycles has no cheap
+in-container liveness signal; the honest question is "did the last cycle succeed", which is a
+row in the database served by the *kernel*. A process-liveness probe would report `healthy` for
+a feed that had been failing every cycle for a week — and `unhealthy` for a perfectly good one
+that simply has no key — so it would be worse than none. `up.sh` asserts the weaker property
+that is genuinely readable (the container is running and stays running, restart count
+unchanged — `wait_compose_running`), and `./verify.sh`'s `prices` section asserts the real one.
+
+### Why it is its own profile
+
+It needs a third party and an API key, which nothing else here does, and the stack is complete
+without it. Upstream keeps it behind a native `profiles: ["prices"]` for the same reason and
+does not run it in development at all. `--all` includes it here because in this repository a
+profile IS a fragment and `--all` means every fragment — which stays true only because the
+key-less case is a working, supported configuration.
 
 ## The `shielded-night` profile — the Shielded NIGHT dApp
 
