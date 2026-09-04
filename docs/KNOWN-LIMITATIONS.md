@@ -40,6 +40,56 @@ the compose network and only with the bearer. Reading it from the host needs `do
 exec` (the idiom is in `docs/OPERATIONS.md`) or uncommenting the `SOLVER_STATUS_HOST_PORT` block
 in `compose/solver.yml`. The monitor on `:10800` is the intended reader.
 
+## `poster`
+
+### The first offer takes minutes, and nothing can make it faster
+
+Before the poster's health server even binds, it has to sync a wallet, register its NIGHT for
+DUST, wait (bounded) for that dust to appear, and join the offer-files contract; then the first
+tick mints a coin, which is a proving transaction (~30 s), waits for the coin to become visible,
+and only then builds and posts the offer. That is why the container healthcheck has a 15-minute
+`start_period` and why `./verify.sh`'s poster section carries `POSTER_VERIFY_BUDGET_S` (420 s by
+default) instead of a fixed wait. On a loaded host, raise it rather than reading a red section
+as a defect.
+
+### `degraded` answers **200**, on purpose
+
+`GET /health` returns 200 while the poster is `starting` and while it is `degraded`; a 503
+arrives only after `HEALTH_STALE_TICKS` consecutive FAILED ticks. `degraded` almost always means
+`insufficient_dust`, i.e. the wallet has no NIGHT — and restarting a poster does not produce
+NIGHT, so failing the healthcheck would only produce a restart loop that hides the cause.
+
+The consequence is that **a healthy poster container is not evidence that anything was ever
+posted.** Only the mint and live-offer counters are, which is what `./verify.sh` asserts.
+
+### One poster per stack, and one seed for it alone
+
+`offer-poster` must never be scaled past one replica: two facades on one seed against one node
+force each other's connection down. The poster enforces the seed half itself (exit 78 if
+`OFFER_POSTER_SEED` matches another seed in its environment) but nothing can enforce the replica
+half, so it is a rule rather than a check.
+
+### A poster on the book changes what `verify-solver.sh` can assume
+
+The `solver` section's exact-quote assertion used to be able to treat "the book" as "the seeded
+maker offer". With a poster running that is false, and the section was rewritten for it (00011
+FR-014): it identifies the maker offer by the content hash the one-shot's marker records, reads
+that offer's own legs from the kernel, and re-seeds when THAT offer is not live rather than when
+the book is empty. Anything new that asserts on the book must do the same.
+
+The two profiles' offers cannot be confused for each other, incidentally: the poster mints its
+give leg from a faucet preset NAME while `maker-offer` gives a colour minted from a fixed domain
+separator that no preset name maps to. That is a property of the two mint paths, not a choice —
+but the assertions do not rely on it.
+
+### `./verify.sh --poster` SETTLES one of the poster's offers
+
+The section's last assertion is a real on-chain take: `e2e-taker` is funded with NIGHT from
+genesis, MINTS the demanded faucet token itself (nothing on this stack holds one until something
+mints it), balances the poster's offer file and submits it. That consumes one poster offer and
+leaves the taker holding what it bought. On a throwaway devnet that is the point; set
+`POSTER_VERIFY_SKIP_TAKE=true` to skip it, and the section says out loud that it did.
+
 ## `shielded-night`
 
 ### The browser flow needs the DEFAULT port block

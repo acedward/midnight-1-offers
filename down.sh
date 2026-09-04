@@ -6,7 +6,7 @@
 #   ./down.sh -v    also wipe every volume of this compose project (full reset)
 #
 # The -v form wipes the node, indexer, Celestia, Postgres, deploy-share (offer-files AND
-# shielded-night) and batcher volumes
+# shielded-night), batcher, solver, maker-offer and offer-poster volumes
 # TOGETHER, and that is not a convenience — it is a correctness requirement. They are one
 # WIPE GROUP because each of them is keyed to a chain genesis:
 #
@@ -15,7 +15,10 @@
 #   * the offer-files contract address persisted by the deploy one-shot names a contract that
 #     only exists on the old chain, so the kernel starts and its book is permanently empty;
 #   * Celestia's bridge identifies its network by chain-id + genesis hash and refuses to
-#     start against a mismatched data directory.
+#     start against a mismatched data directory;
+#   * the offer poster's JOURNAL records coins by nonce and nullifier and is keyed by the
+#     contract address, so on a new chain none of those coins exist — it refuses to open
+#     rather than merge, which is the right answer and one more reason the group is one group.
 #
 # The proof-data volume is the deliberate exception: it holds architecture-neutral SRS/ledger
 # parameters that no chain identity touches, so plain `./down.sh` keeps it and the next

@@ -216,6 +216,111 @@ actual terminal status (by hash, from the one-shot's marker), re-seeds through
 `maker-offer` with `MAKER_OFFER_RESEED=true`, and fails if that does not restore a ladder inside
 `SOLVER_LADDER_BUDGET_S`.
 
+## The offer poster (00011 PR C)
+
+```sh
+./up.sh --with offerfiles --with poster       # or --all
+./verify.sh --poster                          # assert it is WORKING, not merely alive
+```
+
+Two services come up: `poster-provision` (a one-shot that sends the poster's dedicated wallet
+four large NIGHT UTXOs from genesis and exits) and `offer-poster` (the loop). The poster
+registers that NIGHT for DUST itself, joins the offer-files contract, registers its two token
+names so both legs quote at a real price, and then posts one offer a minute.
+
+**The first offer takes minutes, not seconds.** Wallet sync, DUST registration, the bounded
+dust wait, the contract join and ~30 s of proving all happen before anything reaches the book —
+which is why the container healthcheck has a 15-minute `start_period` and why
+`POSTER_VERIFY_BUDGET_S` defaults to 420.
+
+### Reading it
+
+Everything the poster exposes is read-only and needs no bearer (`${POSTER_HEALTH_HOST_PORT}`,
+loopback):
+
+| route | what it answers |
+|---|---|
+| `GET /health` | `{state, ready, ticks, mints, reoffers, lastTickAt, lastOfferId, lastError, dustBalance, liveOffers, freeCoins, p95TickMs, journal}` |
+| `GET /metrics` | the same counters in Prometheus text format, plus tick p50/p95 and the overrun count |
+| `GET /journal` | the journal as JSON — every coin, its nullifier, and every offer built from it |
+
+```sh
+curl -s http://127.0.0.1:19977/health
+curl -s http://127.0.0.1:19977/journal      # .coins is keyed by coin nonce
+docker compose logs -f offer-poster
+```
+
+**`degraded` is a 200 BY DESIGN, and so is `starting`.** A 503 arrives only after
+`HEALTH_STALE_TICKS` consecutive FAILED ticks. A poster waiting for NIGHT is not a poster a
+restart would fix, so it says `degraded: insufficient_dust` and keeps servicing re-offers
+(which cost no dust) rather than dying. That is exactly why a green healthcheck is not evidence
+the poster is working, and why `./verify.sh`'s poster section waits for `mints >= 2` and
+`liveOffers >= 2` instead of trusting it.
+
+### Checking the exact-coin guarantee by hand
+
+Every offer spends exactly one coin, whole. Compare the two sides:
+
+```sh
+# what the poster believes it did
+curl -s http://127.0.0.1:19977/journal | grep -o '"nullifier":"[0-9a-f]*"' | tail -1
+
+# what the kernel says the offer actually spends (offerId = the journal's own offerId)
+curl -s http://127.0.0.1:9999/v1/offers/<offerId> | grep -o '"inputNullifiers":\[[^]]*\]'
+```
+
+One entry, and equal. `./verify.sh --poster` does this automatically.
+
+### A dry run
+
+`DRY_RUN=true` does the whole of startup — build the wallet, sync, register NIGHT for dust,
+join the contract, derive both colours offline, register the token names, load the journal,
+read one quote — then prints a JSON report and exits 0. It never mints and never posts. Run it
+as a ONE-OFF, because the service restarts unless stopped:
+
+```sh
+docker compose run --rm -e DRY_RUN=true offer-poster
+```
+
+### Knobs
+
+Every `OFFER_POSTER_*` variable in `.env.example` is a passthrough with upstream's own name and
+upstream's own blank-means-code-default rule; the entrypoint UNSETS the blank ones so
+`docker compose exec offer-poster env` shows what the process actually used. The ones worth
+knowing:
+
+| knob | default | effect |
+|---|---|---|
+| `OFFER_POSTER_GIVE_TOKEN` / `_WANT_TOKEN` | `WBTC` / `WETH` | the pair. The GIVE leg must be a faucet preset **NAME** — the poster mints it and the faucet derives the colour from the name. The WANT leg may be a name or a 64-hex colour, and must be SHIELDED. |
+| `OFFER_POSTER_GIVE_AMOUNT` | `1000000` | base units per minted coin — one whole coin at 6 decimals |
+| `OFFER_POSTER_GIVE_MIN` / `_GIVE_MAX` | unset | a RANGE in whole COINS instead of the fixed amount, drawn LOG-uniformly per fresh mint so the book carries a spread. **Both ends or neither**, and mutually exclusive with `GIVE_AMOUNT` — blank that line first, or the poster exits 78 naming both. `OFFER_POSTER_SIZE_SEED` makes the sequence reproducible. |
+| `OFFER_POSTER_INTERVAL_MS` | `60000` | one tick a minute. An overrunning tick does not queue; the overrun is counted. |
+| `OFFER_POSTER_TTL_MINUTES` | `60` | the WALLET's local deadline for an unconfirmed recipe — **not** how long a posted offer stays takeable. A live offer expires on the kernel's clock: `min(ROOT_WINDOW_SECONDS, OFFER_TTL_SECONDS)`, 1 h here, which no client can shorten. |
+| `POSTER_PROVISION_ENABLED` | `true` | set false to bring the profile up without funding from genesis (an operator who funds out of band) |
+| `POSTER_VERIFY_BUDGET_S` | `420` | how long `./verify.sh` waits for two mints and two live offers |
+| `POSTER_VERIFY_SKIP_TAKE` | `false` | skip verify's real settlement of one poster offer (it costs two provings) |
+
+### The genesis-1 facade mutex
+
+`poster-provision` drives the genesis wallet, and so do `solver-provision` and `maker-offer` in
+the `solver` profile. Two wallet facades on one seed against one Midnight node force each
+other's connection down, and the two fragments cannot `depends_on` each other (compose will not
+render a dependency on a service that is not in the merged set, and `--with poster` alone is
+supported). So all three take a `flock` on `/srv/genesis-lock/lock`, on a named volume both
+fragments declare. If one of them hangs, the others say so:
+
+```
+[poster-provision] waiting for the genesis-1 facade lock (/srv/genesis-lock/lock, up to 1800s)
+```
+
+`GENESIS_LOCK_TIMEOUT_S` bounds the wait; exhausting it is a failure that names the three
+services to check.
+
+### One poster per stack
+
+The service must never be scaled past one replica, for the same reason its seed is dedicated.
+Two posters on one seed would fight over the same coins and force each other's connection down.
+
 ## Bringing the `shielded-night` profile up
 
 ```sh

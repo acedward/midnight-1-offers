@@ -144,6 +144,87 @@ Two things it is careful about, and `./verify.sh` asserts both:
 * **amounts are integer base units everywhere**; a coin-denominated value is shown *beside* them
   and marked as derived, using the kernel registry's `decimals` (6 on the whole-coin line).
 
+## The `poster` profile — the offer poster, so the book supplies itself
+
+### What it is
+
+`deploy/scripts/offer-poster.ts` at the pinned kernel commit, run by this repository's own
+`entrypoint-offer-poster.sh`. It is the kernel repository's own service and this repository's
+own entrypoint — the same relationship the solver, the batcher and the deploy one-shot already
+have — so it carries ONE commit identity with everything else built from that tree
+(`/app/.kernel-commit`).
+
+Every `POST_INTERVAL_MS` (60 s by default) exactly one of two things happens:
+
+* **re-offer** — a coin the journal already owns has come back (its last offer is `expired` or
+  `cancelled` in the kernel **and** its nonce is visible again in the wallet's
+  `availableCoins`), so the tick posts a fresh offer for that exact coin at today's quote;
+* **mint** — no coin is free, so the tick calls the faucet circuit
+  `mint_shielded(domainSep(GIVE_TOKEN), GIVE_AMOUNT, freshNonce)` — paying the mint fee from
+  its **own DUST** — waits for the coin to appear, and offers it.
+
+Either way the offer **spends its coin whole**: there is no change output, so every offer on
+the book is a complete, independent swap rather than a slice of a shared balance. The want leg
+is not a knob by default — it is `suggested_to_amount` from the kernel's `GET /v1/quote` for
+that coin's actual value, which lands the offer exactly on the sponsorship threshold so the
+batcher pays its Celestia fee.
+
+### The two services
+
+| service | shape | what it is for |
+|---|---|---|
+| `poster-provision` | one-shot, `restart: "no"`, idempotent through a marker on the `poster-state` volume | four UTXOs of `5_000_000_000_000` NIGHT from genesis-1 to the poster's dedicated wallet, under the genesis-1 `flock`. **NIGHT and nothing else**: the poster registers it for DUST itself at startup. A few LARGE UTXOs rather than many small ones, because a dust coin's capacity is tied to the size of the NIGHT UTXO backing it. |
+| `offer-poster` | the LOOP, `restart: unless-stopped`, `/health` on `:9977` (published as `${POSTER_HEALTH_HOST_PORT}`) | the poster itself. No marker: a marker on a loop would make a restart a permanent no-op. Idempotence lives in the JOURNAL instead. |
+
+### The exact-coin guarantee
+
+The wallet SDK's default coin selector is smallest-first and cannot be told which coin to
+spend. The poster therefore builds its own facade with a **pinned selector**
+(`deploy/scripts/lib/pinned-wallet.ts`): while a nonce is armed, the selector returns that coin
+for the give colour or **nothing at all** — never a substitute. After `finalizeTransaction` the
+tick asserts the built transaction's input nullifiers equal `[the pinned coin's nullifier]` and
+that the fallible section has no inputs; if they differ the recipe is **reverted** and nothing
+is posted.
+
+`./verify.sh`'s `poster` section checks that from OUTSIDE, by comparing two independent
+records: the journal's own `nullifier` for the coin, and the kernel's
+`computed.inputNullifiers` for the offer built from it. One entry, equal.
+
+### The journal
+
+`/var/lib/offer-poster/journal.json`, on the `poster-state` volume: one entry per coin the
+poster has ever minted — the coin identity (`type`, `nonce`, `value`, `nullifier`), the mint
+transaction, and every offer built from it with its quote snapshot and last known kernel
+status. Written atomically and **before** a mint is submitted, so a poster killed between
+minting and posting finds the orphan on restart and re-offers it rather than leaking a coin.
+
+It is **keyed by the contract address**, and refuses to open against a different one rather
+than merging — those coins do not exist on this chain. That is also why the journal volume is
+in the `./down.sh -v` wipe group with everything else.
+
+### Its wallet, and the genesis-1 mutex
+
+`OFFER_POSTER_SEED` is a DEDICATED roster seed (`…0041`, `wallets/wallets.json`). The poster is
+a long-lived facade like the batcher and the solver, and it is the one facade that **enforces**
+the one-seed rule on itself: `poster-config.ts` exits 78 if its seed matches any of the seven
+seed variables it can see in its own environment. That is why `compose/poster.yml` spells the
+Midnight endpoints out on the `offer-poster` service instead of reusing an anchor — upstream's
+anchor carries `MIDNIGHT_WALLET_SEED`.
+
+`poster-provision` drives **genesis-1**, and so do `solver-provision` and `maker-offer` in
+`compose/solver.yml`. A `depends_on` cannot serialise across fragments (compose will not render
+a dependency on a service outside the merged set, and `--with poster` without `--with solver`
+is supported), so all three take a `flock` on a file on a shared `genesis-lock` volume that
+both fragments declare identically. See `take_genesis_lock()` in
+`images/offerfiles-kernel/entrypoint-common.sh`.
+
+### Why it is not part of `offerfiles` or `solver`
+
+It mints continuously and needs a funded wallet, so it is opt-in — exactly as the kernel
+repository ships it (`docker compose --profile poster up`). It also needs neither the relay nor
+the solver, and putting it in `solver` would have coupled a book-filling service to the private
+relay clone that profile requires.
+
 ## The `shielded-night` profile — the Shielded NIGHT dApp
 
 ### What it is

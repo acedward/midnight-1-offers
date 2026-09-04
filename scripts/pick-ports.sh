@@ -121,6 +121,10 @@ SHIELDED_NIGHT_HOST_PORT=$(( BASE + 10 ))
 # deliberately not published, so no port is emitted for it — see compose/solver.yml.
 SOLVER_FRONTEND_HOST_PORT=$(( BASE + 11 ))
 
+# The offer poster's read-only surface: /health, /metrics and /journal (:9977 in the
+# container). Nothing else in the poster profile publishes a port.
+POSTER_HEALTH_HOST_PORT=$(( BASE + 12 ))
+
 # The status listener's bearer, random per generated stack. Both sides read this ONE value
 # (the solver enforces it; solver-frontend sends it), and the solver REFUSES TO START with
 # fewer than 32 characters whenever its status port is set.

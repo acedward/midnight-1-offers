@@ -145,3 +145,51 @@ adopt_contract_address() {
   export MIDNIGHT_CONTRACT_ADDRESS="${address}"
   log "offer-files contract ${MIDNIGHT_CONTRACT_ADDRESS} (network ${NETWORK_ID})"
 }
+
+# ── the genesis-1 facade mutex (00011 Q7) ────────────────────────────────────
+# THREE one-shots in this stack drive a wallet facade on the SAME seed — genesis-1:
+#
+#   solver-provision   funds the solver's NIGHT from genesis before minting its inventory
+#   maker-offer        posts the seeded book offer FROM the genesis wallet (it is the only
+#                      wallet the deploy one-shot's mint credited)
+#   poster-provision   sends the poster four large NIGHT UTXOs from genesis
+#
+# Two facades on one seed against one node force each other's connection down (the rule at
+# the top of wallets/wallets.json), and the first two live in `compose/solver.yml` while the
+# third lives in `compose/poster.yml`. A `depends_on` cannot serialise across fragments:
+# compose refuses to render a dependency on a service that is not in the merged set, and
+# `--with poster` WITHOUT `--with solver` is a supported combination. So the three take a
+# `flock` instead, on a file on a named volume both fragments declare identically (compose
+# merges duplicate volume declarations).
+#
+# NO SOFT BRANCH, deliberately. `mkdir -p` succeeds whether or not the shared volume is
+# mounted: with the volume the lock is shared between containers, without it the lock is
+# container-local and the call is simply a no-op — which is exactly right for a stack where
+# only one of the three services exists. `flock` itself is util-linux, present in the bun
+# image's Debian base (asserted at build in images/offerfiles-kernel/Dockerfile).
+#
+# The lock is held on FD 9 for the life of the shell, and released by the process exiting —
+# which is the one release path that cannot be skipped by an early `die`.
+GENESIS_LOCK_DIR="${GENESIS_LOCK_DIR:-/srv/genesis-lock}"
+GENESIS_LOCK_FILE="${GENESIS_LOCK_FILE:-${GENESIS_LOCK_DIR}/lock}"
+
+take_genesis_lock() {
+  local timeout="${GENESIS_LOCK_TIMEOUT_S:-1800}"
+  mkdir -p "${GENESIS_LOCK_DIR}" || die "cannot create ${GENESIS_LOCK_DIR}"
+  exec 9>"${GENESIS_LOCK_FILE}" || die "cannot open ${GENESIS_LOCK_FILE}"
+  log "waiting for the genesis-1 facade lock (${GENESIS_LOCK_FILE}, up to ${timeout}s)"
+  if flock -w "${timeout}" 9; then
+    log "genesis-1 facade lock ACQUIRED"
+    return 0
+  fi
+  log "another one-shot has held the genesis-1 facade for ${timeout}s. Its log names it:"
+  log "  docker compose logs solver-provision maker-offer poster-provision"
+  die "timed out waiting for the genesis-1 facade lock"
+}
+
+# Give the lock back EARLY, for the one case where holding it to process exit is wasteful:
+# a service that finishes with genesis and then spends minutes on its own wallet.
+release_genesis_lock() {
+  exec 9>&- 2>/dev/null || true
+  log "genesis-1 facade lock released"
+}

@@ -97,6 +97,15 @@ fi
 
 adopt_contract_address
 
+# ── the genesis-1 facade mutex (00011 Q7) ────────────────────────────────────
+# MAKER_SEED defaults to the GENESIS seed, because the deploy one-shot's mint credited
+# exactly that wallet — it is the only one holding a test token to give away. So this
+# one-shot is the third genesis-1 facade in the stack, beside `solver-provision` (ordered
+# ahead of it by `depends_on` in this fragment) and `poster-provision` (in compose/poster.yml,
+# which `depends_on` cannot reach across). All three take this lock. See take_genesis_lock()
+# in images/offerfiles-kernel/entrypoint-common.sh.
+take_genesis_lock
+
 wait_http "${ZSWAP_API}/v1/health" "kernel API" "${KERNEL_WAIT_TIMEOUT_S:-600}" \
   || die "the kernel API never answered — nowhere to post an offer"
 

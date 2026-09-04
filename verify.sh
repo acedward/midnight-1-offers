@@ -16,6 +16,11 @@
 #               and the solver MONITOR reporting a reachable solver with a published ladder.
 #               It RE-SEEDS the book when no live maker offer is left rather than skipping its
 #               ladder assertions — see the header of scripts/verify-solver.sh.
+#   poster      the offer poster is not merely alive but WORKING: >= 2 mints and >= 2 live
+#               offers inside a budget, each offer spending EXACTLY the one journal coin it
+#               records (kernel inputNullifiers vs the journal's own nullifier), the offer as
+#               posted quoted `sponsored: true`, and one of them actually settled by e2e-taker
+#               with exact balances.
 #
 # Every optional section runs IF AND ONLY IF that profile's containers exist for this compose
 # project, so `./verify.sh` needs no argument to do the right thing after any `./up.sh`.
@@ -32,6 +37,7 @@ KERNEL_MODE=auto
 FRONTEND_MODE=auto
 SHIELDED_NIGHT_MODE=auto
 SOLVER_MODE=auto
+POSTER_MODE=auto
 
 usage() {
   cat <<'EOF'
@@ -50,6 +56,8 @@ Options:
   --no-shielded-night  skip the shielded-night section even if the profile is up
   --solver       require the solver section (fail if the profile is not up)
   --no-solver    skip the solver section even if the profile is up
+  --poster       require the poster section (fail if the profile is not up)
+  --no-poster    skip the poster section even if the profile is up
   -h, --help     this text
 
 Environment:
@@ -59,7 +67,7 @@ EOF
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --core-only)   CORE_ONLY=1; CELESTIA_MODE=off; KERNEL_MODE=off; FRONTEND_MODE=off; SHIELDED_NIGHT_MODE=off; SOLVER_MODE=off; shift ;;
+    --core-only)   CORE_ONLY=1; CELESTIA_MODE=off; KERNEL_MODE=off; FRONTEND_MODE=off; SHIELDED_NIGHT_MODE=off; SOLVER_MODE=off; POSTER_MODE=off; shift ;;
     --celestia)    CELESTIA_MODE=on;  shift ;;
     --no-celestia) CELESTIA_MODE=off; shift ;;
     --kernel)      KERNEL_MODE=on;    shift ;;
@@ -70,6 +78,8 @@ while [[ $# -gt 0 ]]; do
     --no-shielded-night) SHIELDED_NIGHT_MODE=off; shift ;;
     --solver)      SOLVER_MODE=on;    shift ;;
     --no-solver)   SOLVER_MODE=off;   shift ;;
+    --poster)      POSTER_MODE=on;    shift ;;
+    --no-poster)   POSTER_MODE=off;   shift ;;
     -h|--help) usage; exit 0 ;;
     *) err "unknown option: $1"; echo; usage; exit 2 ;;
   esac
@@ -280,6 +290,9 @@ if (( ! CORE_ONLY )); then
   run_section shielded-night shielded-night "$SHIELDED_NIGHT_MODE" \
     scripts/verify-shielded-night.sh "./up.sh --with shielded-night"
   run_section solver   solver   "$SOLVER_MODE"   scripts/verify-solver.sh   "./up.sh --with offerfiles --with solver"
+  # The sentinel is the LOOP, not the provisioning one-shot: the one-shot exits, and a stack
+  # whose poster is gone but whose exited one-shot lingers must not report a passing section.
+  run_section poster   offer-poster "$POSTER_MODE" scripts/verify-poster.sh "./up.sh --with offerfiles --with poster"
 fi
 
 echo

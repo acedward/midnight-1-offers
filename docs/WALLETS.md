@@ -1,9 +1,9 @@
 # Wallets
 
-> **Scope.** This file currently documents the wallets the **`shielded-night`** profile uses,
-> and the browser hand test. The full roster — every seed, its measured genesis funding and its
-> derived addresses — lives in `wallets/wallets.json`, which is the source of truth; the
-> whole-stack narrative lands with 00005 P6.
+> **Scope.** This file documents the wallets the **`shielded-night`** and **`poster`**
+> profiles use, and the browser hand test. The full roster — every seed, its measured genesis
+> funding and its derived addresses — lives in `wallets/wallets.json`, which is the source of
+> truth; the whole-stack narrative lands with 00005 P6.
 
 ## The rule that governs every wallet in this stack
 
@@ -13,7 +13,7 @@ naming the cause: it presents as "the batcher stopped submitting", or "the round
 hours later, and looks like a node fault. Every long-lived facade therefore gets its own seed,
 and `wallets/wallets.json` records who owns which.
 
-## The wallets this profile uses
+## The wallets the `shielded-night` profile uses
 
 | role | wallet | seed | why this one |
 |---|---|---|---|
@@ -56,6 +56,44 @@ wallet and nothing in the fragment, the image or the verify script changes.
 
 > **Behaviour change.** Until project 00007 phase D′ this defaulted to the `lace-test` seed. An
 > operator who never set the variable now drives the round trips on `genesis-2` instead.
+
+## The `poster` profile's wallet (00011 PR C)
+
+| role | wallet | seed | why this one |
+|---|---|---|---|
+| **offer poster** (`OFFER_POSTER_SEED`) | `poster` | `0x…0041` | A LONG-LIVED facade — the poster holds a wallet open for the whole life of the stack, exactly as the batcher and the solver do — so it must have a seed of its own. It is empty at genesis by design: `poster-provision` sends it four large NIGHT UTXOs from genesis-1 and the poster registers them for DUST itself. It then HOLDS shielded coins (one faucet coin per un-offered tick), which is the opposite of the `solver` wallet's rule. |
+| **the funder** (`MIDNIGHT_GENESIS_SEED`) | `genesis-1` | `0x…0001` | The only prefunded wallet this profile touches, and only from the one-shot, which exits. It is also `solver-provision`'s and `maker-offer`'s funder — see the mutex below. |
+| **the taker in `./verify.sh`** (`TAKER_SEED`) | `e2e-taker` | `0x…0032` | Empty at genesis and provisioned by the check itself: NIGHT from genesis-1, then it MINTS the demanded faucet token through the contract, because nothing on this stack holds a faucet preset until something mints one. |
+
+### One facade per seed, and who enforces it
+
+| seed | who holds a facade on it | for how long | enforced by |
+|---|---|---|---|
+| `genesis-1` `…0001` | `offerfiles-deploy`, `solver-provision`, `maker-offer`, `poster-provision`, the verify drivers | one-shots only — each exits | `depends_on` inside a fragment, and a **`flock`** on the shared `genesis-lock` volume ACROSS fragments |
+| `genesis-2` `…0002` | `shielded-night-deploy`, then the verify driver | sequentially; the deploy has exited first | the deploy one-shot's `restart: "no"` |
+| `batcher` `…0003` | the `batcher` container | the life of the stack | this table, and nothing else |
+| `solver` `…0021` | `solver-provision` (then it exits), then the `solver` container | the life of the stack | compose's `service_completed_successfully` |
+| **`poster` `…0041`** | `poster-provision` (then it exits), then `offer-poster` | the life of the stack | compose's `service_completed_successfully` **and** `poster-config.ts`, which exits 78 if the seed collides |
+| `lace-test` | nothing automated — reserved for the operator's browser | — | deliberately unassigned |
+
+**`OFFER_POSTER_SEED` must never equal any other seed in the roster.** It is the only entry
+here that says so with code rather than with a rule: `deploy/scripts/lib/poster-config.ts`
+compares it against `MIDNIGHT_WALLET_SEED`, `MIDNIGHT_GENESIS_SEED`, `BATCHER_WALLET_SEED`,
+`SOLVER_SEED`, `MAKER_SEED`, `MAKER_OFFER_SEED` and `TAKER_SEED` **as they appear in the
+poster's own environment**, and exits 78 (EX_CONFIG) naming the offender. That is also why
+`compose/poster.yml` writes the four Midnight endpoints out on the `offer-poster` service
+instead of reusing an endpoints anchor: upstream's anchor carries `MIDNIGHT_WALLET_SEED`, and
+inheriting a seed variable the poster never uses would only give it something to collide with.
+
+### The genesis-1 mutex
+
+Four one-shots want the genesis facade, in two different compose fragments. A `depends_on`
+cannot cross a fragment boundary — compose refuses to render a dependency on a service outside
+the merged set, and `--with poster` without `--with solver` is supported — so
+`solver-provision`, `maker-offer` and `poster-provision` each take a `flock` on
+`/srv/genesis-lock/lock`, on a named volume both fragments declare identically. The helper is
+`take_genesis_lock()` in `images/offerfiles-kernel/entrypoint-common.sh`; it logs when it waits
+and when it acquires, so a slow bring-up says which one-shot is holding the wallet.
 
 ## The browser hand test (Lace)
 

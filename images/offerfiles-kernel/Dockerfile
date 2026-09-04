@@ -13,6 +13,15 @@
 #                              the kernel's own POST /v1/known-tokens, which the upstream mint
 #                              script tries to do against a pre-/v1 path and silently fails at
 #
+# SINCE 00011 PR C IT IS ONE IMAGE, FIVE CONTAINERS: the `poster` profile adds two more, and
+# they are the kernel repository's own processes rather than anything invented here —
+#
+#   entrypoint-poster-provision.sh  one-shot — four large NIGHT UTXOs from genesis to the
+#                                   poster's dedicated wallet, under the genesis-1 flock
+#   entrypoint-offer-poster.sh      THE LOOP — `deploy/scripts/offer-poster.ts`, which mints
+#                                   one faucet coin a tick and posts one sponsored offer
+#                                   spending exactly that coin
+#
 # WHY NO ORCHESTRATOR. The repository's own `bun run dev` is `bunx orchestrator start`, whose
 # launchMidnight()/launchCelestia() open with `stopProcessAtPort [9944, 8088, 6300, 26657,
 # 26658, 3334]` — pointed at a live stack it FIRST KILLS the listeners it was meant to use.
@@ -189,15 +198,33 @@ COPY entrypoint-common.sh  /usr/local/lib/offerfiles/entrypoint-common.sh
 # preset faucet colours nameable/priceable. It lives OUTSIDE /app on purpose — the kernel tree
 # stays exactly the pinned commit — and imports what it needs by absolute path.
 COPY faucet-probe.ts       /usr/local/lib/offerfiles/faucet-probe.ts
+# The poster's funding script, OUTSIDE /app for the same reason faucet-probe.ts is (00011
+# Q12). Unlike the probe it imports third-party packages by bare specifier, and bun resolves
+# those by walking up from the IMPORTING FILE — so entrypoint-poster-provision.sh installs it
+# into /app/.m1/ at RUNTIME, where /app/node_modules is on the way up. The image's /app tree
+# stays exactly the pinned commit plus its compiled Compact artifacts.
+COPY poster-provision.ts   /usr/local/lib/offerfiles/poster-provision.ts
 COPY entrypoint-deploy.sh entrypoint-kernel.sh entrypoint-batcher.sh \
-     entrypoint-token-names.sh /usr/local/bin/
+     entrypoint-token-names.sh entrypoint-poster-provision.sh \
+     entrypoint-offer-poster.sh /usr/local/bin/
 RUN chmod 0755 /usr/local/bin/wait-for.sh \
                /usr/local/bin/entrypoint-deploy.sh \
                /usr/local/bin/entrypoint-kernel.sh \
                /usr/local/bin/entrypoint-batcher.sh \
                /usr/local/bin/entrypoint-token-names.sh \
+               /usr/local/bin/entrypoint-poster-provision.sh \
+               /usr/local/bin/entrypoint-offer-poster.sh \
  && chmod 0644 /usr/local/lib/offerfiles/entrypoint-common.sh \
-               /usr/local/lib/offerfiles/faucet-probe.ts
+               /usr/local/lib/offerfiles/faucet-probe.ts \
+               /usr/local/lib/offerfiles/poster-provision.ts
+
+# The genesis-1 facade mutex (00011 Q7) is a `flock`, and three one-shots across two compose
+# fragments depend on it existing. util-linux is in this base image today (2.41, measured);
+# asserting it here turns a future base-image change from a SILENT loss of the mutex — two
+# wallet facades on one seed, which presents as an unrelated service going quiet hours later
+# — into a build failure.
+RUN command -v flock >/dev/null \
+ || { echo "FAIL: flock (util-linux) is not in this base image; the genesis-1 facade mutex needs it" >&2; exit 1; }
 
 # :9999 sync-node API, :3334 batcher. Which one a container serves is decided by the
 # entrypoint compose selects, never by this image.
@@ -205,4 +232,4 @@ EXPOSE 9999 3334
 
 # No default command. Every service in compose/offerfiles.yml names its entrypoint
 # explicitly, so a service that forgot to must REFUSE rather than silently become a kernel.
-CMD ["/bin/sh", "-c", "echo 'this image has no default command — select one of /usr/local/bin/entrypoint-{deploy,kernel,batcher,token-names}.sh' >&2; exit 64"]
+CMD ["/bin/sh", "-c", "echo 'this image has no default command — select one of /usr/local/bin/entrypoint-{deploy,kernel,batcher,token-names,poster-provision,offer-poster}.sh' >&2; exit 64"]
