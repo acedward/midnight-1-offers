@@ -1,8 +1,22 @@
 #!/usr/bin/env bash
-# shielded-night-token-name — tell the offer-files kernel what the sNight colour is called.
-# ONE-SHOT, and one of exactly two things in this profile that know the kernel exists.
+# shielded-night-token-name — make the kernel's token registry say that THIS stack's sNight
+# colour is sNight. ONE-SHOT, and one of exactly two things in this profile that know the
+# kernel exists.
 #
 #   docker compose run --rm shielded-night-token-name
+#
+# ── IT PATCHES BEFORE IT POSTS (00015, organizer issues/00012) ───────────────
+# Kernel `main` @ c293ebd SEEDS a SNIGHT row at the PREVIEW contract's colour, and
+# `known_tokens.name` is UNIQUE while POST /v1/known-tokens checks the NAME BEFORE the colour
+# — so on this stack, where the wrapper contract is deployed per bring-up and the colour is
+# different every time, the POST alone can never register the real colour under its own name.
+# This one-shot therefore runs the kernel's own prescribed statement first
+# (sql/snight-registry-patch.sql: `UPDATE known_tokens … WHERE name = 'SNIGHT'`) and only then
+# POSTs, which on a seeded kernel answers the SAME-COLOUR 409 — genuine idempotence.
+#
+# BEFORE 00015 the same problem was answered by exit 75 here and a
+# `DELETE FROM known_tokens WHERE upper(name)='SNIGHT'` in up.sh. Both are gone: this destroys
+# no row, needs nothing from the bring-up script, and the SQL is versioned in the image.
 #
 # ── WHY A COLOUR NEEDS A NAME AT ALL ─────────────────────────────────────────
 # sNight's colour is derived from the CONTRACT ADDRESS (`tokenType(pad(32,
@@ -34,6 +48,14 @@ ROLE=shielded-night-token-name
 
 KERNEL_API_URL="${KERNEL_API_URL:-http://kernel:9999}"
 TOKEN_NAME="${SHIELDED_NIGHT_TOKEN_NAME:-${SHIELDED_NIGHT_SYMBOL:-sNight}}"
+# The versioned patch this one-shot runs, shipped in the image next to this file. Read it: it
+# carries the kernel's own instruction, quoted, and why the POST cannot do this job.
+SNIGHT_PATCH_SQL="${SNIGHT_PATCH_SQL:-/usr/local/lib/shielded-night/sql/snight-registry-patch.sql}"
+# How long to let the kernel finish syncing, and how long to wait for the chain to leave block
+# 1. Both are bounded and both name themselves on timeout — see the block that uses them for
+# why "the kernel's healthcheck went green" is not the same question as either of these.
+KERNEL_SYNC_TIMEOUT_S="${KERNEL_SYNC_TIMEOUT_S:-300}"
+NODE_BLOCK_TIMEOUT_S="${NODE_BLOCK_TIMEOUT_S:-600}"
 # How long to wait for a kernel that IS on this network to become answerable. Short by
 # comparison with the stack's other waits because `up.sh` has already blocked on the kernel's
 # healthcheck before invoking this; the budget is for the case an operator runs it by hand.
@@ -85,8 +107,80 @@ if [ "${resolves}" -ne 1 ]; then
   exit 0
 fi
 
+# ── required only from HERE ──────────────────────────────────────────────────
+#
+# Deliberately after the kernel-presence gate, not at the top of the file. Without a kernel
+# this container's whole job is one log line and exit 0 (`--with shielded-night` alone is a
+# supported stack), and there is nothing to connect to a database ABOUT. Demanding database
+# credentials to reach that conclusion would turn a correct, complete bring-up into an EX_CONFIG
+# failure. With a kernel present, every one of these is needed and a missing one must be named
+# rather than defaulted: PG* are read by `psql` itself (which is why they carry those names and
+# no others), MN_NODE_URL is the chain the height wait asks.
+require_env PGHOST PGPORT PGUSER PGPASSWORD PGDATABASE MN_NODE_URL
+
 wait_http "${KERNEL_API_URL}/v1/health" "kernel" "${KERNEL_WAIT_TIMEOUT_S}" \
   || die "the kernel /v1 API never answered at ${KERNEL_API_URL}"
+
+# ── THREE READINESS GATES, AND WHY THE PATCH NEEDS ALL THREE ────────────────
+#
+# The row this one-shot patches is written by packages/database/migrations/000-init.sql, which
+# the KERNEL applies while it brings its database up. A patch that won that race would simply
+# be overwritten by the seed and the failure would show up much later as a book that labels
+# nothing. So:
+#
+#   1. `/v1/health` answers               — the socket is there (above).
+#   2. `/v1/health/sync` reports `ok`     — the kernel considers itself synced. Note this is
+#      the SAME condition compose/offerfiles.yml's healthcheck already gates on (`j.synced ===
+#      true`, and the kernel derives `synced` from exactly this status), so on the `up.sh` path
+#      it is already true when this container starts and costs one request. It is asserted here
+#      anyway because `docker compose run --rm shielded-night-token-name` by hand has no such
+#      guarantee.
+#   3. the midnight-node is past block 1  — the chain the kernel indexes has actually produced
+#      something. `service_healthy` on a Substrate node means "answers RPC", which happens long
+#      before genesis+1.
+KERNEL_SYNC_STATUS=""
+waited=0
+log "waiting for the kernel to report itself synced at ${KERNEL_API_URL}/v1/health/sync (timeout ${KERNEL_SYNC_TIMEOUT_S}s)"
+while : ; do
+  # shellcheck disable=SC2016
+  KERNEL_SYNC_STATUS="$(KS_URL="${KERNEL_API_URL}/v1/health/sync" bun -e '
+    const res = await fetch(process.env.KS_URL, { signal: AbortSignal.timeout(10000) }).catch(() => null);
+    if (!res || !res.ok) process.exit(1);
+    const json = await res.json().catch(() => null);
+    process.stdout.write(String((json && json.status) || ""));
+  ')" || KERNEL_SYNC_STATUS=""
+  if [ "${KERNEL_SYNC_STATUS}" = "ok" ]; then
+    break
+  fi
+  waited=$(( waited + 2 ))
+  if [ "${waited}" -ge "${KERNEL_SYNC_TIMEOUT_S}" ]; then
+    die "TIMEOUT after ${KERNEL_SYNC_TIMEOUT_S}s: ${KERNEL_API_URL}/v1/health/sync never reported status=ok (last answer: ${KERNEL_SYNC_STATUS:-<none>}). Patching the registry now would race the kernel's own seed."
+  fi
+  sleep 2
+done
+log "kernel reports /v1/health/sync status=ok"
+
+# Block 2, i.e. height > 1. `wait_node_block` asks chain_getBlockHash for that exact height.
+wait_node_block "${MN_NODE_URL}" 2 "${NODE_BLOCK_TIMEOUT_S}" \
+  || die "the midnight-node at ${MN_NODE_URL} never reached block 2 — the seed may not have been applied yet"
+# The measured height, for the record. Reported, never gated on: the gate above is the exact
+# question ("is the chain past block 1"), and a second, racier reading of the tip must not be
+# able to fail a bring-up that has already answered it.
+# shellcheck disable=SC2016
+NODE_HEIGHT="$(MN_NODE_URL="${MN_NODE_URL}" bun -e '
+  const res = await fetch(process.env.MN_NODE_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "chain_getHeader", params: [] }),
+    signal: AbortSignal.timeout(5000),
+  }).catch(() => null);
+  if (!res) process.exit(1);
+  const json = await res.json().catch(() => null);
+  const number = json && json.result && json.result.number;
+  if (typeof number !== "string") process.exit(1);
+  process.stdout.write(String(Number.parseInt(number, 16)));
+')" || NODE_HEIGHT=""
+log "midnight-node is at height ${NODE_HEIGHT:-<unreadable>} (> 1 — the kernel's seed has been applied)"
 
 # ── priced, as NIGHT is (phase G), at NIGHT's REAL decimals (phase H2, Q14) ──
 #
@@ -157,6 +251,77 @@ COLOR="$(printf '%s\n' "${COLOR_OUT}" | sed -n 's/^SNIGHT_RESULT .*color=\([0-9a
 [ -n "${COLOR}" ] || die "the driver printed no usable colour: ${COLOR_OUT}"
 log "sNight colour ${COLOR}"
 
+# registry_json — GET /v1/known-tokens, or an empty string. Never fatal on its own: every
+# caller decides what an unreadable registry means for IT.
+registry_json() {
+  # shellcheck disable=SC2016
+  KT_URL="${KERNEL_API_URL}/v1/known-tokens" bun -e '
+    const res = await fetch(process.env.KT_URL, { signal: AbortSignal.timeout(15000) })
+      .catch(() => ({ text: async () => "" }));
+    process.stdout.write(await res.text());
+  ' 2>/dev/null || printf ''
+}
+
+# registry_dump — the whole registry, one record per line, indented, on stderr. What an
+# operator needs in front of them whenever this one-shot refuses to do something.
+registry_dump() {
+  log "the kernel's token registry, one record per line:"
+  printf '%s' "${1}" | tr '{' '\n' | grep '"token_color"' | sed 's/^/      {/' >&2 || true
+}
+
+# ── PATCH THE SEEDED ROW BEFORE POSTING (00015 / issues/00012) ──────────────
+#
+# See sql/snight-registry-patch.sql for the kernel's own instruction, quoted in full, and for
+# why POST /v1/known-tokens cannot do this on its own (the name is UNIQUE and is checked first).
+REGISTRY_BEFORE="$(registry_json)"
+
+# THE ONE CASE THAT MUST NOT BE PATCHED THROUGH. `known_tokens.token_color` is UNIQUE, so if
+# this stack's real colour is already registered under a DIFFERENT name, the UPDATE would fail
+# on the constraint. Refuse first, with the registry in front of the operator, rather than let
+# psql answer it as a duplicate-key error — and never by deleting anything: unlike the seeded
+# SNIGHT row, a row holding THIS colour is one this stack really did register.
+#
+# `tr '{' '\n'` puts each record on its own line, so the colour and the name must belong to the
+# SAME record. Every extraction ends in `|| true`: an EMPTY registry (a kernel that answers 200
+# with `[]`) must reach the checks below as "no clash", not kill the script under `pipefail`.
+CLASH_ROW="$(printf '%s' "${REGISTRY_BEFORE}" | tr '{' '\n' \
+  | grep -i "\"token_color\":\"${COLOR}\"" | grep -vi '"name":"snight"' | head -1 || true)"
+if [ -n "${CLASH_ROW}" ]; then
+  log "REFUSING to patch the registry: this stack's sNight colour is ALREADY registered under another name."
+  log "  colour ${COLOR}"
+  log "  row    {${CLASH_ROW}"
+  log "Patching SNIGHT to this colour would violate known_tokens' UNIQUE(token_color). Nothing"
+  log "here will delete that row — unlike the kernel's seeded SNIGHT row, a row holding THIS"
+  log "colour is one this stack registered. Decide by hand which name the colour should carry."
+  registry_dump "${REGISTRY_BEFORE}"
+  die "sNight colour ${COLOR} is registered under another name"
+fi
+
+# `-t -A` (tuples only, unaligned) so the row line is one greppable line, and NO `-q`: quiet
+# mode suppresses psql's command status, and `UPDATE 1` / `UPDATE 0` is exactly the thing this
+# step exists to report (measured against psql 17.11 — with -q the tag never appears).
+# PGPASSWORD is read by psql out of the environment and is never named on the command line,
+# never logged, and never in this file's output.
+log "patching the kernel's seeded SNIGHT row: psql -f ${SNIGHT_PATCH_SQL} (host ${PGHOST}:${PGPORT}, db ${PGDATABASE}, user ${PGUSER})"
+PATCH_RC=0
+PATCH_OUT="$(psql -v ON_ERROR_STOP=1 -t -A \
+  -v color="${COLOR}" -v name="${TOKEN_NAME}" -v asset_id="${ASSET_ID}" -v decimals="${DECIMALS}" \
+  -f "${SNIGHT_PATCH_SQL}" 2>&1)" || PATCH_RC=$?
+printf '%s\n' "${PATCH_OUT}" | sed 's/^/      /' >&2 || true
+if [ "${PATCH_RC}" -ne 0 ]; then
+  registry_dump "${REGISTRY_BEFORE}"
+  die "the registry patch failed (psql exit ${PATCH_RC}) — see the psql output above"
+fi
+PATCH_ROWS="$(printf '%s' "${PATCH_OUT}" | sed -n 's/^UPDATE \([0-9][0-9]*\).*$/\1/p' | head -1 || true)"
+case "${PATCH_ROWS}" in
+  1) log "registry patch: UPDATE 1 — the seeded SNIGHT row now carries this stack's colour" ;;
+  0) log "registry patch: UPDATE 0 — nothing to change (already patched, or this kernel seeds no SNIGHT row)" ;;
+  # A statement that touched more than one row would mean `name` stopped being UNIQUE, which
+  # is a schema this profile does not understand. Say so rather than continue.
+  "") die "could not read a row count out of psql's output — refusing to continue: ${PATCH_OUT:0:300}" ;;
+  *)  die "the registry patch touched ${PATCH_ROWS} rows; known_tokens.name is UNIQUE, so at most 1 was expected: ${PATCH_OUT:0:300}" ;;
+esac
+
 # ── register it ──────────────────────────────────────────────────────────────
 #
 # IDEMPOTENT BY THE SERVER'S OWN SEMANTICS, not by a marker file, which is what
@@ -200,40 +365,34 @@ RESULT="$(KT_URL="${KERNEL_API_URL}/v1/known-tokens" KT_COLOR="${COLOR}" KT_NAME
 
 case "${RESULT}" in
   2*)   log "named ${TOKEN_NAME} (shielded) = ${COLOR}, priced as ${ASSET_ID} at ${DECIMALS} decimals" ;;
-  # ── 409 IS NO LONGER TAKEN AT FACE VALUE (00011 PR A) ──────────────────────
+  # ── 409 IS THE NORMAL ANSWER ON A SEEDED KERNEL, AND IT IS STILL READ BACK ─
   #
-  # `known_tokens.name` is UNIQUE and the kernel upper-cases the posted name, so a 409 means
-  # EITHER "this stack already registered this very colour" (a re-run — the case this branch
-  # was written for) OR "something else owns the name SNIGHT". Since kernel PR #61 the second
-  # case happens on a FRESH stack: `packages/database/migrations/000-init.sql` now SEEDS a
-  # SNIGHT row at the PREVIEW contract's colour (793c29c9…), and that colour cannot exist on an
-  # `undeployed` devnet — this stack deploys its own shielded-night contract and derives a
-  # different colour every time. Treating that 409 as success left the stack's REAL sNight
-  # colour unnamed while every check that greps for a row named sNight passed against the
-  # phantom, which is the worst of both worlds.
+  # `known_tokens.name` is UNIQUE and the kernel checks the NAME before the colour, so with the
+  # seeded SNIGHT row present (kernel `main` @ c293ebd) this POST answers 409 EVERY time —
+  # including the very first run, immediately after the patch above has given that row this
+  # stack's colour. That is the genuine-idempotence case and it is what "success" looks like
+  # here; a 201 happens only on a kernel that seeds no SNIGHT row at all.
   #
-  # So: read the registry back and compare colours.
-  #   same colour  -> genuine idempotence, exit 0.
-  #   other colour -> exit 75 (EX_TEMPFAIL), which up.sh answers by clearing the stale row and
-  #                   running this one-shot once more. Run by hand, the message says what to do.
+  # It is still not taken at face value: read the registry back and compare colours.
+  #   same colour  -> success (the patch worked, or a previous run already did it).
+  #   other colour -> HARD FAILURE. Before 00015 this exited 75 and up.sh answered by DELETEing
+  #                   the row; now the UPDATE has already run and succeeded, so a foreign colour
+  #                   under this name means something changed the row between the patch and this
+  #                   POST, or the patch matched no row while some other row holds the name.
+  #                   Neither is something to paper over — dump the registry and fail.
   409*)
-    # shellcheck disable=SC2016
-    OWNER="$(KT_URL="${KERNEL_API_URL}/v1/known-tokens" bun -e '
-      const res = await fetch(process.env.KT_URL, { signal: AbortSignal.timeout(15000) })
-        .catch(() => ({ text: async () => "" }));
-      process.stdout.write(await res.text());
-    ')" || OWNER=""
-    OWNER_ROW="$(printf '%s' "${OWNER}" | tr '{' '\n' | grep -i '"name":"snight"' | head -1)"
-    OWNER_COLOR="$(printf '%s' "${OWNER_ROW}" | sed -n 's/.*"token_color":"\([0-9a-f]\{64\}\)".*/\1/p' | head -1)"
+    OWNER="$(registry_json)"
+    OWNER_ROW="$(printf '%s' "${OWNER}" | tr '{' '\n' | grep -i '"name":"snight"' | head -1 || true)"
+    OWNER_COLOR="$(printf '%s' "${OWNER_ROW}" | sed -n 's/.*"token_color":"\([0-9a-f]\{64\}\)".*/\1/p' | head -1 || true)"
     if [ "${OWNER_COLOR}" = "${COLOR}" ]; then
       log "${TOKEN_NAME} is already registered as ${COLOR} — nothing to do"
     else
-      log "STALE ${TOKEN_NAME} ROW: the registry holds ${OWNER_COLOR:-<unreadable>} under that name, but this stack's"
-      log "sNight colour is ${COLOR}. Kernel PR #61 seeds a SNIGHT row at the PREVIEW contract's colour,"
-      log "which cannot exist on an undeployed devnet. Clear it and re-run this one-shot:"
-      log "  docker compose exec -T postgres psql -U \${OFFERFILES_PG_USER} -d \${OFFERFILES_PG_DB} \\"
-      log "    -c \"DELETE FROM known_tokens WHERE upper(name) = 'SNIGHT';\""
-      exit 75
+      log "the registry holds ${OWNER_COLOR:-<unreadable>} under the name ${TOKEN_NAME}, but this stack's"
+      log "sNight colour is ${COLOR} — and the patch above reported ${PATCH_ROWS} row(s) updated."
+      log "This is not the seeded-preview-colour case any more (that is what ${SNIGHT_PATCH_SQL}"
+      log "fixes, before this POST): something else is holding the name, or the row moved."
+      registry_dump "${OWNER}"
+      die "${TOKEN_NAME} names a colour this stack did not derive"
     fi
     ;;
   # Loud and fatal, exactly as offerfiles-token-names is: a 404 NOT_ENABLED means

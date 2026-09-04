@@ -51,9 +51,9 @@ On a devnet — which is all this repository ever runs — that is the correct a
 the book, the Celestia history and the deployed contracts are projections of the chain `down.sh
 -v` already wipes, so wiping the schema alongside them loses nothing.
 
-### The sNight seed caveat (kernel #61) — handled, but know it is there
+### The sNight seed caveat (kernel #61) — patched on every bring-up, and here is how
 
-`000-init.sql` now seeds a `SNIGHT` row at the colour derived from the **preview** shielded-night
+`000-init.sql` seeds a `SNIGHT` row at the colour derived from the **preview** shielded-night
 contract (`793c29c9…`). That colour cannot exist on an `undeployed` devnet: this stack deploys its
 own wrapper contract and derives a different colour every time. Because `known_tokens.name` is
 UNIQUE and `POST /v1/known-tokens` upper-cases the name (and checks the name **before** the
@@ -61,15 +61,63 @@ colour), the seeded row would otherwise hold the name `SNIGHT` against a phantom
 this stack's real sNight unnamed — silently, because every registration path treats a 409 as
 "already registered".
 
-`up.sh` handles it: `shielded-night-token-name` now reads the registry back on a 409 and exits
-**75** when the name is held by a *different* colour; `up.sh` answers that by running
+**The `shielded-night-token-name` one-shot patches it**, with the statement the kernel's own
+comment beside that seed prescribes:
 
 ```sql
-DELETE FROM known_tokens WHERE upper(name) = 'SNIGHT';
+UPDATE known_tokens SET token_color = :'color', decimals = :decimals, asset_id = :'asset_id'
+ WHERE upper(name) = upper(:'name')
+   AND (token_color <> :'color' OR decimals <> :decimals OR asset_id IS DISTINCT FROM :'asset_id');
 ```
 
-against the stack's own Postgres — exactly the hand patch upstream's own comment beside that seed
-prescribes — and re-running the one-shot once. Nothing is silent about it: both steps log.
+| | |
+|---|---|
+| the file | `images/shielded-night/sql/snight-registry-patch.sql` — versioned, shipped in the image at `/usr/local/lib/shielded-night/sql/snight-registry-patch.sql`, with the kernel's instruction quoted in its header |
+| who runs it | `images/shielded-night/entrypoint-token-name.sh`, with `psql` (the `deploy` image carries `postgresql-client` for exactly this) |
+| when | on every `./up.sh` that has BOTH `offerfiles` and `shielded-night` up — `up.sh` invokes the one-shot, as it always has |
+| after what | the kernel answers `/v1/health`, **and** `/v1/health/sync` reports `status: ok`, **and** the midnight-node is past **block 1**. The seed is applied by the kernel while its database comes up, so a patch that won that race would simply be overwritten |
+| the credentials | `PGHOST/PGPORT/PGUSER/PGPASSWORD/PGDATABASE` on the service, from the same `OFFERFILES_PG_{USER,PASSWORD,DB}` variables the kernel and Postgres already use (defaults `offerfiles`). `psql` reads them itself; the password is never on a command line and never logged |
+| then | the same `POST /v1/known-tokens` as always. On a seeded kernel that answers the **same-colour 409**, which is success; on a kernel that seeds no `SNIGHT` row it registers (201) and the UPDATE was a no-op |
+| idempotence | the second and every later run reports `UPDATE 0`. It is idempotent by the statement's own `WHERE` clause, not by a marker file |
+
+What it logs, in order — this is the sequence to look for when something is wrong:
+
+```
+[shielded-night-token-name] kernel is up
+[shielded-night-token-name] kernel reports /v1/health/sync status=ok
+[shielded-night-token-name] midnight-node has block #2
+[shielded-night-token-name] midnight-node is at height <n> (> 1 — the kernel's seed has been applied)
+[shielded-night-token-name] sNight colour <64 hex>
+[shielded-night-token-name] patching the kernel's seeded SNIGHT row: psql -f /usr/local/lib/…
+      UPDATE 1
+      SNIGHT_REGISTRY_ROW id=2 color=<64 hex> name=SNIGHT kind=shielded decimals=6 asset_id=midnight-3
+[shielded-night-token-name] registry patch: UPDATE 1 — the seeded SNIGHT row now carries this stack's colour
+[shielded-night-token-name] sNight is already registered as <64 hex> — nothing to do
+```
+
+**Running it by hand** — safe at any time on a stack that is up, and the way to recover if the
+bring-up warned about it:
+
+```sh
+docker compose run --rm --no-deps shielded-night-token-name
+# or, through this repository's own wrapper so the fragments and .env are the ones up.sh used:
+./up.sh --with offerfiles --with shielded-night     # re-runs it as part of bring-up
+```
+
+**Two things it will refuse to do**, both by design:
+
+* if this stack's real colour is already registered under **another** name, it prints the whole
+  registry and exits non-zero rather than patch (that would violate `UNIQUE(token_color)`) —
+  decide by hand which name that colour should carry;
+* it never DELETEs a registry row. Before 00015 `up.sh` answered an exit-75 protocol with
+  `DELETE FROM known_tokens WHERE upper(name) = 'SNIGHT'`; that is gone, along with the exit code
+  and the retry. A non-zero exit from the one-shot is now a real failure, and `up.sh` warns with
+  the exit code and the command to re-run.
+
+The upstream half is still open: the kernel would do better not to seed the row at all and let
+`price-map.ts`'s NAME entry price sNight wherever it is registered. Until then, every m1 stack
+patches its own database. An `offerfiles`-only stack (no `shielded-night`) never runs the one-shot
+and therefore keeps the phantom row — see `docs/KNOWN-LIMITATIONS.md`.
 
 ### What `verify.sh` now measures on this line
 

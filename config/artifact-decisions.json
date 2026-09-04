@@ -289,8 +289,11 @@
         "stack deploys its own shielded-night contract and derives a different colour every time. Because",
         "known_tokens.name is UNIQUE and POST /v1/known-tokens upper-cases the name, this repository's own",
         "shielded-night-token-name one-shot would 409 on the seeded row and the stack's REAL sNight colour",
-        "would stay unnamed. up.sh now clears a stale SNIGHT row before running that one-shot, and the",
-        "one-shot itself no longer treats a 409 as unconditional success. Recorded upstream-side in the",
+        "would stay unnamed. Since 00015 that one-shot PATCHES the seeded row with this stack's colour",
+        "before it posts — images/shielded-night/sql/snight-registry-patch.sql, run with psql after the",
+        "kernel is healthy, reports itself synced and the chain is past block 1 — and it no longer treats a",
+        "409 as unconditional success. (Before 00015 the answer was an exit-75 protocol plus a DELETE in",
+        "up.sh; both are gone, and nothing here deletes a registry row.) Recorded upstream-side in the",
         "organizer's issues/00012; upstream's own 000-init.sql comment prescribes exactly this hand patch."
       ]
     },

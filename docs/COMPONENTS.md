@@ -368,16 +368,21 @@ plus the sealed `"Shielded Night"` / `"sNight"` / `6` metadata.
 whose address is persisted and never regenerated: a second deploy would not merely change an
 address, it would turn every sNight coin already minted into a different, unspendable token.
 
-### The three services
+### The four services
 
 | service | image target | what it does |
 |---|---|---|
 | `shielded-night-deploy` | `deploy` (bun) | ONE-SHOT. Deploys the contract once per stack with the `genesis-2` wallet and publishes `contract.json` atomically to the `shielded-night-deploy` volume. `restart: "no"`. Finds an existing `contract.json` → JOINs and exits 0 without deploying. |
 | `shielded-night` | `web` (nginx) | Serves the built SPA on container `:10900` plus the compiled contract artifacts under `/contract/compiled/shielded-night/`. Its entrypoint waits for `contract.json` and writes `/config.js`. |
 | `shielded-night-verify` | `deploy` (bun) | Never started by `up.sh` (`deploy: { replicas: 0 }`). `./verify.sh` invokes it with `docker compose run --rm` for the on-chain-key check and the round trips. |
+| `shielded-night-token-name` | `deploy` (bun + `psql`) | Never started by `up.sh` implicitly (`deploy: { replicas: 0 }`); `up.sh` runs it explicitly when the `offerfiles` profile is up too. Patches the kernel's seeded `SNIGHT` row with this stack's colour, then registers it — see "sNight on the offer book" above. Exits 0 with one line when there is no kernel on the network. |
 
 It depends on `core` and nothing else — `./up.sh --with shielded-night` alone is legal and
-complete. There is no kernel dependency, no Celestia, no Postgres.
+complete. There is no kernel dependency, no Celestia, no Postgres. The one service that DOES
+need a kernel and a database, `shielded-night-token-name`, is also the one service compose never
+starts on its own: it checks for a kernel first and exits 0 in seconds when there is none, which
+is why the profile can carry it without acquiring a dependency. (Its `PG*` variables and the
+`postgresql-client` in the `deploy` image exist for the registry patch alone.)
 
 ### The address-injection lane, and why it is the only one
 
@@ -443,10 +448,28 @@ profile is also up, and both are additive — neither profile depends on the oth
 * **The colour gets a name.** sNight's colour derives from the contract address, so it is
   different on every fresh stack and cannot be written down anywhere. At the end of bring-up
   `up.sh` runs the `shielded-night-token-name` one-shot, which derives it exactly as the page
-  does (`rawTokenType(pad(32,"shielded-night:wrapper"), address)`) and registers it with the
-  kernel's dev registry (`POST /v1/known-tokens`, symbol `sNight`). Without it the zswap-da SPA
-  shows an sNight offer as 64 hex characters. The one-shot is idempotent (the kernel answers
-  409 on a re-run) and exits 0 with one line if there is no kernel on the network.
+  does (`rawTokenType(pad(32,"shielded-night:wrapper"), address)`) and makes the kernel's dev
+  registry say so. Without it the zswap-da SPA shows an sNight offer as 64 hex characters. It
+  exits 0 with one line if there is no kernel on the network, and it does two things in this
+  order:
+
+  1. **patches the kernel's seeded `SNIGHT` row** with this stack's colour — `psql -f
+     /usr/local/lib/shielded-night/sql/snight-registry-patch.sql`, the statement the kernel's
+     own `000-init.sql` comment prescribes. The kernel seeds that row at the **preview**
+     contract's colour, `known_tokens.name` is UNIQUE, and `POST /v1/known-tokens` checks the
+     name *before* the colour — so without the UPDATE the real colour could never be registered
+     under its own name. It waits for `/v1/health`, then `/v1/health/sync` reporting `ok`, then
+     the midnight-node past **block 1**, because the kernel applies that seed while its database
+     comes up. `UPDATE 0` on every later run: the statement is idempotent by its own `WHERE`
+     clause. (00015; the `deploy` image carries `postgresql-client` for this and nothing else.)
+  2. **registers it** (`POST /v1/known-tokens`, symbol `sNight`, `decimals: 6`,
+     `asset_id: midnight-3`). On a seeded kernel this answers the **same-colour 409**, which is
+     success and is what genuine idempotence looks like here; a 201 happens only on a kernel
+     that seeds no `SNIGHT` row.
+
+  Nothing here deletes a registry row. If this stack's colour is already registered under
+  *another* name, the one-shot prints the registry and refuses rather than patch through a
+  `UNIQUE(token_color)` violation.
 * **`./verify.sh` drives the whole chain.** Its `book` subsection — which runs *if and only if*
   the `offerfiles` profile is up — wraps NIGHT into sNight, posts a real MIP-0005 offer file
   giving that sNight against one of the stack's minted demo colours (through the kernel's own

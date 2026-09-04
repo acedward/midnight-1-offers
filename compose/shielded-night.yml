@@ -6,12 +6,14 @@
 # passes `--profile`, so a service carrying one would be declared, rendered, verified — and
 # then silently never started.
 #
-# ─── THREE SERVICES, ONE IMAGE, TWO RUNTIME TARGETS ──────────────────────────
-#   shielded-night-deploy   ONE-SHOT: deploys the ShieldedNight contract ONCE per stack and
-#                           publishes contract.json atomically to its volume
-#   shielded-night          the SPA on :10900 (nginx), which reads that address at container
-#                           start and injects it as window.SHIELDED_NIGHT
-#   shielded-night-verify   NEVER STARTED BY up.sh: the bun-side assertions of ./verify.sh
+# ─── FOUR SERVICES, ONE IMAGE, TWO RUNTIME TARGETS ───────────────────────────
+#   shielded-night-deploy       ONE-SHOT: deploys the ShieldedNight contract ONCE per stack and
+#                               publishes contract.json atomically to its volume
+#   shielded-night              the SPA on :10900 (nginx), which reads that address at container
+#                               start and injects it as window.SHIELDED_NIGHT
+#   shielded-night-verify       NEVER STARTED BY up.sh: the bun-side assertions of ./verify.sh
+#   shielded-night-token-name   NEVER STARTED BY up.sh implicitly: the registry one-shot, run
+#                               explicitly when the `offerfiles` profile is up too (see below)
 #
 # ─── IT DEPENDS ONLY ON `core` ───────────────────────────────────────────────
 # node, indexer and proof-server — nothing else. `./up.sh --with shielded-night` on its own is
@@ -182,9 +184,32 @@ services:
       SHIELDED_NIGHT_DRIVER_SEED: '${SHIELDED_NIGHT_DRIVER_SEED:-0000000000000000000000000000000000000000000000000000000000000002}'
 
   # ── shielded-night-token-name ──────────────────────────────────────────────
-  # NEVER STARTED BY `up.sh` EITHER, and for a sharper reason than the verify service: it is
-  # the ONE service in this profile that knows the offer-files kernel exists, and this profile
-  # must depend only on `core` (spec FR-002/FR-015).
+  # THE REGISTRY ONE-SHOT. It makes the kernel's token registry say that THIS stack's sNight
+  # colour is sNight, in two steps and in this order (00015; organizer issues/00012):
+  #
+  #   1. PATCH  `UPDATE known_tokens … WHERE name = 'SNIGHT'` — the statement the kernel's own
+  #             packages/database/migrations/000-init.sql prescribes, versioned as
+  #             images/shielded-night/sql/snight-registry-patch.sql and run with `psql`, which
+  #             this image now carries. The kernel SEEDS a SNIGHT row at the PREVIEW contract's
+  #             colour; `known_tokens.name` is UNIQUE and POST /v1/known-tokens checks the NAME
+  #             before the colour, so without this the real colour can never be registered
+  #             under its own name. `UPDATE 0` on a re-run — the statement is idempotent by its
+  #             own WHERE clause.
+  #   2. POST   /v1/known-tokens as before. On a seeded kernel that answers the SAME-COLOUR
+  #             409; on a kernel that seeds no SNIGHT row it registers (201) and step 1 was a
+  #             no-op. Both are success.
+  #
+  # WHY IT WAITS FOR THE CHAIN. The seed is applied by the kernel while its database comes up,
+  # so the entrypoint gates on all three of: `/v1/health` answering, `/v1/health/sync` reporting
+  # `ok`, and the midnight-node being past block 1 — a patch that won that race would be
+  # overwritten by the seed and the failure would surface much later as an unlabelled book.
+  #
+  # It replaced an exit-75 protocol here plus a `DELETE FROM known_tokens` in `up.sh`. Both are
+  # gone: nothing deletes a registry row any more.
+  #
+  # It is NEVER STARTED BY `up.sh` implicitly, and for a sharper reason than the verify service:
+  # it is the ONE service in this profile that knows the offer-files kernel exists, and this
+  # profile must depend only on `core` (spec FR-002/FR-015).
   #
   # It cannot express "depend on the kernel if there is one": compose REJECTS a `depends_on`
   # naming a service no selected fragment defines — even with `required: false` — and with
@@ -216,6 +241,29 @@ services:
       # The label the book shows. Defaults to the wrapper's own sealed symbol so the two cannot
       # drift; the kernel stores it upper-cased (SNIGHT), which is its normalisation, not ours.
       SHIELDED_NIGHT_TOKEN_NAME: '${SHIELDED_NIGHT_SYMBOL:-sNight}'
+      # ── the kernel's database, for step 1 (the UPDATE) ──────────────────────
+      # THE SAME THREE VARIABLES, WITH THE SAME DEFAULTS, that compose/core.yml creates the
+      # role and database with and that compose/offerfiles.yml hands the kernel as
+      # DB_USER/DB_PW/DB_NAME. One source of truth for the credentials; a stack that overrides
+      # them in .env keeps working with no second knob to remember.
+      #
+      # SPELLED AS PG* BECAUSE `psql` READS THESE NAMES ITSELF. Nothing in the entrypoint puts
+      # a password on a command line, in a URL or in a log — libpq takes PGPASSWORD out of the
+      # environment. `require_env` (after the kernel-presence gate) makes a missing one an
+      # EX_CONFIG failure that names itself.
+      #
+      # `postgres` and 5432 are the SERVICE and its container port, never a host port: this
+      # container is on the compose network. When the `offerfiles` profile is not up there is
+      # no postgres here at all — and no kernel either, which is what the entrypoint checks
+      # first, exiting 0 before it ever needs a database.
+      PGHOST: 'postgres'
+      PGPORT: '5432'
+      PGUSER: '${OFFERFILES_PG_USER:-offerfiles}'
+      PGPASSWORD: '${OFFERFILES_PG_PASSWORD:-offerfiles}'
+      PGDATABASE: '${OFFERFILES_PG_DB:-offerfiles}'
+      # MN_NODE_URL — the chain the height wait asks — comes from *shielded_night_env above
+      # (http://node:9944), the same URL the deploy one-shot and the verify driver use. No
+      # second name for the same endpoint.
 
 volumes:
   # Declared here rather than created ad hoc: only a compose-created volume carries the

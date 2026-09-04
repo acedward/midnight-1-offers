@@ -282,8 +282,39 @@ fi
 # no dependency on a kernel — spec FR-002/FR-015). Reported, not hard-failed, when
 # shielded-night is not part of this bring-up: this script's job is the offerfiles profile,
 # and a stack legitimately brought up as `--with offerfiles` alone has nothing to check here.
+#
+# ── AND SINCE 00015, WHOSE COLOUR IT CARRIES ────────────────────────────────
+# The kernel SEEDS a SNIGHT row at the PREVIEW contract's colour (000-init.sql, kernel PR #61),
+# which cannot exist on an `undeployed` devnet. The registry one-shot now patches that row with
+# this stack's own colour before registering it (images/shielded-night/sql/snight-registry-patch.sql
+# — the statement the kernel's own comment prescribes; organizer issues/00012). Two assertions
+# keep that honest from THIS side, where the whole registry is in hand:
+#   * exactly ONE row is named SNIGHT — a second one would mean the name stopped being UNIQUE,
+#     and every `grep -i snight` in this repository would then be reading whichever came first;
+#   * the preview colour appears NOWHERE in the registry — a stack that still carries it is a
+#     stack whose patch did not run, and the sNight assertions below would pass VACUOUSLY
+#     against the phantom row exactly as they did before 00011 PR A.
+# The colour is compared against the one DERIVED from this stack's contract in
+# verify-shielded-night.sh, which is the only place that can derive it.
 SNIGHT_COLOR_FOR_QUOTE=""
+PREVIEW_SNIGHT_COLOR="793c29c94f72972bfbd861e8e84e55480ccc8e57a7b74067f35a5672c816f99c"
 if service_present shielded-night; then
+  # `|| true`: `grep -c` exits 1 when it counts zero, which is a legitimate answer here (it is
+  # the failure this block reports) and must not kill the script under `pipefail`.
+  SNIGHT_ROW_COUNT="$(printf '%s' "$KNOWN" | tr '{' '\n' | grep -ci '"name":"snight"' || true)"
+  if [[ "${SNIGHT_ROW_COUNT:-0}" == "1" ]]; then
+    ok "exactly one registry row is named SNIGHT"
+  else
+    fail "the registry holds ${SNIGHT_ROW_COUNT:-0} rows named SNIGHT, expected exactly 1 — known_tokens.name is UNIQUE, so this stack's registry is not what this repository understands"
+  fi
+  if printf '%s' "$KNOWN" | grep -q "$PREVIEW_SNIGHT_COLOR"; then
+    fail "the kernel's seeded PREVIEW sNight colour ${PREVIEW_SNIGHT_COLOR:0:16}… is still in the registry —
+          the shielded-night-token-name one-shot did not patch it (issues/00012). That colour cannot exist on
+          an undeployed devnet, so every sNight assertion below would pass against a phantom row.
+          Re-run it: docker compose run --rm --no-deps shielded-night-token-name"
+  else
+    ok "the seeded PREVIEW sNight colour ${PREVIEW_SNIGHT_COLOR:0:16}… is absent from the registry"
+  fi
   if [[ -n "$KNOWN" ]] && printf '%s' "$KNOWN" | grep -qi '"name":"snight"'; then
     SNIGHT_ROW="$(printf '%s' "$KNOWN" | tr '{' '\n' | grep -i '"name":"snight"' | head -1)"
     SNIGHT_ROW_DECIMALS="$(printf '%s' "$SNIGHT_ROW" | sed -n 's/.*"decimals":\([0-9][0-9]*\).*/\1/p' | head -1)"

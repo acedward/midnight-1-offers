@@ -9,8 +9,12 @@
 #                     that the browser's prover fetches. Its entrypoint writes /config.js
 #                     with THIS stack's contract address at container start.
 #   --target deploy   the bun runtime carrying the pinned tree and its root node_modules, for
-#                     the deploy one-shot (entrypoint-deploy.sh) and the verify driver
-#                     (entrypoint-verify.sh). No SPA, no frontend node_modules.
+#                     the deploy one-shot (entrypoint-deploy.sh), the verify driver
+#                     (entrypoint-verify.sh) and the registry one-shot
+#                     (entrypoint-token-name.sh). No SPA, no frontend node_modules. It also
+#                     carries `psql` and sql/snight-registry-patch.sql, because the registry
+#                     one-shot patches the kernel's seeded SNIGHT row with the colour it
+#                     derives here (00015 / organizer issues/00012).
 #
 # SOURCE IS FETCHED DIRECTLY from effectstream/shielded-night at an immutable full commit. No
 # dApp source and no generated `managed/` output is committed to this repository, so a cold
@@ -315,6 +319,24 @@ RUN set -eux; \
 # frontend node_modules: this target never serves a page.
 FROM ${BUN_BASE} AS deploy
 
+# ── psql, and the ONE thing in this image that needs it ──────────────────────
+# `entrypoint-token-name.sh` patches the kernel's seeded SNIGHT row with THIS stack's colour
+# (sql/snight-registry-patch.sql — the statement the kernel's own 000-init.sql prescribes;
+# organizer issues/00012). The colour is derived HERE, by driver/snight-driver.ts against the
+# contract this stack deployed, so the process that knows the colour is the one that applies
+# it: one one-shot, one image, no file contract with a second container (00015 question Q1 ->
+# A). The base is Debian trixie, so this is one apt package (~10 MB installed) and the client
+# is 17.x — the same major as the stack's `postgres:17-alpine` server.
+#
+# ASSERTED, not assumed: a base-image change that dropped the package would otherwise surface
+# as a one-shot failing at bring-up with "psql: not found".
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends postgresql-client; \
+    rm -rf /var/lib/apt/lists/*; \
+    command -v psql; \
+    psql --version
+
 WORKDIR /app
 COPY --from=build /src/package.json /src/bun.lock /src/tsconfig.json \
                   /src/vitest.unit.config.ts /src/vitest.integration.config.ts /app/
@@ -332,11 +354,17 @@ COPY --from=source /.shielded-night-commit /.shielded-night-commit
 # resolve too. Nothing here is a transcription of that tree — see driver/snight-driver.ts.
 COPY driver /app/driver
 COPY entrypoint-common.sh /usr/local/lib/shielded-night/entrypoint-common.sh
+# VERSIONED SQL, shipped in the image beside the entrypoint that runs it — not inlined into a
+# shell string and not mounted from the host. `psql -f` is then given a path an operator can
+# `cat`, diff against the kernel's own comment, and run by hand against a live stack.
+COPY sql /usr/local/lib/shielded-night/sql
 COPY entrypoint-deploy.sh entrypoint-verify.sh entrypoint-token-name.sh /usr/local/bin/
 RUN set -eux; \
     chmod 0755 /usr/local/bin/entrypoint-deploy.sh /usr/local/bin/entrypoint-verify.sh \
                /usr/local/bin/entrypoint-token-name.sh; \
     chmod 0644 /usr/local/lib/shielded-night/entrypoint-common.sh; \
+    chmod 0644 /usr/local/lib/shielded-night/sql/snight-registry-patch.sql; \
+    test -s /usr/local/lib/shielded-night/sql/snight-registry-patch.sql; \
     # The driver imports the pinned tree's test/support primitives by relative path. If a
     # re-pin ever moved or removed one, the failure would be a module-not-found deep inside a
     # `docker compose run` during ./verify.sh; assert it at BUILD time instead.
