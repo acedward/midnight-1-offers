@@ -1,9 +1,96 @@
 # Operations
 
-> **Scope.** This file currently documents the **`shielded-night`** profile only, plus the one
-> `offerfiles`-profile note below that this phase's kernel re-pin makes unavoidable for anyone
-> running the book chain. The rest of the `offerfiles` profile's operating notes land with
-> 00005 P6.
+> **Scope.** This file documents the **`shielded-night`** profile, plus the `offerfiles`-profile
+> notes that each kernel re-pin makes unavoidable for anyone running an existing stack forward.
+> The rest of the `offerfiles` profile's operating notes are still to be written.
+
+## Re-pin to kernel `main` @ `c293ebd` (00011 PR A) — **BREAKING for an EXISTING stack**
+
+This is the newest re-pin and the one to read first.
+
+`KERNEL_REF` is now `c293ebd57937c0065663b08b2c244438be8989a5` and `FRONTEND_REF` is
+`58ab921be5513b77937a37be86bf724a41888302`. **They move together**, because the change is one
+change split across two repositories.
+
+### What moved
+
+| Upstream | What it brings |
+|---|---|
+| kernel [#61](https://github.com/effectstream/zswap-offerfiles-kernel/pull/61) | sNight is SEEDED as a default known token — at the **preview** contract's colour. See the caveat below. |
+| kernel [#63](https://github.com/effectstream/zswap-offerfiles-kernel/pull/63) | **The whole-coin line.** `known_tokens.decimals` DEFAULTS to **6** instead of 0; the seeded NIGHT/SNIGHT/USDC/USDM rows are all 6; every faucet mints **whole coins** scaled by 10^6. One faucet press is 1 000 coins = `1000000000` base units. Prices are served PER BASE UNIT, so `WBTC` reads `0.077387` (= 77387/10^6) and `WETH` `0.00239328` (= 2393.28/10^6). |
+| kernel [#66](https://github.com/effectstream/zswap-offerfiles-kernel/pull/66) | the offer-poster's give-size range. Nothing in this repository runs the poster yet. |
+| effectstream [#918](https://github.com/effectstream/effectstream/pull/918) | the **UI half** of #63: the SPA reads each token's `decimals` off `GET /v1/known-tokens`, scales every amount it displays and submits by `10^decimals`, sends an explicit `decimals` when registering a minted colour, and mints **1 000 whole coins**. |
+
+(kernel #62 put ledger-v9 on `main` by mistake and #64 reverted it — net zero. #65 re-opens it
+and is still OPEN; this repository stays on the v8 line and both images assert it at build.)
+
+### Why it is BREAKING, and what breaks
+
+`packages/database/migrations/000-init.sql` is **one file, applied fresh, exactly once**, against
+an empty database. There is no migration runner and nothing here adds one. So a `postgres` volume
+created under an older `KERNEL_REF`:
+
+* keeps `known_tokens.decimals DEFAULT 0` forever — every colour registered afterwards without an
+  explicit `decimals` lands at **0**, and prices for it are wrong by a factor of 10^6;
+* keeps the old seed rows, and never gains the new ones.
+
+Unlike the phase-G re-pin, **nothing fails loudly on its own**: the schema SHAPE did not change,
+so the kernel starts, the healthcheck goes green, and the stack merely lies about every price.
+
+`./verify.sh`'s `kernel` section is what catches it. Its `token decimals` block sweeps every row
+of `GET /v1/known-tokens` and fails naming the offenders; a row at `0` is reported as
+**STALE POSTGRES VOLUME** with this command as the fix:
+
+```sh
+./down.sh -v          # wipes the chain, Celestia and the DB schema together
+./up.sh --all         # fresh contracts, fresh schema, fresh seed rows
+```
+
+On a devnet — which is all this repository ever runs — that is the correct and only upgrade path:
+the book, the Celestia history and the deployed contracts are projections of the chain `down.sh
+-v` already wipes, so wiping the schema alongside them loses nothing.
+
+### The sNight seed caveat (kernel #61) — handled, but know it is there
+
+`000-init.sql` now seeds a `SNIGHT` row at the colour derived from the **preview** shielded-night
+contract (`793c29c9…`). That colour cannot exist on an `undeployed` devnet: this stack deploys its
+own wrapper contract and derives a different colour every time. Because `known_tokens.name` is
+UNIQUE and `POST /v1/known-tokens` upper-cases the name (and checks the name **before** the
+colour), the seeded row would otherwise hold the name `SNIGHT` against a phantom colour and leave
+this stack's real sNight unnamed — silently, because every registration path treats a 409 as
+"already registered".
+
+`up.sh` handles it: `shielded-night-token-name` now reads the registry back on a 409 and exits
+**75** when the name is held by a *different* colour; `up.sh` answers that by running
+
+```sql
+DELETE FROM known_tokens WHERE upper(name) = 'SNIGHT';
+```
+
+against the stack's own Postgres — exactly the hand patch upstream's own comment beside that seed
+prescribes — and re-running the one-shot once. Nothing is silent about it: both steps log.
+
+### What `verify.sh` now measures on this line
+
+* every row of `GET /v1/known-tokens` at exactly **6** decimals (and the stale-volume detector);
+* the faucet **allotment**, read out of the running kernel image's own pinned tree: 1 000 whole
+  coins = `1000000000` base units at 6 decimals;
+* the two priced faucet presets registered at 6 decimals and priced per base unit as exact
+  decimal strings — `WBTC` `0.077387`, `WETH` `0.00239328`;
+* NIGHT still at 6 decimals with its per-base-unit price equal to its coin price / 10^6.
+
+### The browser half — two thirds MEASURED, one third an owner hand test
+
+Automated gates cannot press the SPA's faucet button, so this is recorded here. Open
+`http://127.0.0.1:${FRONTEND_HOST_PORT:-10600}` and connect the in-page **JS Wallet** (the
+`Connect wallet` dialog's third entry — it runs entirely in the browser and needs no extension;
+Lace needs the default port block, see `docs/KNOWN-LIMITATIONS.md`, the JS wallet does not).
+
+| # | What the browser must show | Status |
+|---|---|---|
+| 1 | the faucet reads **`1,000` coins** (not `1,000 units`, not `1,000,000,000`) | **MEASURED 2026-09-03** on the 00011 PR A gate — the Faucet screen reads `1,000 coins` |
+| 2 | after minting, the wallet balance reads **`1,000`** of that token | **MEASURED 2026-09-03** — `Minted 1,000 WBTC`, colour `480b6163c0db…a9a2fb26`, and the wallet menu's shielded balance reads `WBTC 480b61…fb26  1,000`. That colour is exactly the one `verify-kernel.sh`'s faucet section derives and registers, so the SPA faucet and the headless probe land on the same colour by construction |
+| 3 | creating and taking an offer moves the balance by **exactly the coin amount displayed** — the 00005 P3 `1000 → 999` measurement, re-done at 6 decimals | **OWNER HAND TEST** — it needs a second wallet to take the offer, so it is not something a single automated session can close. `./verify.sh`'s shielded-night `book` section proves the equivalent property on chain, with exact balances, for the sNight pair |
 
 ## Upgrading past the kernel re-pin to `main` (phase G) — BREAKING for an EXISTING stack
 

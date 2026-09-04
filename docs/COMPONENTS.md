@@ -1,9 +1,47 @@
 # Components
 
-> **Scope.** This file currently documents the **`shielded-night`** profile only. The
-> component notes for `core`, `offerfiles`, `frontend` and `solver` land with 00005 P6; this
-> is the first section of that document, not a whole-stack reference. `README.md` remains the
-> map of the stack.
+> **Scope.** This file documents the source pins that decide which LINE the stack runs, and the
+> **`shielded-night`** profile. The component notes for `core`, `offerfiles`, `frontend` and
+> `solver` are still to be written; `README.md` remains the map of the stack.
+
+## Source pins, and the line they put this stack on
+
+Every external identity lives in `config/artifact-decisions.json`; these are the two that decide
+what the stack *means* rather than merely which bytes it runs.
+
+| Pin | Value | Line |
+|---|---|---|
+| `KERNEL_REF` | `c293ebd57937c0065663b08b2c244438be8989a5` — `effectstream/zswap-offerfiles-kernel` `main` | ledger-v8 / 1.x, **the whole-coin line** (kernel #61/#63/#66) |
+| `FRONTEND_REF` | `58ab921be5513b77937a37be86bf724a41888302` — `effectstream/effectstream` `midnight-1`, subtree `templates/zswap-da` @ `3ca1d56ffc29f03c73cf43432bdfeeaf3ab43c6b` | the same line's UI (effectstream#918) |
+| `SHIELDED_NIGHT_REF` | `f7fcefa7921bf2c3f634871f9ad3aa3a32251af0` — `effectstream/shielded-night` `main` | unchanged |
+
+### The whole-coin line (kernel #63 + effectstream#918)
+
+These two are **one change across two repositories** and must always move together. Before them,
+`known_tokens.decimals` defaulted to `0` and a faucet press minted 1 000 *base units*, which the
+registry called 1 000 coins. Since them:
+
+* `known_tokens.decimals` **DEFAULTS to 6**, and every seeded row (NIGHT, SNIGHT, USDC, USDM) is
+  6. Every registration path in and around this repository sends `decimals: 6` **explicitly**
+  anyway — `images/offerfiles-kernel/entrypoint-token-names.sh` for DEVA/DEVB/DEVU,
+  `images/shielded-night/entrypoint-token-name.sh` for sNight, the SPA for anything minted from
+  the faucet — because a kernel pinned before #63 would otherwise silently record `0`.
+* one faucet press is **1 000 whole coins = `1000000000` base units**. The number is defined once,
+  upstream, in `docs/src/wallet/mintable.ts` (`MINT_COINS` / `MINT_AMOUNT`), which the SPA faucet,
+  `deploy/scripts/lib/faucet-mint.ts` and the offer poster all import.
+* prices are served **per base unit**: `asset_prices.price_usd / 10^decimals`. With the seeded
+  coin prices at this pin, `WBTC` is `77387 / 10^6 = 0.077387` and `WETH`
+  `2393.28 / 10^6 = 0.00239328`, exactly.
+* the SPA reads each token's `decimals` off `GET /v1/known-tokens` and scales everything it shows
+  and submits by `10^decimals`, so the faucet says `1,000` and a take moves a balance by exactly
+  the coins displayed.
+
+`./verify.sh`'s `kernel` section asserts all of this — see the `token decimals` and `faucet`
+blocks in `scripts/verify-kernel.sh`, and `images/offerfiles-kernel/faucet-probe.ts`, which reads
+the allotment out of the RUNNING image's own tree rather than re-declaring it here.
+
+**Moving an EXISTING stack onto this line is BREAKING for its `postgres` volume**, silently — see
+`docs/OPERATIONS.md`. `./down.sh -v` is the upgrade path.
 
 ## The `shielded-night` profile — the Shielded NIGHT dApp
 
