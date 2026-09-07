@@ -262,7 +262,7 @@ load_env() {
   # is its UI half. BREAKING for an existing `postgres` volume — `./down.sh -v`. See
   # .env.example and docs/OPERATIONS.md.
   : "${KERNEL_REPO:=https://github.com/effectstream/zswap-offerfiles-kernel.git}"
-  : "${KERNEL_REF:=c293ebd57937c0065663b08b2c244438be8989a5}"
+  : "${KERNEL_REF:=a608fa67419c16188e9405417ecdf34f3f7c47a1}"
   : "${FRONTEND_REPO:=https://github.com/effectstream/effectstream.git}"
   : "${FRONTEND_REF:=58ab921be5513b77937a37be86bf724a41888302}"
   # The Shielded NIGHT dApp. A first-party public repository already on this stack's 1.x line
