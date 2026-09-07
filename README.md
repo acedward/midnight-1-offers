@@ -1,46 +1,70 @@
 # midnight-1-offers
 
-A one-command **Midnight 1.x** demo stack: a local devnet (midnight-node 1.0.0, indexer
-4.3.3, proof server 8.1.0), a Celestia DA devnet, the **offer-files kernel** and its batcher,
-the **zswap-da** trading SPA, the **Shielded NIGHT** dApp (NIGHT ⇄ sNight), and the
-**Midnight Intents relay + COW solver** settling real intents against the offer book.
+A one-command **Midnight 1.x** demo stack. `./up.sh` brings up, on your machine, a local
+Midnight devnet (node, indexer, proof server), a Celestia DA devnet, the **offer-files
+kernel** and its batcher — an on-chain order book of ZSwap offers — the **zswap-da** trading
+SPA, the **Shielded NIGHT** dApp (NIGHT ⇄ sNight), and the **Midnight Intents relay + COW
+solver** settling real intents against that book. Everything is Docker Compose; every
+external artifact is pinned by digest or full commit SHA; every published port is
+loopback-bound and parameterizable.
 
 It is the 1.x sibling of [`midnight-2-offers`](https://github.com/acedward/midnight-2-offers)
-and follows the same operating model — compose profile fragments, `./up.sh --with <profile>`,
-`./down.sh -v`, `./verify.sh`, every external artifact pinned by digest or full commit SHA,
-every published port loopback-bound and parameterizable.
+— same layout, same scripts, same profiles where the two overlap; the differences are
+[at the end](#how-this-differs-from-midnight-2-offers).
 
-Two deltas beyond the version line:
+**Everything here is dev-only.** Every seed in this repo is public and controls value only on
+a throwaway local `undeployed` chain. Never reuse any of them anywhere else.
 
-- **dropped**: the AA profile (aa-contracts, AA console, experimental proof server) and the
-  EVM profile — neither exists here.
-- **added**: the real Midnight Intents relay and its browser UI, with the COW solver in
-  **execution mode** settling relay intents against the kernel book. `midnight-2-offers`
-  deliberately stopped at an observation-only sink; this repository runs the whole lane.
-- **added**: the `poster` profile — the kernel's own **offer poster**, a funded, dedicated
-  wallet that mints one faucet coin a minute and posts one sponsored, individually takeable
-  ZSwap offer spending exactly that coin. The book supplies itself, so the SPA has something
-  real to trade against without a human.
-- **added**: the `prices` profile — the kernel's own **price feed**, one CoinGecko
-  `simple/price` call a day into `asset_prices`, so the USD reference behind `GET /v1/prices`,
-  `GET /v1/quote` and the sponsorship gate is live rather than the schema's 2026-09-02 seeds.
-  It needs a free CoinGecko demo key in `.env` — the only secret in this stack — and without
-  one it comes up and idles, because the seeded prices already quote real ratios.
-- **added**: the `shielded-night` profile — [`effectstream/shielded-night`](https://github.com/effectstream/shielded-night),
-  a Compact contract plus a page that wraps native unshielded NIGHT into a shielded token
-  (**sNight**) 1:1 and back. It depends only on `core`, deploys its contract once per stack,
-  and is verified by upstream's own integration round trips run against this stack. Bring it up
-  **with `offerfiles`** and native NIGHT becomes tradable on the offer-files book: `./verify.sh`
-  wraps it, posts a real MIP-0005 offer file carrying sNight, has a second wallet settle that
-  offer, and has that wallet unwrap what it bought — with exact balances at every step.
+## Quickstart
 
-> **STATUS — shipped.** All seven profiles run real services: `./up.sh --all` brings up the
-> whole stack from a clean host and `./verify.sh` gates it end to end. The stack tracks the
-> offer-files kernel's own `main` — currently `c293ebd`, **the whole-coin line** (every token is
-> 6 decimals and one faucet press mints 1 000 whole coins = 1 000 000 000 base units), with the
-> `zswap-da` SPA on its matching `midnight-1` head `58ab921`. **Re-pinning an EXISTING stack
-> forward onto this line is BREAKING for its `postgres` volume — `./down.sh -v` first; see
-> [`docs/OPERATIONS.md`](docs/OPERATIONS.md).**
+```sh
+cp .env.example .env                       # ports, seeds and pins; defaults are the Midnight-standard ports
+./up.sh --with offerfiles --with frontend --with shielded-night --with poster
+./verify.sh                                # assert the stack is usable, not merely running
+```
+
+That is every profile that builds from public sources. The `solver` profile (the intents
+relay, its UI and the COW solver) builds from a **private** clone you provide — set
+`RELAY_SOURCE_DIR` first ([how](#the-solver-profile-needs-private-repository-access)),
+then `./up.sh --all` is the whole stack. `up.sh` blocks until each service is genuinely
+usable, not merely started.
+
+**Options** — each `--with` adds one profile, a profile is one fragment in `compose/`:
+
+```sh
+./up.sh                                    # core alone
+./up.sh --with offerfiles                  # …and Celestia + kernel + batcher
+./up.sh --with offerfiles --with frontend  # …and the SPA
+./up.sh --with shielded-night              # the Shielded NIGHT dApp (core is all it needs)
+./up.sh --with offerfiles --with shielded-night   # …and sNight is tradable on the offer book
+./up.sh --with offerfiles --with prices    # …and live CoinGecko reference prices (needs a key)
+./up.sh --all                              # every profile
+./verify.sh                                # assert the stack is usable, not merely running
+./down.sh -v                               # stop and wipe every volume of this project
+```
+
+`--with` is additive: it never stops a profile that is already up. `--converge` is the
+opposite and names everything it is about to stop before it does it.
+
+## What to expect
+
+When `up.sh` returns, these are live (default ports; every one is overridable in `.env`):
+
+| Open | With | What you get |
+|---|---|---|
+| **http://127.0.0.1:10600** | `frontend` | the zswap-da SPA: the offer book, the faucet, post and take offers in whole coins |
+| **http://127.0.0.1:10900** | `shielded-night` | wrap NIGHT into sNight and back; with `offerfiles` up, sNight trades on the book |
+| **http://127.0.0.1:10700** | `solver` | the Midnight Intents UI: submit an intent, watch the solver settle it |
+| **http://127.0.0.1:10800** | `solver` | the solver monitor: is it quoting, and if not, why |
+| `http://127.0.0.1:9999/v1/prices` | `offerfiles` | the kernel API — offers, quotes, reference prices |
+
+With `poster` up the book fills itself: one sponsored, takeable offer a minute, so the SPA has
+something real to trade against without a second human. `./verify.sh` drives every profile
+that is up end to end (wrap → post → take → unwrap, with exact balances) and prints one
+section per profile; `./down.sh` stops and keeps the chain, `./down.sh -v` wipes every volume.
+Wallets, seeds and how to import them into Lace: [`docs/WALLETS.md`](docs/WALLETS.md).
+What each service does in detail: [`docs/COMPONENTS.md`](docs/COMPONENTS.md). Operating it,
+upgrading a pin, two stacks at once: [`docs/OPERATIONS.md`](docs/OPERATIONS.md).
 
 ## Profiles
 
@@ -49,10 +73,14 @@ seven, and `compose:` `profiles:` keys are never used anywhere in this repositor
 never passes `--profile`, so a service carrying one would silently never start.
 
 Every box below is one compose service with its default host port; solid arrows are
-`depends_on`, dotted arrows are runtime reads that carry no start-order guarantee.
+`depends_on`, dotted arrows are runtime reads that carry no start-order guarantee. The
+rounded boxes are you: a browser on the four web UIs, and a Lace wallet on the
+`undeployed` preset, which is why the core ports default to `9944` / `8088` / `6300`.
 
 ```mermaid
 flowchart LR
+  you(["you · browser"])
+  lace(["Lace wallet · undeployed preset"])
   subgraph core["core — always on"]
     node["node · :9944"]
     indexer["indexer · :8088"]
@@ -100,6 +128,12 @@ flowchart LR
   feed --> pg
   spa -.-> kernel & proof
   sndapp --> node & proof
+  you -.-> ui & monitor & spa & sndapp
+  lace -.-> node & indexer & proof
+  classDef web stroke-width:3px
+  classDef actor stroke-dasharray:4 3
+  class ui,monitor,spa,sndapp web
+  class you,lace actor
 ```
 
 One row per profile, in the order `--all` starts them. Service names are the compose names
@@ -119,59 +153,6 @@ What each profile actually does, service by service — the whole-coin line, the
 gate, the exact-coin guarantee, the price feed's key rules, the sNight round trip — is in
 [`docs/COMPONENTS.md`](docs/COMPONENTS.md).
 
-```sh
-./up.sh                                    # core alone
-./up.sh --with offerfiles                  # …and Celestia + kernel + batcher
-./up.sh --with offerfiles --with frontend  # …and the SPA
-./up.sh --with shielded-night              # the Shielded NIGHT dApp (core is all it needs)
-./up.sh --with offerfiles --with shielded-night   # …and sNight is tradable on the offer book
-./up.sh --with offerfiles --with prices    # …and live CoinGecko reference prices (needs a key)
-./up.sh --all                              # every profile
-./verify.sh                                # assert the stack is usable, not merely running
-./down.sh -v                               # stop and wipe every volume of this project
-```
-
-`--with` is additive: it never stops a profile that is already up. `--converge` is the
-opposite and names everything it is about to stop before it does it.
-
-## The `solver` profile builds from a PRIVATE clone you provide
-
-The relay and the intents UI come from **`shieldedtech/midnight-intents-swaps`**, which is a
-**private** repository. This one is public, so their source is never fetched, vendored or
-mirrored here. Instead:
-
-- you clone the private repository yourself and point `RELAY_SOURCE_DIR` at the **workspace
-  directory inside** that clone — the build context, not the clone's root:
-
-  ```sh
-  git clone git@github.com:shieldedtech/midnight-intents-swaps.git ./local/intents-swaps
-  git -C ./local/intents-swaps checkout 061f4d3258e25b9f3a451b4b4358ed232349d96b
-  echo 'RELAY_SOURCE_DIR=./local/intents-swaps/phase1-native-swaps' >> .env
-  ```
-
-  (The subdirectory is spelled out here and in `.env.example` rather than appended for you by
-  a script: the leak scan below treats that directory's name as source content anywhere
-  outside prose or a comment, so nothing in this repository is allowed to compose the path.)
-- `up.sh` verifies your clone is at the pinned commit and has a clean tree **before** any
-  build starts, and fails with a clear message when the variable is unset;
-- the build reads it as a named build context; the `Dockerfile`s committed here are our own
-  transcriptions and contain no copied code;
-- the resulting `midnight-1-offers/relay:local` and `…/intents-ui:local` images are **never**
-  pushed to any registry.
-
-Everything else — `core`, `offerfiles`, `frontend` — builds from public sources with no
-credentials at all, so the repository degrades gracefully: without private access you get the
-whole stack except the intents lane.
-
-Two mechanisms keep this honest, and they run from day one:
-
-- `.gitignore` ignores `local/`, the conventional place to put your clone inside the checkout,
-  so it cannot be staged by accident;
-- `./scripts/verify-no-private-source.sh` (wired into `scripts/ci-check.sh`) scans every
-  tracked file and fails on private-source markers. It distinguishes *naming* the upstream —
-  fine in Markdown, in `#` comments, and in the pinned identity in
-  `config/artifact-decisions.json` — from *carrying* its content, which is never fine.
-  Run it with `--self-test` to see every rule reject a synthetic leak.
 
 ## Everything external is pinned
 
@@ -203,12 +184,12 @@ fails when the block is stale.
 | Midnight node `1.0.0` | [`midnightntwrk/midnight-node`](https://hub.docker.com/r/midnightntwrk/midnight-node) *(upstream image)*, `CFG_PRESET=dev` | index digest `ede01da35e98…` | `config/artifact-decisions.json` · `.env.example` |
 | Indexer `4.3.3` | [`midnightntwrk/indexer-standalone`](https://hub.docker.com/r/midnightntwrk/indexer-standalone) *(upstream image)* | index digest `03afd079b00b…` | `config/artifact-decisions.json` · `.env.example` |
 | Proof server `8.1.0` (+ `proof-warm` pre-warm) | [`midnightntwrk/proof-server`](https://hub.docker.com/r/midnightntwrk/proof-server) *(upstream image)* | index digest `801bbc0340e9…` | `config/artifact-decisions.json` · `.env.example` |
-| Celestia app `6.4.10` / node `0.28.4` | [`effectstream/binaries@0.3.120`](https://github.com/effectstream/binaries/releases/tag/0.3.120), each archive byte-equal to the official celestiaorg release | SHA-256 per arch | `config/artifact-decisions.json` · `.env.example` · `compose/offerfiles.yml` · `images/celestia/Dockerfile` |
+| Celestia app `6.4.10` / node `0.28.4` | [`effectstream/binaries@0.3.120`](https://github.com/effectstream/binaries/releases/tag/0.3.120), each archive byte-equal to the official celestiaorg release | SHA-256 per arch | `config/artifact-decisions.json` · `.env.example` · `compose/offerfiles.yml` · `images/celestia/Dockerfile` · `scripts/lib/common.sh` |
 | PostgreSQL + `pg_ivm 1.11` | `postgres` *(upstream image)* with `pg_ivm` compiled in | `PG_IVM_VERSION=1.11` | `.env.example` · `compose/core.yml` · `images/postgres/Dockerfile` |
-| **Offer-files kernel · batcher · COW solver · maker-offer · offer poster · price feed** (ONE image) | [`effectstream/zswap-offerfiles-kernel`](https://github.com/effectstream/zswap-offerfiles-kernel) `main`, the whole-coin line (6 decimals everywhere); compactc 0.30.0. The solver has no second pin and no `.solver-commit` | [`c293ebd57937`](https://github.com/effectstream/zswap-offerfiles-kernel/commit/c293ebd57937c0065663b08b2c244438be8989a5) | `.env.example` · `compose/offerfiles.yml` · `compose/solver.yml` · `images/offerfiles-kernel/Dockerfile` |
-| zswap-da SPA | [`effectstream/effectstream` `templates/zswap-da`](https://github.com/effectstream/effectstream/tree/58ab921be5513b77937a37be86bf724a41888302/templates/zswap-da), `midnight-1` head — v8-native, no ledger patch; compactc 0.31.0 | [`58ab921be551`](https://github.com/effectstream/effectstream/commit/58ab921be5513b77937a37be86bf724a41888302) | `.env.example` · `compose/frontend.yml` · `images/zswap-da/Dockerfile` |
-| Shielded NIGHT dApp | [`effectstream/shielded-night`](https://github.com/effectstream/shielded-night) `main` (the 1.x line); contract recompiled in-image with compactc 0.31.1, byte-identical to the committed artifacts | [`f7fcefa7921b`](https://github.com/effectstream/shielded-night/commit/f7fcefa7921bf2c3f634871f9ad3aa3a32251af0) | `.env.example` · `compose/shielded-night.yml` · `images/shielded-night/Dockerfile` |
-| Midnight Intents relay + intents UI | `shieldedtech/midnight-intents-swaps` — **PRIVATE**; you supply the clone via `RELAY_SOURCE_DIR`, `up.sh` verifies it sits at the pin with a clean tree before any build | `061f4d3258e2…` (`RELAY_REF`, verified before build) | `.env.example` · `compose/solver.yml` · `images/relay/` · `images/intents-ui/` |
+| **Offer-files kernel · batcher · COW solver · maker-offer · offer poster · price feed** (ONE image) | [`effectstream/zswap-offerfiles-kernel`](https://github.com/effectstream/zswap-offerfiles-kernel) `main`, the whole-coin line (6 decimals everywhere); compactc 0.30.0. The solver has no second pin and no `.solver-commit` | [`c293ebd57937`](https://github.com/effectstream/zswap-offerfiles-kernel/commit/c293ebd57937c0065663b08b2c244438be8989a5) | `.env.example` · `compose/offerfiles.yml` · `compose/solver.yml` · `images/offerfiles-kernel/Dockerfile` · `scripts/lib/common.sh` |
+| zswap-da SPA | [`effectstream/effectstream` `templates/zswap-da`](https://github.com/effectstream/effectstream/tree/58ab921be5513b77937a37be86bf724a41888302/templates/zswap-da), `midnight-1` head — v8-native, no ledger patch; compactc 0.31.0 | [`58ab921be551`](https://github.com/effectstream/effectstream/commit/58ab921be5513b77937a37be86bf724a41888302) | `.env.example` · `compose/frontend.yml` · `images/zswap-da/Dockerfile` · `scripts/lib/common.sh` |
+| Shielded NIGHT dApp | [`effectstream/shielded-night`](https://github.com/effectstream/shielded-night) `main` (the 1.x line); contract recompiled in-image with compactc 0.31.1, byte-identical to the committed artifacts | [`f7fcefa7921b`](https://github.com/effectstream/shielded-night/commit/f7fcefa7921bf2c3f634871f9ad3aa3a32251af0) | `.env.example` · `compose/shielded-night.yml` · `images/shielded-night/Dockerfile` · `scripts/lib/common.sh` |
+| Midnight Intents relay + intents UI | `shieldedtech/midnight-intents-swaps` — **PRIVATE**; you supply the clone via `RELAY_SOURCE_DIR`, `up.sh` verifies it sits at the pin with a clean tree before any build | `061f4d3258e2…` (`RELAY_REF`, verified before build) | `.env.example` · `compose/solver.yml` · `scripts/lib/common.sh` · `images/relay/` · `images/intents-ui/` |
 <!-- render-readme-pins:end -->
 
 ## Layout
@@ -247,6 +228,56 @@ Defaults are the Midnight-standard ports (`9944` / `8088` / `6300`), because Lac
   a public dev seed on a throwaway local chain; never reuse one anywhere else.
 - The stack uses its own `COMPOSE_PROJECT_NAME` (default `midnight-1-offers`), so it cannot
   collide with a `midnight-2-offers` stack on the same machine.
+
+## The `solver` profile needs private repository access
+
+The Midnight Intents relay and its browser UI come from `shieldedtech/midnight-intents-swaps`,
+a **private** repository. Their source is never fetched, vendored or mirrored here: you clone
+it yourself and point `RELAY_SOURCE_DIR` at the workspace directory inside that clone.
+
+```sh
+git clone git@github.com:shieldedtech/midnight-intents-swaps.git ./local/intents-swaps
+git -C ./local/intents-swaps checkout 061f4d3258e25b9f3a451b4b4358ed232349d96b
+echo 'RELAY_SOURCE_DIR=./local/intents-swaps/phase1-native-swaps' >> .env
+```
+
+`up.sh` checks that clone is at the pinned commit with a clean tree before any build starts,
+and the images built from it are never pushed to any registry. Without access you still get
+every other profile. How this repository keeps that source out of a public tree, and the gate
+that proves it: [`docs/OPERATIONS.md`](docs/OPERATIONS.md#the-solver-profiles-private-source).
+
+## How this differs from midnight-2-offers
+
+Beyond the version line (Midnight 1.x here, 2.x there):
+
+- **dropped**: the AA profile (aa-contracts, AA console, experimental proof server) and the
+  EVM profile — neither exists here.
+- **added**: the real Midnight Intents relay and its browser UI, with the COW solver in
+  **execution mode** settling relay intents against the kernel book. `midnight-2-offers`
+  deliberately stopped at an observation-only sink; this repository runs the whole lane.
+- **added**: the `poster` profile — the kernel's own **offer poster**, a funded, dedicated
+  wallet that mints one faucet coin a minute and posts one sponsored, individually takeable
+  ZSwap offer spending exactly that coin. The book supplies itself, so the SPA has something
+  real to trade against without a human.
+- **added**: the `prices` profile — the kernel's own **price feed**, one CoinGecko
+  `simple/price` call a day into `asset_prices`, so the USD reference behind `GET /v1/prices`,
+  `GET /v1/quote` and the sponsorship gate is live rather than the schema's 2026-09-02 seeds.
+  It needs a free CoinGecko demo key in `.env` — the only secret in this stack — and without
+  one it comes up and idles, because the seeded prices already quote real ratios.
+- **added**: the `shielded-night` profile — [`effectstream/shielded-night`](https://github.com/effectstream/shielded-night),
+  a Compact contract plus a page that wraps native unshielded NIGHT into a shielded token
+  (**sNight**) 1:1 and back. It depends only on `core`, deploys its contract once per stack,
+  and is verified by upstream's own integration round trips run against this stack. Bring it up
+  **with `offerfiles`** and native NIGHT becomes tradable on the offer-files book: `./verify.sh`
+  wraps it, posts a real MIP-0005 offer file carrying sNight, has a second wallet settle that
+  offer, and has that wallet unwrap what it bought — with exact balances at every step.
+
+The stack tracks the offer-files kernel's own `main` — the **whole-coin line**: every token is
+6 decimals and one faucet press mints 1 000 whole coins (1 000 000 000 base units), with the
+`zswap-da` SPA on its matching `midnight-1` head. The exact pins are in the
+[generated table above](#where-every-component-comes-from). **Re-pinning an EXISTING stack
+across a kernel schema change is BREAKING for its `postgres` volume — `./down.sh -v` first;
+[`docs/OPERATIONS.md`](docs/OPERATIONS.md) says which steps are and are not.**
 
 ## Licence
 

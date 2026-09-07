@@ -138,6 +138,13 @@ EXPLICIT_ALLOW = (
                "the repository the operator must clone; a leak gate that forced that message "
                "to be useless would just get switched off",
     },
+    {
+        "path": "config/readme-components.json",
+        "pattern": r'^\s*"source": ".*midnight-intents-swaps.*PRIVATE.*",?$',
+        "why": "the README's generated pin table takes its row prose from this file; the relay "
+               "row is Markdown inside a JSON string and has to name the repository the operator "
+               "clones, exactly as the README did while the row was typed there by hand",
+    },
 )
 
 # A lockfile under these directories would publish the private repository's complete
