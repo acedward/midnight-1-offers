@@ -802,3 +802,45 @@ locked: …`) if you need to confirm the authority state directly.
 | `--once` exits `2`, or `feed.last_error` is non-null after a green-looking run | a graded failure — one retired CoinGecko id, one failed request, or a `429`. The message names which. A `429` means the monthly/minute budget is spent; wait, or raise `PRICE_FEED_INTERVAL_MS` and stop taking `--once` runs. |
 | `GET /v1/prices` still says `source: seed` after the feed ran | the feed wrote a DIFFERENT database. Its `DB_*` must match the kernel's; `compose/prices.yml` states them identically to `compose/offerfiles.yml` on purpose, so this means a hand-edited fragment or a stray `.env` override. |
 | the `prices` section fails with "source='feed' but its updated_at is N s old" | `feed` is a sticky flag: the row was written by an earlier run (or by another stack against a reused `postgres` volume) and this run's `--once` did not update it. Read `feed.last_error`. |
+
+## The solver profile's private source
+
+Moved here from the README on 2026-09-07; the README now states only that the `solver`
+profile needs access to the private repository and how to point `RELAY_SOURCE_DIR` at it.
+
+The relay and the intents UI come from **`shieldedtech/midnight-intents-swaps`**, which is a
+**private** repository. This one is public, so their source is never fetched, vendored or
+mirrored here. Instead:
+
+- you clone the private repository yourself and point `RELAY_SOURCE_DIR` at the **workspace
+  directory inside** that clone — the build context, not the clone's root:
+
+  ```sh
+  git clone git@github.com:shieldedtech/midnight-intents-swaps.git ./local/intents-swaps
+  git -C ./local/intents-swaps checkout 061f4d3258e25b9f3a451b4b4358ed232349d96b
+  echo 'RELAY_SOURCE_DIR=./local/intents-swaps/phase1-native-swaps' >> .env
+  ```
+
+  (The subdirectory is spelled out here and in `.env.example` rather than appended for you by
+  a script: the leak scan below treats that directory's name as source content anywhere
+  outside prose or a comment, so nothing in this repository is allowed to compose the path.)
+- `up.sh` verifies your clone is at the pinned commit and has a clean tree **before** any
+  build starts, and fails with a clear message when the variable is unset;
+- the build reads it as a named build context; the `Dockerfile`s committed here are our own
+  transcriptions and contain no copied code;
+- the resulting `midnight-1-offers/relay:local` and `…/intents-ui:local` images are **never**
+  pushed to any registry.
+
+Everything else — `core`, `offerfiles`, `frontend` — builds from public sources with no
+credentials at all, so the repository degrades gracefully: without private access you get the
+whole stack except the intents lane.
+
+Two mechanisms keep this honest, and they run from day one:
+
+- `.gitignore` ignores `local/`, the conventional place to put your clone inside the checkout,
+  so it cannot be staged by accident;
+- `./scripts/verify-no-private-source.sh` (wired into `scripts/ci-check.sh`) scans every
+  tracked file and fails on private-source markers. It distinguishes *naming* the upstream —
+  fine in Markdown, in `#` comments, and in the pinned identity in
+  `config/artifact-decisions.json` — from *carrying* its content, which is never fine.
+  Run it with `--self-test` to see every rule reject a synthetic leak.
