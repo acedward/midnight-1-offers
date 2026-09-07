@@ -48,15 +48,76 @@ A profile **is** a compose fragment in `compose/`, named after the file. There a
 seven, and `compose:` `profiles:` keys are never used anywhere in this repository — `up.sh`
 never passes `--profile`, so a service carrying one would silently never start.
 
-| Profile | Fragment | What it runs |
+Every box below is one compose service with its default host port; solid arrows are
+`depends_on`, dotted arrows are runtime reads that carry no start-order guarantee.
+
+```mermaid
+flowchart LR
+  subgraph core["core — always on"]
+    node["node · :9944"]
+    indexer["indexer · :8088"]
+    proof["proof-server · :6300"]
+    warm[("proof-warm")]
+    pg[("postgres")]
+  end
+  subgraph offerfiles["offerfiles"]
+    celestia["celestia · :26658"]
+    kernel["kernel · :9999"]
+    batcher["batcher · :3334"]
+    names["offerfiles-token-names"]
+  end
+  subgraph solver["solver — needs your private relay clone"]
+    relay["relay · :13000 / ws :19001"]
+    cow["solver (execution mode)"]
+    monitor["solver-frontend · :10800"]
+    ui["intents-ui · :10700"]
+    maker["maker-offer"]
+  end
+  subgraph poster["poster"]
+    op["offer-poster · :19977"]
+  end
+  subgraph prices["prices (opt-in)"]
+    feed["price-feed"]
+  end
+  subgraph frontend["frontend"]
+    spa["frontend (zswap-da) · :10600"]
+  end
+  subgraph sn["shielded-night"]
+    sndapp["shielded-night · :10900"]
+  end
+
+  indexer --> node
+  proof --> warm
+  kernel --> celestia & pg & node & indexer
+  batcher --> celestia & node & indexer
+  names --> kernel
+  relay --> node & indexer & proof
+  cow --> kernel & relay
+  maker --> kernel
+  monitor -.-> cow
+  ui -.-> relay
+  op --> kernel
+  feed --> pg
+  spa -.-> kernel & proof
+  sndapp --> node & proof
+```
+
+One row per profile, in the order `--all` starts them. Service names are the compose names
+you use with `docker compose … logs <service>`. Ports are the `.env.example` defaults.
+
+| Profile | Services | Default endpoints |
 |---|---|---|
-| `core` | `compose/core.yml` | midnight-node 1.0.0, indexer-standalone 4.3.3, proof-server 8.1.0 (+ its proof-data pre-warm), PostgreSQL with `pg_ivm`. **Unconditional** — every `up.sh` includes it. |
-| `offerfiles` | `compose/offerfiles.yml` | Celestia DA devnet, the offer-files contract deploy one-shot, the kernel API (`:9999`) and the batcher (`:3334`), built from `effectstream/zswap-offerfiles-kernel` **main** — which includes the COW-solver line, seeded reference asset prices (`GET /v1/prices`), the batcher's sponsorship gate (`BATCHER_SPONSOR_POLICY=warn` / `BATCHER_SPONSOR_UNPRICED=allow` by default) and, since `c293ebd`, **the whole-coin line**: every registered token is at 6 decimals, one faucet press mints 1 000 whole coins (`1000000000` base units), and prices are served PER BASE UNIT (`WBTC` = `0.077387`). **Re-pinning past a stack that already ran an OLDER `KERNEL_REF` is BREAKING for its Postgres volume — see `docs/OPERATIONS.md`, `./down.sh -v` is the upgrade path.** |
-| `frontend` | `compose/frontend.yml` | the `zswap-da` SPA (`:10600`), built from the frozen `effectstream/effectstream` template — v8-native at that ref, so **no** ledger patch. Includes the reference-rate / sponsorship-threshold UI (effectstream#916) and, since `58ab921`, **whole-coin amounts** (effectstream#918): the page reads each token's `decimals` off the registry, so the faucet says `1,000` and a take moves the balance by exactly the coins shown. |
-| `shielded-night` | `compose/shielded-night.yml` | the **Shielded NIGHT** dApp (`:10900`): a deploy one-shot that mints the NIGHT ⇄ sNight wrapper contract **once per stack**, and an nginx page that learns that address at container start. Built from `effectstream/shielded-night` at a pinned commit, with the contract **recompiled in-image** (compactc 0.31.1) and required to reproduce the committed artifacts byte-for-byte. **Depends only on `core`.** With `offerfiles` also up it names the sNight colour in the kernel's token registry **and prices it** (`asset_id: midnight-3`, the same reference NIGHT itself uses — `GET /v1/quote` sNight↔NIGHT answers `market_rate: 1`), and `./verify.sh` drives the whole chain — NIGHT → sNight → an offer file on the book → taken → back to NIGHT. |
-| `solver` | `compose/solver.yml` | the Midnight Intents relay (`:13000` HTTP, `:19001` solver WS), the COW solver in execution mode with its read-only **status listener** (`:9100`, bearer-gated, network-internal by design), the **solver monitor** (`:10800` — the six-stage health strip, the published ladder and the book, read-only), the provisioning one-shots, and the intents browser UI (`:10700`). The solver **is the kernel commit**: `images/cow-solver` is the kernel image plus entrypoints, with no second source pin and no `.solver-commit` — see `docs/COMPONENTS.md`. |
-| `poster` | `compose/poster.yml` | the **offer poster** (`:19977` — read-only `/health`, `/metrics`, `/journal`) and the one-shot that funds its DEDICATED wallet with NIGHT from genesis. Every 60 s it either re-offers a coin that came back or mints one whole WBTC coin from the faucet circuit — paying the fee from its own DUST — and posts **one** ZSwap offer whose only input is that exact coin, sized from `GET /v1/quote` so the batcher sponsors it. Each offer spends its coin **whole**: no change output, so every offer is a complete, independently takeable swap. **Opt-in**, and included by `--all`; it needs `offerfiles` and needs neither the relay nor the solver. `./verify.sh` asserts the exact-coin guarantee from outside (`computed.inputNullifiers` == the journal coin's nullifier) and settles one of its offers with a second wallet. |
-| `prices` | `compose/prices.yml` | the **price feed** — one process, no port and no volume, on the kernel image. Every `PRICE_FEED_INTERVAL_MS` (24 h) it asks CoinGecko `simple/price` for the five seeded assets (`bitcoin`, `ethereum`, `usd-coin`, `midnight-3`, `usdm-2`) in **one batched request** and upserts `asset_prices`, so `GET /v1/prices`, `GET /v1/quote`'s `market_rate` and the batcher's sponsorship gate move from the schema's 2026-09-02 seeds (`source: seed`) to live prices (`source: feed`). `COINGECKO_API_KEY` in `.env` is the **only secret in this stack**: sent as the `x-cg-demo-api-key` header, never as a query parameter, never printed (the service logs `key=present`), never given a compose default. **Opt-in**, and included by `--all`; it needs `offerfiles` (the image, and the kernel's schema). **With no key it comes up and idles with a warning rather than crash-looping** — the seeded prices already quote real ratios — and `./verify.sh` reports its section **SKIPPED**, never passed. Take a refresh now with `docker compose run --rm --no-deps price-feed --once`. |
+| [`core`](compose/core.yml) — always | `node` · `indexer` · `proof-server` · `proof-warm` · `postgres` | node RPC `http://127.0.0.1:9944` · indexer `http://127.0.0.1:8088` · proof `http://127.0.0.1:6300` · postgres internal |
+| [`offerfiles`](compose/offerfiles.yml) | `celestia` · `offerfiles-deploy` · `kernel` · `batcher` · `offerfiles-token-names` | kernel API `http://127.0.0.1:9999` · batcher `http://127.0.0.1:3334` · Celestia DA RPC `http://127.0.0.1:26658` |
+| [`frontend`](compose/frontend.yml) | `frontend` | zswap-da SPA `http://127.0.0.1:10600` |
+| [`shielded-night`](compose/shielded-night.yml) — needs only `core` | `shielded-night-deploy` · `shielded-night` · `shielded-night-token-name` · `shielded-night-verify` | sNight dApp `http://127.0.0.1:10900` |
+| [`solver`](compose/solver.yml) — needs `RELAY_SOURCE_DIR` | `relay` · `solver-provision` · `maker-offer` · `solver` · `solver-frontend` · `intents-ui` | relay `http://127.0.0.1:13000` · relay WS `:19001` · monitor **`http://127.0.0.1:10800`** · intents UI `http://127.0.0.1:10700` · status listener `solver:9100` internal only |
+| [`poster`](compose/poster.yml) | `poster-provision` · `offer-poster` | health `http://127.0.0.1:19977/health` (+ `/metrics`, `/journal`) |
+| [`prices`](compose/prices.yml) — opt-in, needs `COINGECKO_API_KEY` | `price-feed` | no port; writes `asset_prices`, read back via kernel `/v1/prices` |
+
+What each profile actually does, service by service — the whole-coin line, the sponsorship
+gate, the exact-coin guarantee, the price feed's key rules, the sNight round trip — is in
+[`docs/COMPONENTS.md`](docs/COMPONENTS.md).
 
 ```sh
 ./up.sh                                    # core alone
@@ -116,16 +177,39 @@ Two mechanisms keep this honest, and they run from day one:
 
 No tags, no branch names, no "latest". Official images are pinned by **index digest**, source
 builds by **full 40-hex commit SHA**, downloaded binaries by **SHA-256**. The single record is
-[`config/artifact-decisions.json`](config/artifact-decisions.json), and three offline gates
+[`config/artifact-decisions.json`](config/artifact-decisions.json), and four offline gates
 keep it and the repository in agreement:
 
 | Gate | Asserts |
 |---|---|
+| `./scripts/render-readme-pins.py --check` | the README's pin table below still says what the compose defaults, the Dockerfile `ARG`s, `.env.example` and the matrix say — and that no source pin has two different defaults in the tree |
 | `./scripts/verify-artifact-decisions.sh --self-test` | the matrix is internally consistent, still makes the choices it froze, and its `pinsDigest` still covers every identity field |
 | `./scripts/verify-compose-pins.sh --self-test` | the **rendered** compose configuration really asks for those bytes — no tag-only image, no forced `platform:`, no `profiles:` key, no drifted build arg |
 | `./scripts/verify-source-pins.sh` | the images that are actually **running** were built from the configured commits (needs a live stack) |
 
-All three are offline: no daemon, no network, no registry, no credential.
+All four are offline: no daemon, no network, no registry, no credential.
+
+### Where every component comes from
+
+The **Pin** column links to the exact commit; the **Pinned in** column is every file that
+carries that default, so you know what to edit. **This table is generated** —
+`scripts/render-readme-pins.py --write` renders it from the sources above, the prose per row
+lives in [`config/readme-components.json`](config/readme-components.json), and `ci-check.sh`
+fails when the block is stale.
+
+<!-- render-readme-pins:begin — GENERATED by scripts/render-readme-pins.py --write from compose/, images/, .env.example and config/artifact-decisions.json. Edit config/readme-components.json, not this block. -->
+| Component | Source | Pin | Pinned in |
+|---|---|---|---|
+| Midnight node `1.0.0` | [`midnightntwrk/midnight-node`](https://hub.docker.com/r/midnightntwrk/midnight-node) *(upstream image)*, `CFG_PRESET=dev` | index digest `ede01da35e98…` | `config/artifact-decisions.json` · `.env.example` |
+| Indexer `4.3.3` | [`midnightntwrk/indexer-standalone`](https://hub.docker.com/r/midnightntwrk/indexer-standalone) *(upstream image)* | index digest `03afd079b00b…` | `config/artifact-decisions.json` · `.env.example` |
+| Proof server `8.1.0` (+ `proof-warm` pre-warm) | [`midnightntwrk/proof-server`](https://hub.docker.com/r/midnightntwrk/proof-server) *(upstream image)* | index digest `801bbc0340e9…` | `config/artifact-decisions.json` · `.env.example` |
+| Celestia app `6.4.10` / node `0.28.4` | [`effectstream/binaries@0.3.120`](https://github.com/effectstream/binaries/releases/tag/0.3.120), each archive byte-equal to the official celestiaorg release | SHA-256 per arch | `config/artifact-decisions.json` · `.env.example` · `compose/offerfiles.yml` · `images/celestia/Dockerfile` |
+| PostgreSQL + `pg_ivm 1.11` | `postgres` *(upstream image)* with `pg_ivm` compiled in | `PG_IVM_VERSION=1.11` | `.env.example` · `compose/core.yml` · `images/postgres/Dockerfile` |
+| **Offer-files kernel · batcher · COW solver · maker-offer · offer poster · price feed** (ONE image) | [`effectstream/zswap-offerfiles-kernel`](https://github.com/effectstream/zswap-offerfiles-kernel) `main`, the whole-coin line (6 decimals everywhere); compactc 0.30.0. The solver has no second pin and no `.solver-commit` | [`c293ebd57937`](https://github.com/effectstream/zswap-offerfiles-kernel/commit/c293ebd57937c0065663b08b2c244438be8989a5) | `.env.example` · `compose/offerfiles.yml` · `compose/solver.yml` · `images/offerfiles-kernel/Dockerfile` |
+| zswap-da SPA | [`effectstream/effectstream` `templates/zswap-da`](https://github.com/effectstream/effectstream/tree/58ab921be5513b77937a37be86bf724a41888302/templates/zswap-da), `midnight-1` head — v8-native, no ledger patch; compactc 0.31.0 | [`58ab921be551`](https://github.com/effectstream/effectstream/commit/58ab921be5513b77937a37be86bf724a41888302) | `.env.example` · `compose/frontend.yml` · `images/zswap-da/Dockerfile` |
+| Shielded NIGHT dApp | [`effectstream/shielded-night`](https://github.com/effectstream/shielded-night) `main` (the 1.x line); contract recompiled in-image with compactc 0.31.1, byte-identical to the committed artifacts | [`f7fcefa7921b`](https://github.com/effectstream/shielded-night/commit/f7fcefa7921bf2c3f634871f9ad3aa3a32251af0) | `.env.example` · `compose/shielded-night.yml` · `images/shielded-night/Dockerfile` |
+| Midnight Intents relay + intents UI | `shieldedtech/midnight-intents-swaps` — **PRIVATE**; you supply the clone via `RELAY_SOURCE_DIR`, `up.sh` verifies it sits at the pin with a clean tree before any build | `061f4d3258e2…` (`RELAY_REF`, verified before build) | `.env.example` · `compose/solver.yml` · `images/relay/` · `images/intents-ui/` |
+<!-- render-readme-pins:end -->
 
 ## Layout
 
@@ -134,7 +218,8 @@ compose/     core.yml, offerfiles.yml, frontend.yml, shielded-night.yml, solver.
              poster.yml, prices.yml — one fragment per profile
 images/      build contexts for the locally built images — one directory per image
 scripts/     verify-*.sh gates, pick-ports.sh, ci-check.sh, lib/ (shared bash + python)
-config/      artifact-decisions.json — the frozen pin record
+config/      artifact-decisions.json — the frozen pin record; readme-components.json — the
+             rows of the README's generated pin table
 docs/        COMPONENTS.md, OPERATIONS.md, WALLETS.md, KNOWN-LIMITATIONS.md
 wallets/     wallets.json — the dev wallet roster (DEV SEEDS ONLY, no real funds)
 local/       gitignored: where you put your own clone of the private relay source
