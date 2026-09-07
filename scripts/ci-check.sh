@@ -148,6 +148,10 @@ static_gates() {
     "$REPO_ROOT/scripts/verify-artifact-decisions.sh" --self-test
   gate "rendered compose pins verified (with negative fixtures)" \
     "$REPO_ROOT/scripts/verify-compose-pins.sh" --self-test
+  gate "README pin table matches the pins" \
+    python3 "$REPO_ROOT/scripts/render-readme-pins.py" --check
+  gate "README pin-table renderer can fail (with negative fixtures)" \
+    python3 "$REPO_ROOT/scripts/render-readme-pins.py" --self-test
 
   return "$rc"
 }
