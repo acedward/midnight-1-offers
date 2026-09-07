@@ -23,6 +23,14 @@
 #                   and the kernel's `computed.inputNullifiers` for the offer built from it.
 #                   One entry, equal. A poster that leaked a second input, or spent a coin it
 #                   did not record, fails here.
+#                   The offer it picks is the NEWEST live one, which the kernel typically
+#                   cannot serve yet: the journal says `live` at POST acceptance and the book
+#                   answers 404 for another 5-20 s. So this check WAITS for the kernel — up to
+#                   POSTER_PROBE_WAIT_S (90), polling every POSTER_PROBE_POLL_S (3) — exactly
+#                   as the poster's own `phase=live` loop does, and reports the measured wait.
+#                   If the budget runs out it emits ONE failure naming the offer, the wait and
+#                   the last status, and SKIPS the assertions that would read empty fields
+#                   rather than turning one cause into six failures (issue 00017).
 #   sponsored       GET /v1/quote for that offer's ACTUAL legs, with the offer's own want
 #                   amount as `to_amount`, answers `sponsored: true`. The `to_amount` is not
 #                   optional: without it the kernel quotes its own suggested amount, which
@@ -74,6 +82,23 @@ KERNEL="http://${BIND}:${KERNEL_HOST_PORT:-9999}"
 BUDGET_S="${POSTER_VERIFY_BUDGET_S:-420}"
 WANT_MINTS="${POSTER_VERIFY_MIN_MINTS:-2}"
 WANT_LIVE="${POSTER_VERIFY_MIN_LIVE_OFFERS:-2}"
+
+# ── how long the exact-coin probe may wait for the kernel (issue 00017) ──────
+# The poster marks an offer `live` in its journal the moment its POST is ACCEPTED, but the
+# kernel's book serves that offer only 5-20 s later — the poster's own follow-up loop is built
+# around exactly this window (`phase=live attempt=1 status=not_found` at +5 s, `phase=verify
+# result=ok` at +10 s, on every tick). A single un-retried `GET /v1/offers/<newest live>` is
+# therefore a coin flip on the clock: the 2026-09-04 full e2e run landed 4 s after an
+# acceptance and turned ONE cause into SIX failing assertions on empty fields.
+#
+#   POSTER_PROBE_WAIT_S   total budget for the wait, in seconds (default 90 — the measured
+#                         window is 5-20 s, so this is ~4x the worst case seen)
+#   POSTER_PROBE_POLL_S   seconds between polls (default 3)
+#
+# Set POSTER_PROBE_WAIT_S=1 to assert the exhaustion path itself (it must produce exactly ONE
+# failing assertion naming the offer, the wait and the last status — never a cascade).
+PROBE_WAIT_S="${POSTER_PROBE_WAIT_S:-90}"
+PROBE_POLL_S="${POSTER_PROBE_POLL_S:-3}"
 
 # The take's two wallets. e2e-taker starts empty at genesis (measured), so the driver funds it
 # — NIGHT from the faucet wallet, and the demanded token from the faucet CIRCUIT, because
@@ -186,9 +211,41 @@ fi
 # and this host has neither jq nor bun. The probe never exits non-zero: a soft failure prints
 # `fetch=…` and the assertions below report it.
 #
+# THE WAIT (issue 00017). The probe does not ask the kernel once — it asks every
+# POSTER_PROBE_POLL_S until the kernel SERVES the offer or POSTER_PROBE_WAIT_S runs out,
+# because the poster's journal says `live` at POST acceptance and the kernel's book answers
+# 404 for the next 5-20 s. That is the kernel's normal indexing latency, not a defect: the
+# poster's own `phase=live` loop waits for exactly the same thing before it declares a tick
+# good. Only a TERMINAL answer (`consumed`/`cancelled`/`expired` — the offer is over, waiting
+# cannot help) ends the wait early, and then the probe tries the next-newest live entry ONCE
+# with whatever budget is left, because a taker settling the newest offer mid-probe is a race
+# to survive, not a failure to report.
+#
+# THE ZERO-WAIT ALTERNATIVE, and why it is not taken. Preferring an entry the POSTER has
+# already verified against the kernel would need no wait at all — and no such field exists at
+# kernel `c293ebd`: `/journal` serves `Journal.toJSON()` verbatim, and `JournalOffer` carries
+# only offerId/blobSha256/postedAt/ttlSec/wantColour/wantAmount/quote/status/statusAt. The
+# poster's successful read-back (`phase=verify result=ok`) only LOGS, and `statusAt` stays equal
+# to `postedAt` because reconciliation rewrites a status only when it CHANGED. So the preference
+# below is dead code today and says so on every run (`journalVerifiedField=absent`); it costs
+# nothing and turns on by itself if a kernel ever records the marker.
+#
 # A QUOTED heredoc, so nothing here is expanded by this shell.
 read -r -d '' JOURNAL_PROBE_JS <<'PROBE_JS' || true
 const api = (process.env.ZSWAP_API || "http://kernel:9999").replace(/\/$/, "");
+// Both knobs arrive through `dc exec -e`; anything unreadable falls back to the default rather
+// than to NaN (which would make the loop exit on its first pass).
+const secs = (raw, fallback) => {
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : fallback;
+};
+const budgetMs = secs(process.env.POSTER_PROBE_WAIT_S, 90) * 1000;
+const pollMs = Math.max(0.5, secs(process.env.POSTER_PROBE_POLL_S, 3)) * 1000;
+// The kernel's status vocabulary is exactly five strings (API.md: `GET /v1/offers/:hash/status`
+// → live | consumed | cancelled | expired | not_found). These three mean the offer is over.
+const TERMINAL = ["consumed", "cancelled", "expired"];
+const verifiedMark = (offer) => offer.verifiedAt ?? offer.kernelVerifiedAt ?? offer.kernelSeenAt ?? null;
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const out = [];
 const r = await fetch("http://127.0.0.1:9977/journal", { signal: AbortSignal.timeout(10000) }).catch(() => null);
 if (!r || !r.ok) { console.log("fetch=fail"); process.exit(0); }
@@ -198,22 +255,92 @@ out.push("fetch=ok");
 out.push("contractAddress=" + (j.contractAddress ?? "?"));
 const coins = j.coins && typeof j.coins === "object" ? j.coins : {};
 let total = 0;
-let best = null;   // newest LIVE offer
-let newest = null; // newest offer of any status
+const live = [];   // every LIVE offer, newest first (sorted below)
+let newest = null; // newest offer of any status, for a journal with no live entry at all
+let verifiedField = "absent";
 for (const [nonce, coin] of Object.entries(coins)) {
   for (const offer of coin.offers ?? []) {
     total += 1;
     if (newest === null || String(offer.postedAt) > String(newest.offer.postedAt)) newest = { nonce, coin, offer };
-    if (offer.status === "live" && (best === null || String(offer.postedAt) > String(best.offer.postedAt))) {
-      best = { nonce, coin, offer };
-    }
+    if (offer.status === "live") live.push({ nonce, coin, offer });
+    if (verifiedMark(offer) !== null) verifiedField = "present";
   }
 }
 out.push("journalCoins=" + Object.keys(coins).length);
 out.push("journalOffers=" + total);
-const pick = best ?? newest;
-if (pick === null) { console.log(out.join(String.fromCharCode(10))); process.exit(0); }
-out.push("picked=" + (best === null ? "newest" : "live"));
+out.push("journalVerifiedField=" + verifiedField);
+live.sort((a, b) => String(b.offer.postedAt).localeCompare(String(a.offer.postedAt)));
+// Candidate order: a poster-verified live entry first (FR-002, absent today), then live
+// entries newest first. At most TWO are polled — the pick, and ONE fallback if it went
+// terminal. A journal whose two newest live offers are both over is a finding, not a race.
+const ordered = [];
+for (const entry of live.filter((e) => verifiedMark(e.offer) !== null).concat(live)) {
+  if (!ordered.some((o) => o.offer.offerId === entry.offer.offerId)) ordered.push(entry);
+}
+const candidates = ordered.slice(0, 2).map((entry, i) => ({
+  ...entry,
+  kind: i > 0 ? "live-fallback" : verifiedMark(entry.offer) !== null ? "verified" : "live",
+}));
+if (candidates.length === 0 && newest !== null) candidates.push({ ...newest, kind: "newest" });
+if (candidates.length === 0) { console.log(out.join(String.fromCharCode(10))); process.exit(0); }
+
+// ── the wait ────────────────────────────────────────────────────────────────
+const startedAt = Date.now();
+const waited = () => Date.now() - startedAt;
+let answer = null;      // { pick, body } once the kernel served one
+let unparseable = null; // { pick } — served 200 with no computed view
+let pick = candidates[0];
+let lastHttp = "";      // last HTTP code from the blob route: what `kernel=fail:<x>` reports
+let lastStatus = "";    // the most informative thing the kernel said (status route wins)
+let polls = 0;
+let fellBack = "no";
+for (let i = 0; i < candidates.length; i++) {
+  pick = candidates[i];
+  const id = String(pick.offer.offerId);
+  let terminal = null;
+  for (;;) {
+    polls += 1;
+    // The blob route FIRST: it is the answer every assertion below needs.
+    const k = await fetch(api + "/v1/offers/" + id, { signal: AbortSignal.timeout(15000) }).catch(() => null);
+    if (k && k.ok) {
+      lastHttp = String(k.status);
+      const o = await k.json().catch(() => null);
+      if (!o || !o.computed) { lastStatus = "unparseable"; unparseable = { pick }; break; }
+      const st = String(o.computed.status ?? "");
+      lastStatus = st === "" ? lastHttp : st;
+      answer = { pick, body: o };
+      // `GET /v1/offers/:hash` resolves archived offers, so a 200 can itself be terminal. The
+      // answer is KEPT anyway: if there is no fallback to try, "served, but over" is a far more
+      // useful verdict than "never served", and the LIVE assertion below names the status.
+      if (TERMINAL.includes(st)) terminal = st;
+      break;
+    }
+    lastHttp = k ? String(k.status) : "unreachable";
+    lastStatus = lastHttp;
+    // 404 means "not indexed yet" OR "gone". Only the status route can tell the two apart,
+    // and it is only worth asking when the probe is about to sleep.
+    const s = await fetch(api + "/v1/offers/" + id + "/status", { signal: AbortSignal.timeout(10000) }).catch(() => null);
+    if (s && s.ok) {
+      const st = String(((await s.json().catch(() => null)) ?? {}).status ?? "");
+      if (st !== "") lastStatus = st;
+      if (TERMINAL.includes(st)) { terminal = st; break; }
+    }
+    if (waited() + pollMs > budgetMs) break;
+    await sleep(pollMs);
+  }
+  if (unparseable !== null) break;
+  if (terminal !== null && i + 1 < candidates.length && waited() < budgetMs) {
+    answer = null; // the fallback entry becomes the assertions' subject, not this dead one
+    fellBack = "yes:" + terminal;
+    continue;
+  }
+  break;
+}
+if (answer !== null) pick = answer.pick;
+
+// ── the pick, and how long it took ──────────────────────────────────────────
+// Emitted for the FINAL candidate only: the shell reads each key once (`head -1`).
+out.push("picked=" + pick.kind);
 out.push("nonce=" + pick.nonce);
 out.push("offerId=" + pick.offer.offerId);
 out.push("journalStatus=" + pick.offer.status);
@@ -222,10 +349,18 @@ out.push("coinType=" + (pick.coin.type ?? "?"));
 out.push("coinValue=" + (pick.coin.value ?? "?"));
 out.push("coinState=" + (pick.coin.state ?? "?"));
 out.push("journalQuoteSponsored=" + ((pick.offer.quote ?? {}).sponsored === true));
-const k = await fetch(api + "/v1/offers/" + pick.offer.offerId, { signal: AbortSignal.timeout(15000) }).catch(() => null);
-if (!k || !k.ok) { out.push("kernel=fail:" + (k ? k.status : "unreachable")); console.log(out.join(String.fromCharCode(10))); process.exit(0); }
-const o = await k.json().catch(() => null);
-if (!o || !o.computed) { out.push("kernel=unparseable"); console.log(out.join(String.fromCharCode(10))); process.exit(0); }
+out.push("kernelBudgetS=" + budgetMs / 1000);
+out.push("kernelPollS=" + pollMs / 1000);
+out.push("kernelWaitS=" + (waited() / 1000).toFixed(1));
+out.push("kernelPolls=" + polls);
+out.push("kernelLastStatus=" + (lastStatus === "" ? "none" : lastStatus));
+out.push("kernelFellBack=" + fellBack);
+if (answer === null) {
+  out.push("kernel=" + (unparseable === null ? "fail:" + (lastHttp === "" ? "unreachable" : lastHttp) : "unparseable"));
+  console.log(out.join(String.fromCharCode(10)));
+  process.exit(0);
+}
+const o = answer.body;
 out.push("kernel=ok");
 out.push("kernelStatus=" + o.computed.status);
 const nulls = Array.isArray(o.computed.inputNullifiers) ? o.computed.inputNullifiers : [];
@@ -243,10 +378,13 @@ console.log(out.join(String.fromCharCode(10)));
 PROBE_JS
 
 echo
-log "poster: the exact-coin guarantee"
+log "poster: the exact-coin guarantee (kernel wait up to ${PROBE_WAIT_S}s, every ${PROBE_POLL_S}s)"
 # `|| true`: a poster that is down makes `dc exec` fail, and this must report that rather
 # than let `set -e` end the run.
-FIELDS="$(dc exec -T offer-poster bun -e "$JOURNAL_PROBE_JS" 2>/dev/null || true)"
+FIELDS="$(dc exec -T \
+  -e "POSTER_PROBE_WAIT_S=${PROBE_WAIT_S}" \
+  -e "POSTER_PROBE_POLL_S=${PROBE_POLL_S}" \
+  offer-poster bun -e "$JOURNAL_PROBE_JS" 2>/dev/null || true)"
 field() {  # field <key> — one flat key=value line from the probe
   printf '%s\n' "$FIELDS" | sed -n "s/^$1=//p" | head -1 || true
 }
@@ -262,42 +400,89 @@ if [[ -z "${OFFER_ID:-}" ]]; then
   fail "the journal records no offer at all, yet /health reported ${MINTS} mint(s)"
   exit 1
 fi
-info "checking offer ${OFFER_ID:0:16}… (the newest $(field picked) one), minted on coin nonce $(field nonce)"
+# `picked` says WHICH entry the probe settled on, and the phrasing has to stay honest: the
+# fallback is NOT the newest one.
+case "$(field picked)" in
+  live)          PICKED_AS="the newest live one" ;;
+  verified)      PICKED_AS="the newest one the poster has verified against the kernel" ;;
+  live-fallback) PICKED_AS="the next-newest live one — the newest reached a terminal status" ;;
+  newest)        PICKED_AS="the newest one of any status; the journal holds no live entry" ;;
+  *)             PICKED_AS="the newest $(field picked) one" ;;
+esac
+info "checking offer ${OFFER_ID:0:16}… (${PICKED_AS}), minted on coin nonce $(field nonce)"
 
 COIN_NULL="$(field coinNullifier)"
 KERNEL_STATUS="$(field kernelStatus)"
 KERNEL_NULL="$(field kernelNullifier)"
 KERNEL_NULL_COUNT="$(field kernelNullifierCount)"
-
-if [[ "$FIELDS" != *"kernel=ok"* ]]; then
-  fail "the kernel could not answer for that offer ($(field kernel))"
-elif [[ "$KERNEL_STATUS" == "live" ]]; then
-  ok "the kernel reports offer ${OFFER_ID:0:16}… LIVE"
-else
-  fail "the kernel reports offer ${OFFER_ID:0:16}… as '${KERNEL_STATUS:-unreadable}', expected live"
+# The wait, as the probe measured it. `kernelBudgetS` is the probe's EFFECTIVE budget (it
+# falls back to its own default if the env value did not parse), so the failure line below
+# quotes what was actually waited, not what was asked for.
+KERNEL_WAIT_S="$(field kernelWaitS)"
+KERNEL_LAST_STATUS="$(field kernelLastStatus)"
+KERNEL_BUDGET_S="$(field kernelBudgetS)"
+[[ -n "${KERNEL_BUDGET_S:-}" ]] || KERNEL_BUDGET_S="$PROBE_WAIT_S"
+if [[ "$(field kernelFellBack)" == yes:* ]]; then
+  info "the newest live offer had already reached status '$(field kernelFellBack | sed 's/^yes://' || true)' —"
+  info "somebody settled or cancelled it while this ran; asserting the next-newest live one instead"
+fi
+if [[ "$(field journalVerifiedField)" == "absent" ]]; then
+  dim  "the journal exposes no per-offer kernel-verification marker at this kernel pin, so the"
+  dim  "probe waits for the kernel itself — that wait is the kernelWait below"
 fi
 
-if [[ "${KERNEL_NULL_COUNT:-0}" == "1" ]]; then
-  ok "the offer spends exactly ONE input (no change output — it spends its coin whole)"
-else
-  fail "the offer spends ${KERNEL_NULL_COUNT:-unreadable} inputs; the exact-coin guarantee is one"
+# ONE failure for ONE cause. When the kernel never served the offer, every assertion
+# below would read an EMPTY field and fail — five failures describing the clock, not the stack.
+# That is precisely what the 2026-09-04 e2e run produced, so the dependent assertions are
+# SKIPPED here and named, never evaluated on empty values.
+KERNEL_SERVED=no
+if [[ "$FIELDS" == *"kernel=ok"* ]]; then
+  KERNEL_SERVED=yes
 fi
-if [[ -n "${COIN_NULL:-}" && "$COIN_NULL" != "none" && "$COIN_NULL" == "$KERNEL_NULL" ]]; then
-  ok "…and that input is EXACTLY the journal coin's nullifier (${COIN_NULL:0:16}…)"
+
+if [[ "$KERNEL_SERVED" != "yes" ]]; then
+  if [[ "$FIELDS" == *"kernel=unparseable"* ]]; then
+    fail "the kernel answered 200 for offer ${OFFER_ID:0:16}… but the body carried no computed view (waited ${KERNEL_WAIT_S:-?}s of ${KERNEL_BUDGET_S}s)"
+  else
+    fail "the kernel did not serve offer ${OFFER_ID:0:16}… (waited ${KERNEL_WAIT_S:-?}s of ${KERNEL_BUDGET_S}s in $(field kernelPolls) poll(s), last status ${KERNEL_LAST_STATUS:-unknown})"
+  fi
+  info "SKIPPED, not failed — the five assertions below read the kernel's view of that offer and"
+  info "would all report empty fields: LIVE status, exactly one input nullifier, nullifier equality,"
+  info "one give leg + one want leg, and the whole-coin give amount. The sponsorship read needs the"
+  info "same two colours and is skipped with them."
+  info "the poster's own log says whether the offer was ever served — 'phase=verify result=ok' is it:"
+  dim  "docker compose logs --tail=120 offer-poster | grep ${OFFER_ID:0:12}"
+  info "raise the wait with POSTER_PROBE_WAIT_S=<seconds> (current ${KERNEL_BUDGET_S}s, polling every $(field kernelPollS)s)"
 else
-  fail "the journal's coin nullifier and the kernel's input nullifier differ"
-  info "journal: ${COIN_NULL:-none}"
-  info "kernel : ${KERNEL_NULL:-none}"
-fi
-if [[ "$(field giveLegs)" == "1" && "$(field wantLegs)" == "1" ]]; then
-  ok "the offer has exactly one give leg and one want leg"
-else
-  fail "the offer has $(field giveLegs) give leg(s) and $(field wantLegs) want leg(s), expected 1 and 1"
-fi
-if [[ "$(field coinValue)" == "$(field giveAmount)" ]]; then
-  ok "the give amount is the coin's whole value ($(field giveAmount) base units)"
-else
-  fail "the offer gives $(field giveAmount) of a coin worth $(field coinValue) — that is not a whole spend"
+  ok "the kernel served offer ${OFFER_ID:0:16}… after ${KERNEL_WAIT_S:-?}s ($(field kernelPolls) poll(s), budget ${KERNEL_BUDGET_S}s)"
+  if [[ "$KERNEL_STATUS" == "live" ]]; then
+    ok "the kernel reports offer ${OFFER_ID:0:16}… LIVE"
+  else
+    fail "the kernel reports offer ${OFFER_ID:0:16}… as '${KERNEL_STATUS:-unreadable}', expected live"
+  fi
+
+  if [[ "${KERNEL_NULL_COUNT:-0}" == "1" ]]; then
+    ok "the offer spends exactly ONE input (no change output — it spends its coin whole)"
+  else
+    fail "the offer spends ${KERNEL_NULL_COUNT:-unreadable} inputs; the exact-coin guarantee is one"
+  fi
+  if [[ -n "${COIN_NULL:-}" && "$COIN_NULL" != "none" && "$COIN_NULL" == "$KERNEL_NULL" ]]; then
+    ok "…and that input is EXACTLY the journal coin's nullifier (${COIN_NULL:0:16}…)"
+  else
+    fail "the journal's coin nullifier and the kernel's input nullifier differ"
+    info "journal: ${COIN_NULL:-none}"
+    info "kernel : ${KERNEL_NULL:-none}"
+  fi
+  if [[ "$(field giveLegs)" == "1" && "$(field wantLegs)" == "1" ]]; then
+    ok "the offer has exactly one give leg and one want leg"
+  else
+    fail "the offer has $(field giveLegs) give leg(s) and $(field wantLegs) want leg(s), expected 1 and 1"
+  fi
+  if [[ "$(field coinValue)" == "$(field giveAmount)" ]]; then
+    ok "the give amount is the coin's whole value ($(field giveAmount) base units)"
+  else
+    fail "the offer gives $(field giveAmount) of a coin worth $(field coinValue) — that is not a whole spend"
+  fi
 fi
 
 # ── the offer as posted is SPONSORABLE ───────────────────────────────────────
@@ -307,7 +492,12 @@ GIVE_TOKEN="$(field giveToken)"
 GIVE_AMOUNT="$(field giveAmount)"
 WANT_TOKEN="$(field wantToken)"
 WANT_AMOUNT="$(field wantAmount)"
-if [[ "$GIVE_TOKEN" =~ ^[0-9a-f]{64}$ && "$WANT_TOKEN" =~ ^[0-9a-f]{64}$ ]]; then
+if [[ "$KERNEL_SERVED" != "yes" ]]; then
+  # Named in the skip above and counted there: the two colours come from the same kernel read
+  # that never arrived, so asserting here would be the sixth failure of one cause (issue 00017).
+  info "SKIPPED — the kernel never served that offer (see the single failure above), so its two"
+  info "colours are unknown and there is nothing to ask /v1/quote about."
+elif [[ "$GIVE_TOKEN" =~ ^[0-9a-f]{64}$ && "$WANT_TOKEN" =~ ^[0-9a-f]{64}$ ]]; then
   QUOTE="$(curl -fsS --max-time 20 \
     "${KERNEL}/v1/quote?from_token=${GIVE_TOKEN}&to_token=${WANT_TOKEN}&from_amount=${GIVE_AMOUNT}&to_amount=${WANT_AMOUNT}" \
     2>/dev/null | tr -d '\n' || true)"
