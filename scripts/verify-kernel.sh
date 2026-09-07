@@ -41,6 +41,16 @@
 #                   shielded-night profile is ALSO up, a sNight row is expected too, priced
 #                   (decimals + asset_id) rather than merely named — reported, not hard-failed,
 #                   when that profile is not part of this bring-up.
+#   dev-token names WHICH NAME each minted colour ended up with, and that no row anywhere is
+#                   called TESTTOKEN*. Since KERNEL_REF=a608fa6… (kernel PR #68) upstream's mint
+#                   registers TESTTOKENA/B/U itself; in this stack it runs inside
+#                   offerfiles-deploy, before the kernel exists and with no ZSWAP_API, so it
+#                   cannot — and the names must still be the ones TOKEN_NAME_SHIELDED_A/B and
+#                   TOKEN_NAME_UNSHIELDED ask for (DEVA/DEVB/DEVU), at 6 decimals. A TESTTOKEN*
+#                   row is the signature of that ordering having inverted, and the whole stack
+#                   would then be MISLABELLED while staying healthy: INTENTS_UI_TOKEN_NAMES, the
+#                   SPA's picker, verify-solver.sh and the kernel's name-keyed price map all read
+#                   these names. The block above only proves the colours are LISTED.
 #   token decimals  EVERY row of GET /v1/known-tokens is at exactly 6 decimals — kernel PR #63's
 #                   whole-coin line, where `decimals` DEFAULTS to 6 and every faucet mints whole
 #                   coins scaled by 10^6. This is ALSO the stale-volume detector: 000-init.sql
@@ -215,11 +225,114 @@ else
   if (( MATCHED == 3 )); then
     ok "all three minted dev-token colours are listed by /v1/known-tokens"
   else
-    # This is the offerfiles-token-names one-shot's job. Upstream's mint script tries to do it
-    # against the pre-/v1 path `/api/known-tokens` and swallows the 404, which is why that
-    # one-shot exists at all — so a miss here means it did not run or did not succeed.
+    # This is the offerfiles-token-names one-shot's job. Upstream's mint script cannot do it
+    # from where this stack runs it (inside offerfiles-deploy, before the kernel exists, with no
+    # ZSWAP_API — and up to c293ebd it also posted the pre-/v1 path `/api/known-tokens`, which
+    # main has never served), and it swallows the failure. That is why that one-shot exists at
+    # all — so a miss here means it did not run or did not succeed.
     fail "/v1/known-tokens lists only ${MATCHED}/3 minted colours; missing:${MISSING}
           (offerfiles-token-names registers these — check that one-shot's logs)"
+  fi
+fi
+
+# ── the dev colours carry THIS STACK'S NAMES, at 6 decimals (00018) ──────────
+#
+# The block above proves the three minted colours are LISTED. It says nothing about the name
+# each of them ended up with, and since `KERNEL_REF=a608fa6…` (kernel PR #68) that is no longer
+# a formality: upstream's `mint-test-tokens.ts` now registers the very same colours as
+# `TestTokenA/B/U` — stored `TESTTOKENA/B/U`, because the kernel uppercases — through the
+# correct `POST /v1/known-tokens` path, resolving `ZSWAP_API` with a `127.0.0.1:9999` fallback.
+#
+# In this stack that attempt cannot reach a kernel: the mint rides `offerfiles-deploy`, which
+# runs BEFORE the kernel exists (`kernel` waits on `service_completed_successfully`), and that
+# service is given no `ZSWAP_API`, so the POSTs hit its own loopback and are logged as
+# warnings. `offerfiles-token-names` then names the colours DEVA/DEVB/DEVU afterwards. If that
+# ever inverted, the stack would come up healthy and merely be MISLABELLED: docs/OPERATIONS.md,
+# `INTENTS_UI_TOKEN_NAMES`, the SPA's token picker, scripts/verify-solver.sh and the kernel's
+# own name-keyed price map (which is what makes DEVA/DEVB/DEVU `unpriced` for the sponsorship
+# gate) all expect these names. So they are asserted, and a `TESTTOKEN*` row anywhere in the
+# registry is a failure in its own right — it is the signature of the inversion.
+#
+# The expected names come from the SAME variables compose passes to the one-shot, with the same
+# defaults, and are normalised the way the kernel normalises a submitted name
+# (`String(name).trim().toUpperCase().slice(0, 16)`, packages/node/api.ts). bash 3.2 has no
+# `${var^^}`, hence `tr`.
+kernel_name() {
+  printf '%s' "${1}" \
+    | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' \
+    | tr '[:lower:]' '[:upper:]' \
+    | cut -c1-16
+}
+
+if [[ -n "$KNOWN" ]]; then
+  echo
+  log "kernel: dev-token names"
+
+  # This sweep runs whether or not minted-tokens.json could be read: a TESTTOKEN* row is wrong
+  # on this stack no matter which colour carries it.
+  TESTTOKEN_ROWS=""
+  while IFS= read -r row; do
+    case "$row" in
+      *'"name":'*) : ;;
+      *) continue ;;
+    esac
+    ROW_NAME="$(printf '%s' "$row" | sed -n 's/.*"name":"\([^"]*\)".*/\1/p' | head -1 || true)"
+    case "$(kernel_name "${ROW_NAME}")" in
+      TESTTOKEN*) TESTTOKEN_ROWS="${TESTTOKEN_ROWS} ${ROW_NAME}" ;;
+    esac
+  done <<< "$(printf '%s' "$KNOWN" | tr '{' '\n')"
+
+  if [[ -z "$TESTTOKEN_ROWS" ]]; then
+    ok "no TESTTOKEN* row in the registry — the kernel's own mint did not name these colours"
+  else
+    fail "the registry holds TESTTOKEN* row(s):${TESTTOKEN_ROWS}
+          Since KERNEL_REF=a608fa6… (kernel PR #68) mint-test-tokens.ts registers TESTTOKENA/B/U
+          itself, and in this stack it must NOT be able to — it runs inside offerfiles-deploy,
+          before the kernel exists, with no ZSWAP_API. A row here means something gave the mint
+          a reachable kernel. Fix the ordering/env, then ./down.sh -v (the colours derive from
+          the contract address, so a fresh stack gets fresh ones)."
+  fi
+
+  if [[ -z "$MINTED" ]]; then
+    warn "no minted-tokens.json, so the three dev colours cannot be matched to their names"
+  else
+    NAME_OK=0
+    NAME_CHECKED=0
+    NAME_BAD=""
+    for pair in "shieldedA:${TOKEN_NAME_SHIELDED_A:-DEVA}" \
+                "shieldedB:${TOKEN_NAME_SHIELDED_B:-DEVB}" \
+                "unshielded:${TOKEN_NAME_UNSHIELDED:-DEVU}"; do
+      key="${pair%%:*}"
+      want="$(kernel_name "${pair#*:}")"
+      COLOUR="$(printf '%s' "$MINTED" | sed -nE "s/.*\"${key}\"[[:space:]]*:[[:space:]]*\"([0-9a-fA-F]+)\".*/\1/p" | head -1 || true)"
+      [[ -z "$COLOUR" ]] && continue
+      NAME_CHECKED=$(( NAME_CHECKED + 1 ))
+      # One record per line, so the name and the decimals must belong to the SAME record as the
+      # colour. Every extraction ends in `|| true`: an empty registry must reach the comparison
+      # as "no row", not abort the script under `pipefail`.
+      ROW="$(printf '%s' "$KNOWN" | tr '{' '\n' | grep -F -- "\"token_color\":\"$(printf '%s' "$COLOUR" | tr 'A-F' 'a-f')\"" | head -1 || true)"
+      GOT="$(kernel_name "$(printf '%s' "$ROW" | sed -n 's/.*"name":"\([^"]*\)".*/\1/p' | head -1 || true)")"
+      GOT_DEC="$(printf '%s' "$ROW" | sed -n 's/.*"decimals":\([0-9][0-9]*\).*/\1/p' | head -1 || true)"
+      if [[ "$GOT" == "$want" && "$GOT_DEC" == "6" ]]; then
+        NAME_OK=$(( NAME_OK + 1 ))
+        info "  ${key} ${COLOUR:0:16}… = ${want} at 6 decimals"
+      else
+        NAME_BAD="${NAME_BAD} ${key}(want ${want}@6, got ${GOT:-<no row>}@${GOT_DEC:-none})"
+      fi
+    done
+
+    if (( NAME_CHECKED == 0 )); then
+      warn "minted-tokens.json carries no colour for any of the three keys"
+    elif (( NAME_OK == NAME_CHECKED )); then
+      ok "all ${NAME_OK} minted dev colour(s) carry this stack's names at 6 decimals"
+    else
+      fail "${NAME_OK}/${NAME_CHECKED} minted dev colours carry the expected name at 6 decimals;
+          these do not —${NAME_BAD}
+          The names come from TOKEN_NAME_SHIELDED_A/B and TOKEN_NAME_UNSHIELDED (defaults
+          DEVA/DEVB/DEVU) and are registered by the offerfiles-token-names one-shot, which since
+          00018 reads the registry back on a 409 and fails rather than accept a foreign name —
+          so check that one-shot's log first."
+    fi
   fi
 fi
 

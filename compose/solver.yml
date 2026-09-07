@@ -319,7 +319,7 @@ services:
       # about a stack whose whole point is that every kernel-built process is ONE commit. It
       # is DISPLAY ONLY — the authoritative identity assertion is
       # scripts/verify-source-pins.sh against /app/.kernel-commit in the image.
-      GIT_COMMIT: '${KERNEL_REF:-c293ebd57937c0065663b08b2c244438be8989a5}'
+      GIT_COMMIT: '${KERNEL_REF:-a608fa67419c16188e9405417ecdf34f3f7c47a1}'
       # MAKER_OFFER_ENABLED / SOLVER_PROVISION_ENABLED USED TO BE HERE, read ONLY by the old
       # healthcheck to decide how strict it could be about an empty relay token list. That probe
       # is gone (00015 PR B), and with it their only reader on THIS service — the solver process

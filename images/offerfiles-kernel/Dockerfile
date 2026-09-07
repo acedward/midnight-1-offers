@@ -69,7 +69,7 @@ ARG DEBIAN_BASE=debian:trixie-slim@sha256:f6e2cfac5cf956ea044b4bd75e6397b4372ad8
 ARG BUN_BASE=oven/bun:1.3.11@sha256:0733e50325078969732ebe3b15ce4c4be5082f18c4ac1a0f0ca4839c2e4e42a7
 
 ARG KERNEL_REPO=https://github.com/effectstream/zswap-offerfiles-kernel.git
-ARG KERNEL_REF=c293ebd57937c0065663b08b2c244438be8989a5
+ARG KERNEL_REF=a608fa67419c16188e9405417ecdf34f3f7c47a1
 ARG COMPACT_VERSION=0.30.0
 
 # ── stage 1: fetch the kernel source at a FULL commit SHA ────────────────────
