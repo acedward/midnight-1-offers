@@ -353,6 +353,23 @@ curl -s http://127.0.0.1:9999/v1/offers/<offerId> | grep -o '"inputNullifiers":\
 
 One entry, and equal. `./verify.sh --poster` does this automatically.
 
+**Expect a 404 on a fresh offer, and wait.** The journal says `live` as soon as the POST is
+accepted; the kernel serves that offer 5–20 s later (its own indexing latency — the poster's log
+shows the same wait as `phase=live … status=not_found` then `phase=verify … result=ok`). So the
+second command above answers `404 NOT_FOUND` if you run it immediately on the newest entry.
+Verify waits for it instead of guessing: the section polls `GET /v1/offers/<id>` every
+`POSTER_PROBE_POLL_S` for up to `POSTER_PROBE_WAIT_S` and prints the measured wait —
+
+```
+==> poster: the exact-coin guarantee (kernel wait up to 90s, every 3s)
+    OK   the kernel served offer 736e68af17537acd… after 9.9s (4 poll(s), budget 90s)
+```
+
+— and if the budget runs out it reports ONE failure naming the offer, the wait and the last
+status, and says which assertions it skipped rather than failing five of them on empty fields
+(issue 00017). Raise `POSTER_PROBE_WAIT_S` on a slow or loaded host; a red section is then about
+the stack, not the clock.
+
 ### A dry run
 
 `DRY_RUN=true` does the whole of startup — build the wallet, sync, register NIGHT for dust,
@@ -381,6 +398,8 @@ knowing:
 | `POSTER_PROVISION_ENABLED` | `true` | set false to bring the profile up without funding from genesis (an operator who funds out of band) |
 | `POSTER_VERIFY_BUDGET_S` | `420` | how long `./verify.sh` waits for two mints and two live offers |
 | `POSTER_VERIFY_SKIP_TAKE` | `false` | skip verify's real settlement of one poster offer (it costs two provings) |
+| `POSTER_PROBE_WAIT_S` | `90` | how long `./verify.sh`'s exact-coin probe waits for the kernel to SERVE the newest offer (it is `live` in the journal 5–20 s before the book answers for it). Exhaustion is ONE failure naming the offer, the wait and the last status — the assertions that would read empty fields are skipped, not failed. |
+| `POSTER_PROBE_POLL_S` | `3` | how often that probe asks. `POSTER_PROBE_WAIT_S=1` is the way to assert the exhaustion path itself. |
 
 ### The genesis-1 facade mutex
 

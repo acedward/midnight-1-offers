@@ -69,6 +69,30 @@ and only then builds and posts the offer. That is why the container healthcheck 
 default) instead of a fixed wait. On a loaded host, raise it rather than reading a red section
 as a defect.
 
+### The kernel does not serve a freshly accepted offer for 5–20 s, and the poster's journal says `live` anyway
+
+The poster writes `status: "live"` into its journal the moment the kernel's `POST /v1/offers`
+answers ACCEPTED. The kernel's book cannot answer for that offer yet: `GET /v1/offers/<id>` 404s
+until the offer is indexed, which is **5–20 s later** on this stack. The poster is built around
+exactly that wait — every tick logs `phase=live attempt=1 status=not_found` at +5 s and
+`phase=verify … result=ok` at +10 s, and a tick is only good once the second line appears.
+
+That window is normal kernel latency, not a fault, and nothing here tries to remove it. What it
+means for anything reading the journal from outside — including your own tooling — is that **the
+newest `live` journal entry is not yet a question the kernel can answer.** Either wait for it or
+pick an older entry.
+
+`./verify.sh`'s poster section waits, because it deliberately asserts the NEWEST offer: its
+exact-coin probe polls `GET /v1/offers/<id>` every `POSTER_PROBE_POLL_S` (default 3 s) for up to
+`POSTER_PROBE_WAIT_S` (default 90 s), reports the measured wait (`the kernel served <id> after
+9.9s`), and only a terminal status (`consumed`/`cancelled`/`expired` — someone settled or
+cancelled the offer meanwhile) ends the wait early, in which case it asserts the next-newest live
+offer instead. If the budget runs out you get ONE failure naming the offer, the wait and the last
+status, and the five assertions that read the kernel's view of the offer are SKIPPED rather than
+evaluated on empty fields. Before this wait existed (issue 00017) a section that happened to
+start inside the window reported six failures for that one cause — the offers themselves were
+sound, and the section's own on-chain take passed in the same run.
+
 ### `degraded` answers **200**, on purpose
 
 `GET /health` returns 200 while the poster is `starting` and while it is `degraded`; a 503
