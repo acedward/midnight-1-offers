@@ -1,7 +1,50 @@
 # Known limitations
 
-> **Scope.** This file records the limitations of the **`solver`** and **`shielded-night`**
-> profiles. The other profiles' entries land with 00005 P6.
+> **Scope.** This file records the limitations of the **`offerfiles`** (one entry, added by the
+> `a608fa6` re-pin), **`solver`**, **`poster`**, **`prices`** and **`shielded-night`** profiles.
+> The remaining `offerfiles` entries land with 00005 P6.
+
+## `offerfiles`
+
+### The kernel's own mint logs three failed name registrations on every fresh stack, and that is correct
+
+Since `KERNEL_REF=a608fa6…` (kernel
+[#68](https://github.com/effectstream/zswap-offerfiles-kernel/pull/68)) upstream's
+`packages/contracts-midnight/mint-test-tokens.ts` registers the colours it mints itself, through
+`POST /v1/known-tokens` with the names `TestTokenA/B/U` (stored `TESTTOKENA/B/U` — the kernel
+uppercases) at `decimals: 6`, resolving `ZSWAP_API` and falling back to
+`http://127.0.0.1:9999`.
+
+**In this stack that call cannot succeed, by design.** The mint rides the `offerfiles-deploy`
+one-shot, which runs *before* the kernel exists (`kernel` waits on
+`service_completed_successfully`), and that service is deliberately given no `ZSWAP_API` — so all
+three POSTs hit the deploy container's own loopback and are refused. The one-shot's log therefore
+carries, on every clean bring-up:
+
+```
+[mint-test-tokens] known-token registration skipped for TestTokenA (…); continuing
+[mint-test-tokens] known-token registration skipped for TestTokenB (…); continuing
+[mint-test-tokens] known-token registration skipped for TestTokenU (…); continuing
+[mint-test-tokens] MINTED {"shieldedA":"…","shieldedB":"…","unshielded":"…"}
+```
+
+Upstream's helper catches every transport failure and only calls `log.warn`, so the mint itself
+still succeeds and still publishes the receipt this stack reads. The names you actually get are
+`DEVA`/`DEVB`/`DEVU`, registered afterwards by the `offerfiles-token-names` one-shot.
+
+**Why it is left this way rather than "fixed".** Upstream also moved its own mint to a
+post-kernel one-shot, so its stacks really are named `TESTTOKEN*`; adopting that topology here
+would rename the tokens that `INTENTS_UI_TOKEN_NAMES`, the SPA's token picker,
+`scripts/verify-solver.sh` and the kernel's name-keyed price map all expect. Leaving `ZSWAP_API`
+unset is what makes the m1 names authoritative *by construction* — a loopback with nothing on it
+can never win the race. Setting it to `http://kernel:9999` would not help (the kernel is not up
+yet) and would arm the silent-mislabel failure instead.
+
+**What protects it.** `offerfiles-token-names` reads `GET /v1/known-tokens` back on every `409`
+and accepts it only when this stack's colour already carries this stack's name; anything else
+fails the bring-up naming both names, with the registry dumped. `./verify.sh`'s `kernel` section
+asserts the same property from the outside and fails on **any** `TESTTOKEN*` row. See
+`docs/OPERATIONS.md`, "The dev-token names are guarded now".
 
 ## `solver`
 

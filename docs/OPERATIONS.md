@@ -5,13 +5,76 @@
 > unavoidable for anyone running an existing stack forward. The rest of the `offerfiles`
 > profile's operating notes are still to be written.
 
+## Re-pin to kernel `main` @ `a608fa6` (00018) — **not breaking**
+
+This is the newest re-pin and the one to read first. `KERNEL_REF` is now
+`a608fa67419c16188e9405417ecdf34f3f7c47a1`, one first-parent merge past `c293ebd`
+([kernel #68](https://github.com/effectstream/zswap-offerfiles-kernel/pull/68), merged
+2026-09-04). `FRONTEND_REF`, `SHIELDED_NIGHT_REF` and `RELAY_REF` do **not** move with it.
+
+**Not breaking, and that is measured rather than asserted:** `git diff c293ebd..a608fa6 --
+packages/database` is **empty**. No migration, no seed row, no schema change — so unlike the
+`c293ebd` re-pin below, a stack whose `postgres` volume was created under `c293ebd` runs this pin
+**without `./down.sh -v`**. (A volume older than `c293ebd` still needs it, for that re-pin's own
+reasons.) You do still need to rebuild the kernel image, and the new `KERNEL_REF` re-runs the
+Compact contract compile — budget ~20 minutes on a cold cache, once.
+
+### What #68 brings, and what it means here
+
+| # | Upstream change | What it means for this stack |
+|---|---|---|
+| 1 | **Blank-aware optional knobs** in `packages/price-feed` and `packages/batcher`: unset, empty **and whitespace-only** strings and numbers now all select the code's default, through new package-local `optionalString`/`optionalNumber` helpers. | `compose/prices.yml` passes `COINGECKO_BASE_URL` and the four `PRICE_FEED_*` knobs **blank on purpose**, so this is the one place the pin could have changed behaviour — and it does not: blank still means the default, and now whitespace does too. `COINGECKO_API_KEY` is deliberately **not** part of the change upstream, so `entrypoint-price-feed.sh`'s `unset_if_empty` stays exactly as it is. The batcher gets explicit values for every affected knob, so its new branch is never taken. `./verify.sh`'s `prices` section is the check. |
+| 2 | **The mint's name registration is repaired.** `packages/contracts-midnight/mint-test-tokens.ts` no longer POSTs the dead `/api/known-tokens`; a new `register-known-tokens.ts` POSTs `POST /v1/known-tokens` with the exact colour, `TestTokenA/B/U` (the kernel uppercases to `TESTTOKENA/B/U`) and `decimals: 6`, non-fatally, resolving `ZSWAP_API` with a `http://127.0.0.1:9999` fallback. | **Expect three warnings on every fresh stack, and they are correct.** The mint rides `offerfiles-deploy`, which runs *before* the kernel exists (`kernel` waits on `service_completed_successfully`), and that service is given no `ZSWAP_API` — so the POSTs hit the deploy container's own loopback and are refused. The log reads `known-token registration skipped for TestTokenA (…); continuing`, three times, then the `MINTED {…}` receipt. Your tokens are still called **DEVA / DEVB / DEVU**, registered afterwards by the `offerfiles-token-names` one-shot. See "The dev-token names are guarded now" below. |
+| 3 | **A new startup topology upstream** (contract deploy → healthy kernel → a post-kernel `mint-test-tokens` one-shot → compatibility registration → consumers), with `entrypoint-mint-test-tokens.sh` and `check-compose-topology.ts`. | Nothing here. This repository renders its own compose from `compose/*.yml` and does not use the kernel's `deploy/compose.yml` or its launchers; it keeps the mint inside `offerfiles-deploy` and names the colours from its own post-kernel one-shot. Every other upstream entrypoint/script #68 touched is comment-only. |
+
+### The dev-token names are guarded now
+
+`TOKEN_NAME_SHIELDED_A` / `TOKEN_NAME_SHIELDED_B` / `TOKEN_NAME_UNSHIELDED` (defaults `DEVA`,
+`DEVB`, `DEVU`) are the names the three minted colours carry, and they are **load-bearing**:
+`INTENTS_UI_TOKEN_NAMES`, the SPA's token picker, `scripts/verify-solver.sh` and the kernel's own
+name-keyed price map — which is what makes these three `unpriced` for the sponsorship gate — all
+expect them.
+
+Since 00018 `offerfiles-token-names` no longer treats a `409` as unconditional success. It reads
+`GET /v1/known-tokens` back and accepts the 409 **only** when this stack's colour already carries
+this stack's name (the normal second-bring-up case). Otherwise it **fails the bring-up**, prints
+both names and dumps the registry:
+
+```
+[token-names] REFUSING to accept this 409: this stack's shieldedA colour is registered under
+[token-names]   a DIFFERENT name. expected DEVA, registry says TESTTOKENA.
+```
+
+A `TESTTOKEN*` name in that message means something gave the kernel's own mint a reachable
+kernel API. Find what added a `ZSWAP_API` to `offerfiles-deploy` (or what re-ran the mint against
+a live kernel), then `./down.sh -v` — the colours derive from the contract address, so a fresh
+stack gets fresh ones. Nothing in this repository deletes a registry row.
+
+`./verify.sh`'s `kernel` section asserts the other side of the same property: each minted colour
+carries the expected name at `decimals: 6`, and **no** row anywhere in the registry has a name
+starting `TESTTOKEN`.
+
+Changing the names on a stack that has already run is therefore a deliberate act: rename with
+`./down.sh -v`, or rename the rows by hand first.
+
+| variable | default | what it does |
+|---|---|---|
+| `TOKEN_NAME_SHIELDED_A` | `DEVA` | the name registered for the first minted **shielded** colour |
+| `TOKEN_NAME_SHIELDED_B` | `DEVB` | the name registered for the second minted **shielded** colour |
+| `TOKEN_NAME_UNSHIELDED` | `DEVU` | the name registered for the minted **unshielded** colour |
+| `MINTED_TOKEN_DECIMALS` | `6` | base units per coin, STATED on every registration rather than left to the column default. Mirrors the kernel's `DEFAULT_TOKEN_DECIMALS`; do not change it without changing what the faucet mints |
+
+The kernel normalises a submitted name with `trim().toUpperCase().slice(0, 16)`, so `deva`
+arrives as `DEVA`; `./verify.sh` and the one-shot both compare against the normalised form.
+
 ## Re-pin to kernel `main` @ `c293ebd` (00011 PR A) — **BREAKING for an EXISTING stack**
 
-This is the newest re-pin and the one to read first.
+The previous re-pin. Still the one that decides whether an OLD volume can be carried forward.
 
-`KERNEL_REF` is now `c293ebd57937c0065663b08b2c244438be8989a5` and `FRONTEND_REF` is
-`58ab921be5513b77937a37be86bf724a41888302`. **They move together**, because the change is one
-change split across two repositories.
+This re-pin set `KERNEL_REF` to `c293ebd57937c0065663b08b2c244438be8989a5` (superseded by
+`a608fa6…` above) and `FRONTEND_REF` to `58ab921be5513b77937a37be86bf724a41888302`, which is
+still the pin today. **Those two moved together**, because the change was one change split
+across two repositories.
 
 ### What moved
 

@@ -12,7 +12,7 @@ what the stack *means* rather than merely which bytes it runs.
 
 | Pin | Value | Line |
 |---|---|---|
-| `KERNEL_REF` | `c293ebd57937c0065663b08b2c244438be8989a5` — `effectstream/zswap-offerfiles-kernel` `main` | ledger-v8 / 1.x, **the whole-coin line** (kernel #61/#63/#66) |
+| `KERNEL_REF` | `a608fa67419c16188e9405417ecdf34f3f7c47a1` — `effectstream/zswap-offerfiles-kernel` `main` | ledger-v8 / 1.x, **the whole-coin line** (kernel #61/#63/#66) plus **#68** (blank-aware price-feed/batcher knobs, the mint's name registration repaired) |
 | `FRONTEND_REF` | `58ab921be5513b77937a37be86bf724a41888302` — `effectstream/effectstream` `midnight-1`, subtree `templates/zswap-da` @ `3ca1d56ffc29f03c73cf43432bdfeeaf3ab43c6b` | the same line's UI (effectstream#918) |
 | `SHIELDED_NIGHT_REF` | `f7fcefa7921bf2c3f634871f9ad3aa3a32251af0` — `effectstream/shielded-night` `main` | unchanged |
 
