@@ -25,8 +25,12 @@
 #               then asserted twice over: no compose-internal hostname may survive, and every
 #               resolved endpoint must answer from THIS host.
 #   zk assets   the three requests midnight-js 4.1.1's FetchZkConfigProvider makes per contract
-#               circuit — keys/<c>.prover, keys/<c>.verifier, zkir/<c>.bzkir — answer with
-#               binary, not with an SPA fallback page.
+#               circuit — keys/<c>.prover, keys/<c>.verifier, zkir/<c>.bzkir — are GONE at
+#               `KERNEL_REF=e3b9388…` and their ABSENCE is what is asserted. Kernel #69 deleted
+#               `packages/node/zk-assets.ts` with the contract whose keys they served. That
+#               leaves the SPA's Faucet tab DEAD until phase D re-points it at the issuer's own
+#               site — stated here, and in docs/KNOWN-LIMITATIONS.md, rather than discovered by
+#               a person clicking it.
 #
 # The last two sections need the kernel, so they run only when the `offerfiles` profile is up;
 # `--with frontend` alone stays legal and the SPA still verifies as a static asset server.
@@ -225,11 +229,17 @@ CFG="$(curl -fsS --max-time 15 "${EFF_API}/v1/midnight/config" 2>/dev/null || tr
 if [[ -z "$CFG" ]]; then
   fail "GET ${EFF_API}/v1/midnight/config did not answer"
 else
+  # THE EXPECTATION IS INVERTED AT THIS PIN (00020 PR C). `GET /v1/midnight/config` carried a
+  # `contractAddress` up to `KERNEL_REF=a608fa6…` and the SPA connected to it; kernel #69
+  # removed the contract and the field. Its presence would mean KERNEL_REF had moved BACKWARDS,
+  # onto a line this repository's images no longer build for.
   CONTRACT="$(json_field "$CFG" contractAddress)"
-  if [[ -n "$CONTRACT" ]]; then
-    ok "kernel reports contract ${CONTRACT:0:16}…"
+  if [[ -z "$CONTRACT" ]]; then
+    ok "the kernel reports NO contract address — kernel #69 removed it, as this pin expects"
   else
-    fail "kernel reports no contract address — the browser cannot connect to a contract"
+    fail "the kernel still reports a contractAddress (${CONTRACT:0:16}…). Kernel #69 deleted the
+          offer-files contract and this field with it, and images/offerfiles-kernel has no
+          Compact stage at this pin. Check KERNEL_REF (expected e3b9388… or later)."
   fi
 
   # Resolve each URI exactly as upstream's api.getMidnightConfig (effectstream#912) does: an explicit override wins,
@@ -335,30 +345,37 @@ fi
 # ── the ZK asset lane (T3.5) ─────────────────────────────────────────────────
 #
 # midnight-js 4.1.1's FetchZkConfigProvider is pointed at API_BASE and makes exactly three
-# requests per contract circuit: keys/<c>.prover, keys/<c>.verifier, zkir/<c>.bzkir. It fetches
-# NO `compiler/` kind — verified by reading the 4.1.1 provider — so kernel main serving only
-# /keys/* and /zkir/* is sufficient, even though the compiled managed/ tree also contains
-# compiler/contract-info.json.
+# requests per contract circuit: keys/<c>.prover, keys/<c>.verifier, zkir/<c>.bzkir. Up to
+# `KERNEL_REF=a608fa6…` this block asserted they answered with BINARY rather than with an SPA
+# fallback page, because the provider only checks `response.ok` and would otherwise hand the
+# prover an HTML document as a proving key.
 #
-# The bytes must not be an SPA fallback page: the provider only checks response.ok, and the
-# template's own safeFetch synthesises a 404 for a text/html body precisely because a
-# misconfigured host would otherwise hand the prover an HTML document as a proving key.
+# AT `e3b9388…` THEY ARE GONE, and the assertion is inverted. Kernel #69 deleted
+# `packages/node/zk-assets.ts` — `registerZkAssetRoutes(server)` no longer exists in
+# `packages/node/api.ts` — along with the contract whose circuits those artifacts belong to.
+#
+# WHAT THAT COSTS, STATED HERE RATHER THAN DISCOVERED BY CLICKING: the SPA's Faucet tab proves
+# a mint in the browser and fetches its keys from exactly these routes, so it is DEAD on this
+# pin. Nothing automated depended on it (`issuer-fund` is the headless path and the browser
+# mint has always been an owner hand test), and phase D re-points the page at the issuer's own
+# faucet site, which serves the same class of artifact for the six issued tokens. Recorded in
+# docs/KNOWN-LIMITATIONS.md.
 echo
-log "frontend: ZK assets the browser prover fetches from the kernel"
+log "frontend: the ZK asset routes are gone at this pin"
 for asset in keys/mint_shielded.prover keys/mint_shielded.verifier zkir/mint_shielded.bzkir; do
   url="${EFF_API}/${asset}"
-  headers="$(curl -fsS -o /dev/null -D - --max-time 30 "$url" 2>/dev/null || true)"
-  if [[ -z "$headers" ]]; then
-    fail "GET ${url} did not answer 2xx — the browser prover cannot fetch this circuit"
-    continue
-  fi
-  ctype="$(printf '%s' "$headers" | grep -i '^content-type:' | head -1 | tr -d '\r' || true)"
-  case "$(printf '%s' "$ctype" | tr '[:upper:]' '[:lower:]')" in
-    *text/html*)
-      fail "GET ${url} answered text/html — that is an SPA fallback, not a ZK artifact"
+  code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 "$url" 2>/dev/null || echo 000)"
+  case "$code" in
+    404)
+      ok "${asset} answers 404 — the route was removed with the contract, as this pin expects"
+      ;;
+    200)
+      fail "${asset} is still SERVED. Kernel #69 deleted packages/node/zk-assets.ts with the
+            contract those keys belong to, and this repository is built for the pin WITHOUT
+            them. Check KERNEL_REF (expected e3b9388… or later)."
       ;;
     *)
-      ok "${asset} served as ${ctype#*: }"
+      warn "${asset} answered HTTP ${code} rather than 404 — expected gone at this pin"
       ;;
   esac
 done

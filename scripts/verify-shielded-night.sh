@@ -25,7 +25,7 @@
 #               atomic (one transaction each) and two-step — with EXACT balance assertions.
 #   book        ONLY when the `offerfiles` profile is up: the reason this dApp belongs in an
 #               OFFERS stack. Native NIGHT is wrapped into sNight, posted as a real MIP-0005
-#               offer file against one of the stack's minted demo colours, found in the
+#               offer file against one of the stack's ISSUED colours, found in the
 #               kernel's book on the sNight colour, taken and settled by a second wallet, and
 #               unwrapped by that wallet back into native NIGHT. Exact balances throughout.
 #
@@ -259,7 +259,7 @@ fi
 #   1. wrap    N NIGHT -> N sNight on the maker wallet, against THIS stack's deployed contract
 #   2. offer   a real MIP-0005 offer file GIVING that sNight and WANTING a minted demo colour,
 #              posted through POST /v1/offers exactly as the repository's own maker-offer
-#              one-shot posts its DEVA/DEVB offer (same script, same code path, same wallet
+#              one-shot posts its own offer (same script, same code path, same wallet
 #              plumbing) — only the two colours and the seed differ
 #   3. book    GET /v1/offers?token=<sNight colour>&direction=GIVING lists it, with the sNight
 #              colour as its GIVING leg and both amounts exact
@@ -459,22 +459,56 @@ else
     fi
   fi
 
-  # ── the minted demo colour the offer will ask for ──────────────────────────
-  # Read off the offerfiles-deploy volume through the kernel container, which mounts it
-  # read-only. The colours derive from the OFFER-FILES contract address, so they are different
-  # on every fresh stack and cannot be written down anywhere.
+  # ── the ISSUED colour the offer will ask for (00020 PR C) ──────────────────
+  #
+  # It used to be a KEY into `minted-tokens.json` on the `offerfiles-deploy` volume
+  # (`SNIGHT_BOOK_WANT_KEY=shieldedA` = DEVA). Kernel #69 deleted the mint, the file and the
+  # volume, so the want leg is one of the ISSUER's six, named by `SNIGHT_BOOK_WANT_TOKEN` and
+  # resolved through the same host-side reader every other verify script uses.
+  #
+  # AND THE TAKER HAS TO BE GIVEN SOME. `take-snight-offer.ts` funds the taker's want side by
+  # TRANSFER from `SNIGHT_BOOK_FUNDER_SEED` (genesis-1) — which worked while the demo colours
+  # were minted TO that wallet, and cannot now: genesis-1 holds no issued token and nothing but
+  # the issuer can make one. So `issuer-fund` credits the TAKER directly, here, before the
+  # driver runs; the driver's own transfer then sees a sufficient balance and is a no-op.
   WANT_TOKEN=""
   if (( ! BOOK_FAILED )); then
-    MINTED="$(dc exec -T kernel cat /srv/offerfiles-deploy/minted-tokens.json 2>/dev/null || true)"
-    WANT_TOKEN="$(printf '%s' "$MINTED" \
-      | grep -o "\"${SNIGHT_BOOK_WANT_KEY}\"[[:space:]]*:[[:space:]]*\"[0-9a-f]*\"" \
-      | head -1 | sed -e 's/.*:[[:space:]]*"//' -e 's/"$//' || true)"
-    if [[ "${#WANT_TOKEN}" -ne 64 ]]; then
-      fail "no ${SNIGHT_BOOK_WANT_KEY} colour on the offerfiles-deploy volume — the mint step did not publish one"
+    if ! service_present faucet; then
+      fail "the book chain needs the \`issuer\` profile: its want leg is an issued token
+            (SNIGHT_BOOK_WANT_TOKEN=${SNIGHT_BOOK_WANT_TOKEN}) and only the issuer can mint one.
+            ./up.sh --with offerfiles --with issuer --with shielded-night"
       BOOK_FAILED=1
     else
-      ok "the offer will ask for ${SNIGHT_BOOK_WANT_KEY} (${WANT_TOKEN:0:16}…), a colour this stack minted"
+      WANT_TOKEN="$(issuer_token_id "$SNIGHT_BOOK_WANT_TOKEN" || true)"
+      if [[ "${#WANT_TOKEN}" -ne 64 ]]; then
+        fail "the issuer registry has no token called '${SNIGHT_BOOK_WANT_TOKEN}' — this stack
+              issues TWBTC TWETH TWUSDC TWUSDM UTWUSDC UTWBTC, and the want leg must be a
+              SHIELDED one (the offer is a shielded-to-shielded swap)"
+        BOOK_FAILED=1
+      else
+        ok "the offer will ask for ${SNIGHT_BOOK_WANT_TOKEN} (${WANT_TOKEN:0:16}…), a colour this stack issued"
+      fi
     fi
+  fi
+
+  # The taker's want-side stock. Twice the want leg, so the balancer has room for a change
+  # output; `issuer-fund` reads the balance back and refuses unless it moved by exactly this.
+  if (( ! BOOK_FAILED )); then
+    SNIGHT_TAKER_FUND="${SNIGHT_BOOK_TAKER_FUND:-$(( SNIGHT_BOOK_WANT_AMOUNT * 2 ))}"
+    SNIGHT_FUND_OUT="$(mktemp)"
+    SNIGHT_FUND_RC=0
+    dc run --rm issuer-fund "$SNIGHT_BOOK_WANT_TOKEN" "$SNIGHT_TAKER_FUND" "$SNIGHT_BOOK_TAKER_SEED" \
+      >"$SNIGHT_FUND_OUT" 2>&1 || SNIGHT_FUND_RC=$?
+    if (( SNIGHT_FUND_RC != 0 )) || ! grep -q '^ISSUER_FUND_RESULT ' "$SNIGHT_FUND_OUT"; then
+      sed 's/^/      /' "$SNIGHT_FUND_OUT" >&2
+      fail "could not give the taker ${SNIGHT_TAKER_FUND} base units of ${SNIGHT_BOOK_WANT_TOKEN}
+            — it cannot pay for the offer. The manual form is:
+            docker compose run --rm issuer-fund ${SNIGHT_BOOK_WANT_TOKEN} ${SNIGHT_TAKER_FUND} <taker-seed>"
+      BOOK_FAILED=1
+    else
+      ok "the taker holds ${SNIGHT_TAKER_FUND} base units of ${SNIGHT_BOOK_WANT_TOKEN} (minted by the issuer)"
+    fi
+    rm -f "$SNIGHT_FUND_OUT"
   fi
 
   # ── 1. wrap ────────────────────────────────────────────────────────────────
@@ -509,7 +543,7 @@ else
   # definition already carries the endpoints, the storage password and the minted-colours
   # volume. No compose service is added: one that existed would be started by every `up.sh`.
   if (( ! BOOK_FAILED )); then
-    if run_book_step "step 2/5  post a real MIP-0005 offer file: give ${SNIGHT_BOOK_AMOUNT} sNight, want ${SNIGHT_BOOK_WANT_AMOUNT} ${SNIGHT_BOOK_WANT_KEY} (proving…)" \
+    if run_book_step "step 2/5  post a real MIP-0005 offer file: give ${SNIGHT_BOOK_AMOUNT} sNight, want ${SNIGHT_BOOK_WANT_AMOUNT} ${SNIGHT_BOOK_WANT_TOKEN} (proving…)" \
          dc run --rm --no-deps -T \
            -e "ZSWAP_API=http://kernel:9999" \
            -e "MAKER_SEED=${SHIELDED_NIGHT_DRIVER_SEED}" \
@@ -540,7 +574,7 @@ else
       BOOK_FAILED=1
     fi
     if printf '%s' "$BOOKED" | grep -Eq "\"token\":\"${WANT_TOKEN}\",\"amount\":\"?${SNIGHT_BOOK_WANT_AMOUNT}\"?[,}]"; then
-      ok "…and WANTING ${SNIGHT_BOOK_WANT_AMOUNT} of ${SNIGHT_BOOK_WANT_KEY} — native NIGHT is now tradable on this book"
+      ok "…and WANTING ${SNIGHT_BOOK_WANT_AMOUNT} of ${SNIGHT_BOOK_WANT_TOKEN} — native NIGHT is now tradable on this book"
     else
       fail "the listed offer does not want ${SNIGHT_BOOK_WANT_AMOUNT} of ${WANT_TOKEN}"
       BOOK_FAILED=1
@@ -553,7 +587,7 @@ else
   # balancing the maker's deliberately-unbalanced transaction and submitting it — no relay and
   # no solver are involved, which is the entire point of the format. The `solver` profile's
   # relay lane CANNOT carry this pair: the COW solver quotes from inventory it holds, its
-  # provisioning mints only the demo colours, and it has no lane to acquire sNight (which
+  # provisioning stocks only the issuer's colours, and it has no lane to acquire sNight (which
   # exists only by wrapping NIGHT through a contract that profile knows nothing about). So the
   # take is gated on `offerfiles`, like the rest of the chain, and what the solver profile
   # would add — a relay-brokered fill of this same offer — is reported as a SKIP.
