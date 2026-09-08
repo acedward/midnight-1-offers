@@ -119,33 +119,13 @@ unset_if_empty GIVE_AMOUNT GIVE_MIN GIVE_MAX \
 # registry"). Those ids are per-chain — the issuer deploys six contracts and each token's
 # colour derives from its contract address — so they cannot be written into compose or .env.
 #
-# This stack therefore lets an operator configure a NAME (`TWBTC`) and resolves it here from
-# the handoff the `issuer` profile publishes, leaving a raw 64-hex value untouched so a
-# deliberate override still works. A name that is not one of this stack's six fails HERE, with
-# the six listed, rather than as a 64-hex validation error about a value the operator never
-# typed.
-resolve_token_leg() {
-  local var="$1" value
-  eval "value=\${${var}}"
-  case "${value}" in
-    # A 64-hex value is already an id — pass it through untouched, including a deliberate
-    # override that names a token this stack did not issue.
-    *[!0-9a-fA-F]*) : ;;
-    *) if [ "${#value}" -eq 64 ]; then
-         log "${var} is an explicit 64-hex token id (${value:0:16}…)"
-         eval "export ${var}=\$(printf '%s' \"\${value}\" | tr 'A-F' 'a-f')"
-         return 0
-       fi ;;
-  esac
-  load_issuer_tokens
-  local id decimals
-  id="$(issuer_token_id "${value}")"
-  decimals="$(issuer_token_decimals "${value}")"
-  log "${var}=${value} -> ${id} (${decimals} decimals)"
-  eval "export ${var}=\${id}"
-  eval "export M1_${var}_NAME=\${value}"
-  eval "export M1_${var}_DECIMALS=\${decimals}"
-}
+# This stack therefore lets an operator configure a NAME (`TWBTC`) and resolves it from the
+# handoff the `issuer` profile publishes, leaving a raw 64-hex value untouched so a deliberate
+# override still works. A name that is not one of this stack's six fails HERE, with the six
+# listed, rather than as a 64-hex validation error about a value the operator never typed.
+#
+# `resolve_token_leg` lives in registry-env.sh because the maker and the solver lane need
+# exactly the same translation — see that file.
 resolve_token_leg GIVE_TOKEN
 resolve_token_leg WANT_TOKEN
 

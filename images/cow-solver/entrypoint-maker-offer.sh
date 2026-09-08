@@ -19,8 +19,22 @@
 # WHICH DIRECTION THIS CREATES. An offer that GIVES `GIVE_AMOUNT` of `GIVE_TOKEN` and WANTS
 # `WANT_AMOUNT` of `WANT_TOKEN` is filled by a taker who pays the WANT and receives the GIVE.
 # Read from the solver's side that is tokenIn = WANT_TOKEN, tokenOut = GIVE_TOKEN — which is
-# the pair scripts/verify-solver.sh quotes, and the reason solver-provision mints BOTH
-# colours (tokenIn for the fee-sizing mirror, tokenOut for interpolation residuals).
+# the pair scripts/verify-solver.sh quotes, and the reason `solver-inventory` stocks the solver
+# with BOTH colours (tokenIn for the fee-sizing mirror, tokenOut for interpolation residuals).
+#
+# ── WHAT CHANGED AT KERNEL_REF=e3b9388… (00020 PR C) ────────────────────────
+#   1. THE MAKER IS NO LONGER GENESIS-1. It only ever was because the deleted faucet
+#      contract's mint credited exactly that wallet, so genesis-1 was the only wallet on the
+#      chain holding a test token to give away. With tokens coming from the `issuer` profile
+#      the maker gets its own roster seed (…0031), funded with NIGHT by `maker-provision` and
+#      stocked with `GIVE_TOKEN` by `maker-inventory` before this one-shot runs. This service
+#      therefore takes the genesis-1 lock ONLY if an operator has pointed MAKER_SEED back at
+#      the genesis seed.
+#   2. BOTH TOKENS ARE REQUIRED. `post-maker-offer.ts` calls `resolveExplicitTokens()`, which
+#      has no `minted-tokens.json` fallback of any kind; a blank leg is a hard refusal. They
+#      may be given as NAMES here and are resolved through the issuer's handoff.
+#   3. `adopt_contract_address` is gone with the contract. Nothing in `packages/solver`,
+#      `packages/solver-core` or `deploy/scripts` reads a contract address at this pin.
 
 # Consumed by log() in the sourced prelude, which shellcheck cannot see from here.
 # shellcheck disable=SC2034
@@ -32,9 +46,12 @@ ROLE=maker-offer
 # them as `BigInt(process.env.GIVE_AMOUNT ?? "500000")`, and `BigInt("")` is 0n rather than an
 # error — so a knob merely left blank in .env posts an offer that gives NOTHING. `TTL_MINUTES`
 # is the same shape through `Number("")`, i.e. an offer that expires the moment it is posted.
-# The two colours are already tolerant of "" (they fall back to the minted-colours file), and
-# are unset here only so all five behave the same way.
-unset_if_empty GIVE_TOKEN WANT_TOKEN GIVE_AMOUNT WANT_AMOUNT TTL_MINUTES
+#
+# GIVE_TOKEN and WANT_TOKEN ARE NOT IN THIS LIST any more (00020 PR C). They used to be
+# tolerant of "" because the posting script fell back to `minted-tokens.json`; at this pin
+# `resolveExplicitTokens()` has no fallback, so a blank leg must reach `require_env` below and
+# be reported as the missing token it is.
+unset_if_empty GIVE_AMOUNT WANT_AMOUNT TTL_MINUTES
 
 require_env ZSWAP_API MIDNIGHT_NETWORK_ID
 
@@ -95,16 +112,27 @@ if [ -f "${MARKER}" ]; then
   log "previous marker: $(tr '\n' ' ' < "${MARKER}")"
 fi
 
-adopt_contract_address
+# ── the two token ids (00020 PR C) ──────────────────────────────────────────
+# Configured as NAMES (`TWBTC`) and translated to this chain's 64-hex ids through the issuer's
+# handoff; a raw 64-hex value passes through untouched. `resolve_token_leg` lives in
+# images/offerfiles-kernel/registry-env.sh — one definition, shared with the poster and the
+# solver's provisioning one-shot. It waits for `tokens.env`, so it runs AFTER the enabled and
+# marker checks above: a disabled or already-seeded maker must not block on the issuer.
+require_env MAKER_SEED GIVE_TOKEN WANT_TOKEN
+resolve_token_leg GIVE_TOKEN
+resolve_token_leg WANT_TOKEN
 
-# ── the genesis-1 facade mutex (00011 Q7) ────────────────────────────────────
-# MAKER_SEED defaults to the GENESIS seed, because the deploy one-shot's mint credited
-# exactly that wallet — it is the only one holding a test token to give away. So this
-# one-shot is the third genesis-1 facade in the stack, beside `solver-provision` (ordered
-# ahead of it by `depends_on` in this fragment) and `poster-provision` (in compose/poster.yml,
-# which `depends_on` cannot reach across). All three take this lock. See take_genesis_lock()
-# in images/offerfiles-kernel/entrypoint-common.sh.
-take_genesis_lock
+# ── the genesis-1 facade mutex (00011 Q7), now CONDITIONAL ───────────────────
+# The maker holds its own roster seed …0031 since 00020 PR C, so ordinarily it opens no genesis
+# facade at all and needs no lock. An operator who points MAKER_OFFER_SEED back at the genesis
+# wallet still gets the serialisation: `issuer-deploy`, `poster-provision`, `maker-provision`
+# and `solver-provision` all drive genesis-1, and they live in three different compose
+# fragments that `depends_on` cannot order across. Taking the lock only when it is genuinely
+# needed keeps the ordinary path from serialising against one-shots it has nothing to do with.
+if [ "${MAKER_SEED}" = "${MIDNIGHT_GENESIS_SEED:-}" ]; then
+  log "MAKER_SEED is the genesis seed — taking the genesis-1 facade lock"
+  take_genesis_lock
+fi
 
 wait_http "${ZSWAP_API}/v1/health" "kernel API" "${KERNEL_WAIT_TIMEOUT_S:-600}" \
   || die "the kernel API never answered — nowhere to post an offer"

@@ -3,7 +3,8 @@
 //
 //   docker compose run --rm --no-deps -T \
 //     -v "$REPO_ROOT/scripts/driver:/app/stack-driver:ro" \
-//     -e TAKER_SEED=… -e FUNDER_SEED=… -e GIVE_TOKEN_NAME=WBTC -e WANT_TOKEN_NAME=WETH \
+//     -e TAKER_SEED=… -e FUNDER_SEED=… -e GIVE_TOKEN=<64hex> -e WANT_TOKEN=<64hex> \
+//     -e GIVE_TOKEN_NAME=TWBTC -e WANT_TOKEN_NAME=TWETH \
 //     --entrypoint bun kernel run stack-driver/take-poster-offer.ts
 //
 // Run by scripts/verify-poster.sh's last assertion (spec FR-014 / SC-005). It is the
@@ -16,18 +17,30 @@
 // installs. bun resolves npm dependencies by walking up from the importing FILE, so a mount
 // anywhere other than under /app would look in /node_modules and find nothing.
 //
-// ── WHY IT IS NOT take-snight-offer.ts WITH DIFFERENT COLOURS ───────────────
-// One step differs, and it is the step that decides whether this can work at all: HOW THE
-// TAKER GETS THE TOKEN THE OFFER DEMANDS.
+// ── WHERE THE TAKER'S WANT-SIDE INVENTORY COMES FROM (00020 PR C) ──────────
+// Up to `KERNEL_REF=a608fa6…` the taker MINTED the token the offer demanded, itself, through
+// the kernel's own faucet circuit (`mintFaucetToken`) — because the poster's want leg was a
+// FAUCET PRESET and nothing else on the chain held one.
 //
-// The sNight chain's taker is funded by a TRANSFER from genesis-1, because genesis-1 is the
-// wallet the deploy one-shot's mint credited and therefore the only one holding the demanded
-// colour. The poster's want leg is a FAUCET PRESET (WETH by default), and NOTHING on this
-// stack holds one: the deploy one-shot mints DEVA/DEVB/DEVU, and the presets exist only when
-// somebody presses the SPA faucet or the poster mints its give leg. So there is no funder to
-// transfer from — the taker MINTS the demanded token itself, through the same faucet circuit
-// and the same `mintFaucetToken` helper the poster uses for its give leg. It still needs
-// NIGHT (hence DUST, hence a fee) from genesis, which is the one thing genesis can give it.
+// Kernel #69 deleted that contract, `deploy/scripts/lib/faucet-mint.ts` and
+// `packages/solver-core/offer-files.ts` with it. There is no mint of any kind left in this
+// image, so the taker must ARRIVE HOLDING the want token, minted by the `issuer` profile:
+//
+//   docker compose run --rm issuer-fund <WANT_TOKEN_NAME> <base units> <taker-seed>
+//
+// scripts/verify-poster.sh does exactly that before invoking this driver. If the balance is
+// still short when the offer is picked, this script fails with the shortfall and that command
+// rather than proceeding — a settlement that cannot pay is not a failure worth diagnosing
+// twice.
+//
+// NIGHT (hence DUST, hence a fee) still comes from genesis by TRANSFER, which is the one thing
+// genesis can give it and the one step this driver kept.
+//
+// ── THE TWO LEGS ARE 64-HEX IDS, NOT NAMES ─────────────────────────────────
+// They used to be NAMES, because a preset colour derived from the contract address offline and
+// both sides could compute it. Issued colours derive from each token's own deployed contract
+// instead, so the ids come in from the caller — which reads them from the issuer's registry,
+// the one place they are defined.
 //
 // ── WHICH OFFER IT TAKES ────────────────────────────────────────────────────
 // The FIRST live offer that gives the poster's give colour and wants its want colour, with
@@ -43,20 +56,12 @@
 //
 // DEVNET ONLY.
 
-import { readFileSync } from "node:fs";
-
 import { registerNightForDust, waitForDustFunds } from "@effectstream/midnight-contracts";
 import { midnightNetworkConfig as net } from "@effectstream/midnight-contracts/midnight-env";
 import { OfferFiles } from "@effectstream/mip-zswap-offer/mip5";
 import { Transaction } from "@midnight-ntwrk/ledger-v8";
 import { setNetworkId } from "@midnight-ntwrk/midnight-js-network-id";
 
-import {
-  expectedColour,
-  freshNonce,
-  mintFaucetToken,
-} from "../deploy/scripts/lib/faucet-mint.ts";
-import { joinOfferFiles } from "../packages/solver-core/offer-files.ts";
 import {
   buildWallet,
   shieldedBalances,
@@ -74,11 +79,13 @@ const API = (process.env["ZSWAP_API"] ?? "http://kernel:9999").replace(/\/$/, ""
 const TAKER_SEED = required("TAKER_SEED");
 /** The only wallet that can give the taker NIGHT — and therefore DUST, and therefore a fee. */
 const FUNDER_SEED = required("FUNDER_SEED");
-/** The poster's two legs, as NAMES: the colours derive from the contract address offline,
- *  exactly as the poster derives them, so the two sides cannot disagree. */
-const GIVE_TOKEN_NAME = (process.env["GIVE_TOKEN_NAME"] ?? "WBTC").trim() || "WBTC";
-const WANT_TOKEN_NAME = (process.env["WANT_TOKEN_NAME"] ?? "WETH").trim() || "WETH";
-const CONTRACT_SHARE_DIR = process.env["CONTRACT_SHARE_DIR"] ?? "/srv/offerfiles-deploy";
+/** The poster's two legs, as this chain's 64-hex token ids. REQUIRED: they are issued per
+ *  chain and there is nothing sensible to default them to. */
+const GIVE_TOKEN = requiredTokenId("GIVE_TOKEN");
+const WANT_TOKEN = requiredTokenId("WANT_TOKEN");
+/** Display only — the caller knows the names, this script only ever compares ids. */
+const GIVE_TOKEN_NAME = (process.env["GIVE_TOKEN_NAME"] ?? "").trim() || GIVE_TOKEN.slice(0, 8);
+const WANT_TOKEN_NAME = (process.env["WANT_TOKEN_NAME"] ?? "").trim() || WANT_TOKEN.slice(0, 8);
 
 const NIGHT = "0".repeat(64);
 /** The same two numbers the kernel tree's own e2e driver funds its taker with. */
@@ -88,6 +95,10 @@ const NIGHT_UTXO_COUNT = 2;
  *  accounting has not yet seen the chain notification for the previous one, and a
  *  transaction built against that state is rejected outright (`1010: Custom error: 170`). */
 const SUBMIT_SETTLE_MS = 8_000;
+/** How many 5-second polls to give a just-credited want balance. The mint that produced it is
+ *  a separate transaction submitted by the ISSUER, so the taker's own view of it arrives on the
+ *  indexer's schedule rather than on this script's. */
+const WANT_WAIT_TRIES = Number(process.env["TAKE_WANT_WAIT_TRIES"] ?? "60");
 const DUST_WAIT_MS = Number(process.env["TAKE_DUST_WAIT_MS"] ?? "300000");
 const STATUS_TIMEOUT_MS = Number(process.env["TAKE_STATUS_TIMEOUT_MS"] ?? "300000");
 const BALANCE_TIMEOUT_MS = Number(process.env["TAKE_BALANCE_TIMEOUT_MS"] ?? "300000");
@@ -105,21 +116,17 @@ function required(name: string): string {
   return v;
 }
 
-/** MIDNIGHT_CONTRACT_ADDRESS if the caller knows it, else the deploy one-shot's own file on
- *  the shared volume — the same two sources, in the same order, entrypoint-common.sh uses. */
-function contractAddress(): string {
-  const fromEnv = process.env["MIDNIGHT_CONTRACT_ADDRESS"]?.trim();
-  if (fromEnv) return fromEnv;
-  const file = `${CONTRACT_SHARE_DIR}/contract-offer-files.${net.id}.json`;
-  try {
-    const json = JSON.parse(readFileSync(file, "utf-8")) as { contractAddress?: string };
-    if (typeof json.contractAddress === "string" && json.contractAddress.length > 0) {
-      return json.contractAddress;
-    }
-    return die(`${file} carries no string contractAddress`);
-  } catch (err) {
-    return die(`cannot read ${file}: ${String(err).slice(0, 200)}`);
+/** A token id, validated to the shape every consumer at this pin validates it to. Lowercased,
+ *  because the kernel's book reports colours in lower case and this script compares strings. */
+function requiredTokenId(name: string): string {
+  const v = required(name).toLowerCase().replace(/^0x/, "");
+  if (!/^[0-9a-f]{64}$/.test(v)) {
+    return die(
+      `${name} must be a 64-hex token id, got "${v.slice(0, 24)}…". ` +
+        "Read this stack's six ids with: docker compose run --rm --no-deps issuer-registry",
+    );
   }
+  return v;
 }
 
 async function getJson<T>(path: string): Promise<T> {
@@ -208,14 +215,12 @@ async function fundTakerNight(): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  const address = contractAddress();
-  const giveColour = expectedColour(GIVE_TOKEN_NAME, address);
-  const wantColour = expectedColour(WANT_TOKEN_NAME, address);
+  const giveColour = GIVE_TOKEN;
+  const wantColour = WANT_TOKEN;
   log(`kernel   : ${API}`);
   log(`network  : ${net.id}`);
-  log(`contract : ${address}`);
   log(`give     : ${GIVE_TOKEN_NAME} ${giveColour}  (the taker receives it)`);
-  log(`want     : ${WANT_TOKEN_NAME} ${wantColour}  (the taker mints it and pays it)`);
+  log(`want     : ${WANT_TOKEN_NAME} ${wantColour}  (the taker pays it from issuer-minted stock)`);
 
   // THE offer, chosen from the kernel's live book on BOTH legs. `?direction=GIVING` on the
   // give colour is not enough on its own: a stack whose SPA faucet was used by hand could
@@ -252,35 +257,38 @@ async function main(): Promise<void> {
   await registerNightForDust(taker as any);
   log("taker registered NIGHT for DUST");
 
-  // The token the offer DEMANDS. A MINT rather than a transfer — see this file's header.
-  // Minting is a contract call and therefore pays a fee, so the DUST has to be there first;
-  // upstream's poster waits the same way before its own first mint.
-  const wantHeld = (await shieldedBalances(taker))[wantColour] ?? 0n;
+  // THE DUST HAS TO BE THERE BEFORE THE SETTLEMENT, and this wait used to be implicit: it sat
+  // in front of the taker's own faucet mint, which was itself a fee-paying contract call. With
+  // the mint gone (00020 PR C) the first thing the taker pays for is the settlement, so the
+  // wait moves here rather than disappearing — `balanceFinalizedTransaction` with no DUST is a
+  // failure whose message names neither DUST nor the registration that had not landed yet.
+  const dust = await waitForDustFunds(taker.wallet as any, {
+    timeoutMs: DUST_WAIT_MS,
+    waitNonZero: true,
+  });
+  log(`taker DUST balance: ${dust}`);
+
+  // THE TOKEN THE OFFER DEMANDS — held already, or this run cannot settle (00020 PR C).
+  //
+  // The taker used to mint it. Kernel #69 deleted the faucet circuit and its helper, so the
+  // stock comes from the `issuer` profile instead and the only thing left to do here is to
+  // check it and to say EXACTLY how to fix a shortfall. `waitForShielded` is given one short
+  // window rather than none: verify-poster.sh funds the taker moments before this runs, and a
+  // wallet that has just been credited may still be catching up.
+  let wantHeld = (await shieldedBalances(taker))[wantColour] ?? 0n;
   if (wantHeld < wantAmount) {
-    const dust = await waitForDustFunds(taker.wallet as any, {
-      timeoutMs: DUST_WAIT_MS,
-      waitNonZero: true,
-    });
-    log(`taker DUST balance: ${dust}`);
-    // Twice the demand, so the balancer has room for a change output and the taker is not
-    // left needing a second mint if the offer it takes is a large one from a size range.
-    const mintAmount = wantAmount * 2n;
-    log(`taker holds ${wantHeld} ${WANT_TOKEN_NAME} — minting ${mintAmount} from the faucet circuit (proving…)`);
-    const deployed = await joinOfferFiles(taker as never, address);
-    const minted = await mintFaucetToken(deployed as never, WANT_TOKEN_NAME, mintAmount, freshNonce(), {
-      contractAddress: address,
-      coinSecretKey: () => (taker as any).zswapSecretKeys.coinSecretKey,
-    });
-    if (minted.colour !== wantColour) {
-      die(`the mint landed on colour ${minted.colour}, expected ${wantColour}`);
-    }
-    const got = await waitForShielded(taker, wantColour, wantAmount, 60, 5_000);
-    if (got < wantAmount) die(`taker holds ${got} ${WANT_TOKEN_NAME}, needs ${wantAmount}`);
-    log(`taker ${WANT_TOKEN_NAME} balance: ${got}`);
-    await sleep(SUBMIT_SETTLE_MS);
-  } else {
-    log(`taker already holds ${wantHeld} ${WANT_TOKEN_NAME} (needs ${wantAmount})`);
+    log(`taker holds ${wantHeld} ${WANT_TOKEN_NAME}, needs ${wantAmount} — waiting for the balance`);
+    wantHeld = await waitForShielded(taker, wantColour, wantAmount, WANT_WAIT_TRIES, 5_000);
   }
+  if (wantHeld < wantAmount) {
+    return die(
+      `the taker holds ${wantHeld} base units of ${WANT_TOKEN_NAME} (${wantColour.slice(0, 16)}…) ` +
+        `and the offer demands ${wantAmount}. This stack does not mint from the taker any more — ` +
+        `fund it from the issuer:\n` +
+        `  docker compose run --rm issuer-fund ${WANT_TOKEN_NAME} ${wantAmount - wantHeld} <taker-seed>`,
+    );
+  }
+  log(`taker holds ${wantHeld} ${WANT_TOKEN_NAME} (needs ${wantAmount})`);
 
   const balancesBefore = await shieldedBalances(taker);
   const giveBefore = balancesBefore[giveColour] ?? 0n;

@@ -53,8 +53,15 @@ ISSUER_TOKEN_NAMES_EXPECTED="TWBTC TWETH TWUSDC TWUSDM UTWUSDC UTWBTC"
 # The wait exists for the case compose cannot express. Most consumers are gated on
 # `issuer-deploy: service_completed_successfully` and see the file immediately; a container
 # restarted by its own restart policy while the issuer is still publishing would not.
+#
+# IDEMPOTENT: two legs resolved in a row must not wait, re-source and re-log twice. The guard
+# is a plain variable rather than a check on ISSUER_TOKENS_REVISION so that a caller which
+# inherited a stale REVISION from its environment still gets a real load.
+M1_ISSUER_TOKENS_LOADED=""
 load_issuer_tokens() {
   local timeout="${1:-${ISSUER_TOKENS_WAIT_TIMEOUT_S:-3600}}" waited=0
+
+  [ -z "${M1_ISSUER_TOKENS_LOADED}" ] || return 0
 
   while [ ! -f "${ISSUER_TOKENS_FILE}" ]; do
     waited=$(( waited + 2 ))
@@ -105,6 +112,7 @@ load_issuer_tokens() {
 
   ISSUER_TOKENS_NAMES="${ISSUER_TOKENS_NAMES:-${ISSUER_TOKEN_NAMES_EXPECTED}}"
   export ISSUER_TOKENS_REVISION ISSUER_TOKENS_GENERATED_AT ISSUER_TOKENS_NAMES
+  M1_ISSUER_TOKENS_LOADED=1
   log "issuer tokens loaded: ${ISSUER_TOKENS_NAMES// /, } (registry revision ${ISSUER_TOKENS_REVISION:0:16}…)"
 }
 
@@ -130,6 +138,55 @@ issuer_token_decimals() {
     die "unknown token ${1}"
   fi
   printf '%s' "${value}"
+}
+
+# resolve_token_leg <VAR> — turn a token NAME in <VAR> into this stack's 64-hex id, in place.
+#
+# ONE DEFINITION, THREE CALLERS: entrypoint-offer-poster.sh, images/cow-solver's
+# entrypoint-maker-offer.sh and its entrypoint-solver-provision.sh. Every one of them faces the
+# same problem — at `KERNEL_REF=e3b9388…` the pinned scripts require an EXPLICIT 64-hex token id
+# and refuse a name outright (`resolveLeg()`: "GIVE_TOKEN is required: set the 64-hex token ID
+# from the selected network's external registry") — and those ids are per-chain, because each
+# token's colour derives from the contract address the issuer deployed it at. They cannot be
+# written into compose or into `.env`.
+#
+# So this stack lets an operator configure a NAME (`TWBTC`) and resolves it here, leaving a raw
+# 64-hex value untouched so a deliberate override still works. A name that is not one of this
+# stack's six fails HERE with the six listed, rather than as a 64-hex validation error about a
+# value the operator never typed.
+#
+# It also exports two derived variables the CALLER may log or size with:
+#   M1_<VAR>_NAME      the name as configured (empty when an explicit id was given)
+#   M1_<VAR>_DECIMALS  that token's decimals (empty likewise)
+resolve_token_leg() {
+  local var="${1:?resolve_token_leg needs a variable name}" value
+  eval "value=\${${var}:-}"
+  [ -n "${value}" ] || die "${var} is empty — it must name one of this stack's tokens, or be a 64-hex id"
+  case "${value}" in
+    # Anything with a non-hex character is a NAME. Fall through to the handoff.
+    *[!0-9a-fA-F]*) : ;;
+    *)
+      if [ "${#value}" -eq 64 ]; then
+        # An explicit id: pass it through untouched but LOWERCASED, because every consumer at
+        # this pin validates against /^[0-9a-f]{64}$/ and would reject an uppercase one.
+        local lowered
+        lowered="$(printf '%s' "${value}" | tr 'A-F' 'a-f')"
+        log "${var} is an explicit 64-hex token id (${lowered:0:16}…)"
+        eval "export ${var}=\${lowered}"
+        eval "export M1_${var}_NAME=''"
+        eval "export M1_${var}_DECIMALS=''"
+        return 0
+      fi
+      ;;
+  esac
+  load_issuer_tokens
+  local id decimals
+  id="$(issuer_token_id "${value}")"
+  decimals="$(issuer_token_decimals "${value}")"
+  log "${var}=${value} -> ${id} (${decimals} decimals)"
+  eval "export ${var}=\${id}"
+  eval "export M1_${var}_NAME=\${value}"
+  eval "export M1_${var}_DECIMALS=\${decimals}"
 }
 
 # issuer_whole_coin <NAME> — 10^decimals, as a decimal STRING.

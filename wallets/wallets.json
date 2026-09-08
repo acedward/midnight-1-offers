@@ -308,7 +308,7 @@
     },
     {
       "name": "solver",
-      "role": "THE COW SOLVER's wallet — holds swap-token inventory and settles relay intents",
+      "role": "THE COW SOLVER's wallet — holds issuer-minted swap-token inventory and settles relay intents",
       "envVar": "SOLVER_SEED",
       "$comment": [
         "A DEDICATED, NON-GENESIS seed. Two things make this non-negotiable:",
@@ -328,7 +328,7 @@
       "seed": "0000000000000000000000000000000000000000000000000000000000000021",
       "seedBytes": 32,
       "funding": "provisioned",
-      "provisionedBy": "solver-provision (compose/solver.yml, profile `solver`)",
+      "provisionedBy": "solver-provision then solver-inventory (compose/solver.yml, profile `solver`) — since 00020 PR C the first sends NIGHT from genesis-1 and runs upstream's external-prefunding check, the second mints both swap tokens through the `issuer` profile. Ordered one after the other because both open a facade on this seed.",
       "expect": {
         "measuredOn": "2026-09-01",
         "node": "midnight-node 1.0.0, CFG_PRESET=dev",
@@ -347,12 +347,12 @@
     },
     {
       "name": "e2e-maker",
-      "role": "the canonical e2e driver's MAKER — posts the signed zswap offer to POST /v1/offers",
+      "role": "THE MAKER — the `maker-offer` one-shot's wallet since 00020 PR C, and the canonical e2e driver's maker. It posts the signed zswap offer to POST /v1/offers.",
       "envVar": "MAKER_SEED",
       "seed": "0000000000000000000000000000000000000000000000000000000000000031",
       "seedBytes": 32,
       "funding": "provisioned",
-      "provisionedBy": "the e2e driver (P5/T5.2), from genesis-1",
+      "provisionedBy": "maker-provision then maker-inventory (compose/solver.yml, profile `solver`) — NIGHT from genesis-1, then the give token from the `issuer` profile — and, when it is run, the canonical e2e driver. SHARED BY MORE THAN ONE JOB, AND SAFE ONLY BECAUSE THEY ARE SEQUENTIAL: maker-provision, maker-inventory, maker-offer and the e2e driver are one-shots ordered one after another, and none of them is running when another opens this facade. Nothing long-lived may ever hold this seed. Up to 00020 PR B the maker was genesis-1, because the kernel's deleted faucet mint credited exactly that wallet; kernel #69 removed the mint, so the maker got its own seed.",
       "expect": {
         "measuredOn": "2026-09-01",
         "node": "midnight-node 1.0.0, CFG_PRESET=dev",
@@ -371,13 +371,13 @@
     },
     {
       "name": "e2e-taker",
-      "role": "the canonical e2e driver's TAKER — submits the intent at the relay and is credited",
+      "role": "THE TAKER — submits the intent at the relay and is credited, and takes one poster offer in scripts/verify-poster.sh. Since 00020 PR C it cannot mint the token an offer demands (kernel #69 deleted the faucet circuit): `issuer-fund` credits it first.",
       "envVar": "TAKER_SEED",
       "$comment": "Its credit is asserted for EXACT EQUALITY with the demanded amount, not a bound, so this wallet must start empty of the demanded token and be used by nothing else.",
       "seed": "0000000000000000000000000000000000000000000000000000000000000032",
       "seedBytes": 32,
       "funding": "provisioned",
-      "provisionedBy": "the e2e driver (P5/T5.2), from genesis-1",
+      "provisionedBy": "NIGHT from genesis-1 by whichever driver is running it (scripts/driver/take-poster-offer.ts, the e2e driver); the SWAP TOKEN it must pay with comes from `issuer-fund` — since 00020 PR C nothing in this stack can mint from the taker's own wallet.",
       "expect": {
         "measuredOn": "2026-09-01",
         "node": "midnight-node 1.0.0, CFG_PRESET=dev",
@@ -396,7 +396,7 @@
     },
     {
       "name": "poster",
-      "role": "THE OFFER POSTER's wallet — mints one faucet coin per tick and posts one sponsored ZSwap offer spending exactly that coin",
+      "role": "THE OFFER POSTER's wallet — posts one sponsored ZSwap offer per tick, spending exactly ONE pre-minted issuer coin whole. It has not minted anything since 00020 PR C: kernel #69 deleted the faucet circuit, so its inventory is pre-minted by `poster-inventory` and the book is bounded by that stock.",
       "envVar": "OFFER_POSTER_SEED",
       "$comment": [
         "A DEDICATED, NON-GENESIS seed, added by project 00011 PR C with the `poster` profile.",
@@ -425,8 +425,8 @@
       ],
       "seed": "0000000000000000000000000000000000000000000000000000000000000041",
       "seedBytes": 32,
-      "funding": "provisioned by poster-provision (NIGHT from genesis-1, then DUST registration by the poster wallet itself)",
-      "provisionedBy": "poster-provision (compose/poster.yml, profile `poster`)",
+      "funding": "provisioned in two steps: poster-provision (NIGHT from genesis-1, then DUST registration by the poster wallet itself) and poster-inventory (POSTER_PREMINT_COUNT coins of exactly OFFER_POSTER_GIVE_AMOUNT base units of the give token, minted by the `issuer` profile)",
+      "provisionedBy": "poster-provision then poster-inventory (compose/poster.yml, profile `poster`)",
       "expect": {
         "measuredOn": "2026-09-03",
         "node": "midnight-node 1.0.0, CFG_PRESET=dev",

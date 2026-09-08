@@ -47,9 +47,13 @@ unset_if_empty SOLVER_LADDER_CONFIG SOLVER_SUPPORTED_PAIRS SOLVER_MIN_JOB_OUTPUT
 # a relative or `:memory:` path itself, so this only prepares the path it accepted.
 mkdir -p "$(dirname "${SOLVER_JOURNAL_PATH}")"
 
-# The solver mirrors the kernel's book and rebuilds maker bytes from it, so it needs the same
-# contract identity every other offer-files container adopts.
-adopt_contract_address
+# NO CONTRACT ADOPTION SINCE 00020 PR C. This used to call `adopt_contract_address` because
+# the solver mirrors the kernel's book and rebuilds maker bytes from it. Kernel #69 deleted the
+# offer-files contract, `readMidnightContract()` and the function itself; at
+# `KERNEL_REF=e3b9388…` there is no `MIDNIGHT_CONTRACT_ADDRESS` reader left anywhere in
+# `packages/solver`, `packages/solver-core` or `deploy/scripts` (measured). The solver needs no
+# token identity of its own either — its LADDER carries the two ids, written by
+# `solver-provision` before this container starts.
 
 wait_http "${ZSWAP_API}/v1/health" "kernel API" "${KERNEL_WAIT_TIMEOUT_S:-600}" \
   || die "the kernel API never answered — the solver has no book to mirror"

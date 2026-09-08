@@ -215,16 +215,18 @@ load_env() {
       warn "${retired} is RETIRED and IGNORED — the solver IS the kernel commit; set KERNEL_REF instead"
     fi
   done
-  # There are FOUR Compact toolchains here (kernel 0.30.0, zswap-da 0.31.0, shielded-night
-  # 0.31.1, issuer 0.31.1), so one variable could never have configured them. Each is pinned
-  # where it is enforced — a Dockerfile ARG in images/offerfiles-kernel, a literal in
+  # There are THREE Compact toolchains here since 00020 PR C (zswap-da 0.31.0, shielded-night
+  # 0.31.1, issuer 0.31.1), so one variable could never have configured them. THE KERNEL'S
+  # 0.30.0 IS GONE: kernel #69 deleted the contract `images/offerfiles-kernel` used to compile,
+  # so that image has no Compact stage, no `COMPACT_VERSION` ARG and no compiler of any
+  # version. Each of the three left is pinned where it is enforced — a literal in
   # compose/frontend.yml, one in compose/shielded-night.yml and one in compose/issuer.yml, each
   # of which scripts/verify-compose-pins.sh binds to its OWN matrix entry — and none of them
   # reads the environment. The issuer's and shielded-night's are the same compiler VERSION and
   # therefore the same release asset and the same two SHA-256s, but they are separate matrix
   # entries because they are separate build inputs that can be re-pinned independently.
   if [[ -n "${COMPACT_VERSION-}" ]]; then
-    warn "COMPACT_VERSION is IGNORED — kernel 0.30.0, zswap-da 0.31.0, shielded-night 0.31.1, issuer 0.31.1, all pinned in-build"
+    warn "COMPACT_VERSION is IGNORED — zswap-da 0.31.0, shielded-night 0.31.1, issuer 0.31.1, all pinned in-build (the kernel image compiles nothing since kernel #69)"
   fi
 
   # ── external runtime images: repository + IMMUTABLE DIGEST, never a tag ─────

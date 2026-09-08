@@ -39,7 +39,7 @@
     },
     {
       "component": "**Offer-files kernel · batcher · COW solver · maker-offer · offer poster · price feed** (ONE image)",
-      "source": "[`effectstream/zswap-offerfiles-kernel`](https://github.com/effectstream/zswap-offerfiles-kernel) `main`, the whole-coin line (6 decimals everywhere); compactc 0.30.0. The solver has no second pin and no `.solver-commit`. Since kernel [#68](https://github.com/effectstream/zswap-offerfiles-kernel/pull/68) the upstream mint also tries to register its own `TESTTOKEN*` names — it cannot reach a kernel from this stack's deploy one-shot, and `offerfiles-token-names` fails loudly rather than accept a foreign name for one of our colours. A `postgres` volume older than `c293ebd` needs `./down.sh -v` before this pin; `c293ebd` → this pin does not",
+      "source": "[`effectstream/zswap-offerfiles-kernel`](https://github.com/effectstream/zswap-offerfiles-kernel) `main`, the EXTERNAL-INVENTORY line since kernel [#69](https://github.com/effectstream/zswap-offerfiles-kernel/pull/69): the local faucet contract is deleted, so this image compiles NOTHING (no Compact stage, no `COMPACT_VERSION`) and every token comes from the `issuer` profile below. Per-token decimals, not 6 everywhere. The solver has no second pin and no `.solver-commit`. **BREAKING for an existing `postgres` volume** — `000-init.sql` reseeds `known_tokens` and adds `canonical_token_registry_state`, so `./down.sh -v` is the upgrade path",
       "pin": "{commit:KERNEL_REF@effectstream/zswap-offerfiles-kernel}",
       "pinnedIn": "{files:KERNEL_REF}"
     },

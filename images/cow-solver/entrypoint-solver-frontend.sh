@@ -14,12 +14,14 @@
 # compose/solver.yml's `depends_on` says the same thing structurally: the kernel, and nothing
 # else.
 #
-# IT DOES NOT CALL adopt_contract_address EITHER. The site never names a token colour from
-# the contract — it labels colours from the kernel's own `GET /v1/known-tokens` and falls
-# back to short hex — so it has no reason to read the deployed identity, and the service does
-# not mount the shared volume that holds it. Calling it here would block for
-# CONTRACT_WAIT_TIMEOUT_S and then fail, which is a fifteen-minute way of saying "wrong
-# dependency".
+# IT NEEDS NO TOKEN IDENTITY EITHER, and it never did. Up to `KERNEL_REF=a608fa6…` this note
+# said the service does not call `adopt_contract_address`, because the site labels colours from
+# the kernel's own `GET /v1/known-tokens` and falls back to short hex rather than reading the
+# deployed contract. Kernel #69 deleted that function along with the contract, and the same
+# reasoning now applies to its successor: the site does not mount the issuer's `issuer-tokens`
+# handoff and does not source it. `GET /v1/known-tokens` is exactly where the six issued names
+# arrive — put there by `issuer-registrar` — so the labels get better at this pin, from the one
+# source the site already reads.
 #
 # THIS SCRIPT MUST NOT VALIDATE THE SITE'S OWN CONFIGURATION — the same rule
 # entrypoint-solver.sh follows. `packages/solver-frontend/env.ts` resolves every boundary

@@ -82,15 +82,25 @@ RUN set -eux; \
 # There is deliberately NO `.solver-commit` here any more. scripts/verify-source-pins.sh
 # asserts its ABSENCE, because a second commit file is exactly what the retired overlay used
 # to leave behind.
+# THE COMPILED CONTRACT USED TO BE ONE OF THESE LINES, and it had to go (00020 PR C).
+# `packages/contracts-midnight/contract-offer-files/src/managed/contract/index.js` was the
+# kernel image's compiled Compact output, asserted here because settlement rebuilds maker bytes
+# against it. Kernel #69 DELETED the whole package, so at `KERNEL_REF=e3b9388…` that file
+# cannot exist and this build would fail on a tree that is exactly right. What replaced it is
+# the pair of scripts the solver lane actually execs — asserted for the same reason the
+# contract was: a base image wired to something that is not the offer-files kernel must fail
+# HERE, not three services later at settlement.
 RUN test -f /app/.kernel-commit \
  && test ! -f /app/.solver-commit \
- && test -f /app/packages/contracts-midnight/contract-offer-files/src/managed/contract/index.js \
  && test -f /app/start.solver.ts \
- && test -f /app/start.solver-frontend.ts
+ && test -f /app/start.solver-frontend.ts \
+ && test -f /app/deploy/scripts/provision-solver-fees.ts \
+ && test -f /app/deploy/scripts/post-maker-offer.ts \
+ && test ! -e /app/packages/contracts-midnight/contract-offer-files
 
 # ── entrypoints ──────────────────────────────────────────────────────────────
 # They source /usr/local/lib/offerfiles/entrypoint-common.sh from the KERNEL image underneath
-# — the contract-adoption, Celestia-token and readiness-wait behaviour is identical for these
+# — the token-handoff, Celestia-token and readiness-wait behaviour is identical for these
 # containers, and a second copy of it would be a second thing to keep in step.
 COPY entrypoint-solver.sh entrypoint-solver-frontend.sh \
      entrypoint-solver-provision.sh entrypoint-maker-offer.sh \
