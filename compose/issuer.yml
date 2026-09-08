@@ -44,8 +44,24 @@
 #   issuer-fund        NEVER STARTED AT ALL: the headless funding CLI every other profile's
 #                      provisioning calls.
 #                        docker compose run --rm issuer-fund TWBTC 100000000 <recipient-seed>
+#                        docker compose run --rm issuer-fund TWBTC 1000000 <seed> 12   # 12 coins
 #   issuer-registry    NEVER STARTED AT ALL: validate + dump the registry (./verify.sh, and an
 #                      operator answering "what tokens does this stack have?").
+#   issuer-tokens-env  NEVER STARTED AT ALL: re-publish the shell-sourceable token handoff
+#                      `tokens.env` (00020 PR C) — repair and inspection only; `issuer-deploy`
+#                      already writes it on both its deploy and its resume path.
+#
+# ─── THE TOKEN HANDOFF, AND WHY IT IS A SECOND VOLUME (00020 PR C) ───────────
+# Since kernel #69 the solver, the maker, the offer poster and the e2e driver all need token
+# IDS that only exist once this profile has deployed, and every one of them runs the KERNEL
+# image — which has no reader for `metadata.undeployed.json` and must never grow one, because
+# `images/issuer/m1/registry.ts` is the single reader and the only place the file is validated.
+#
+# So `issuer-deploy` publishes a deliberately dull projection of that reader's output —
+# `NAME=value` lines, one block per token — onto the `issuer-tokens` volume, and
+# `images/offerfiles-kernel/registry-env.sh` sources it. It is a SEPARATE volume from
+# `issuer-registry` because that one is an nginx document root on `faucet` below; every
+# consumer mounts `issuer-tokens` READ-ONLY, and nothing serves it.
 #
 # ─── THE SEED RULE, WHICH THIS PROFILE OBEYS AND ENFORCES ───────────────────
 # The deploy runner holds a wallet facade open through six proving deployments, and genesis-1 is
@@ -147,6 +163,10 @@ services:
     volumes:
       # THE REGISTRY, shared with the faucet, the registrar and every funding call.
       - 'issuer-registry:/srv/issuer-registry'
+      # THE TOKEN HANDOFF, read-WRITE here and read-only everywhere else: this one-shot is the
+      # only thing that publishes it (step 4 of its entrypoint, on both the deploy and the
+      # resume path).
+      - 'issuer-tokens:/srv/issuer-tokens'
       # THE RESUME JOURNAL AND PRIVATE STATE, at the path the pinned runner chooses for itself
       # (`<repo root>/.local`, keyed by sha256(registry path + stack identity)). On a
       # container-local directory every `./up.sh` would deploy six more contracts.
@@ -325,10 +345,44 @@ services:
     volumes:
       - 'issuer-registry:/srv/issuer-registry:ro'
 
+  # ── issuer-tokens-env ──────────────────────────────────────────────────────
+  # RE-PUBLISH the token handoff. `deploy: { replicas: 0 }`, so `docker compose up` creates no
+  # container for it. It holds no wallet and no seed, takes no lock and touches no chain: it
+  # reads the registry through the same validating loader every other consumer uses and writes
+  # one file. Two jobs only —
+  #
+  #   REPAIR      the `issuer-tokens` volume is gone (a plain `./down.sh` keeps volumes, but an
+  #               operator who removed just that one, or an older stack that never had it,
+  #               leaves a valid registry with no handoff). Re-running `issuer-deploy` would
+  #               also work and would open the issuer's wallet and take the genesis lock to do
+  #               a job that needs neither.
+  #   INSPECTION  `docker compose run --rm --no-deps issuer-tokens-env && \
+  #                docker compose run --rm --no-deps --entrypoint cat issuer-tokens-env \
+  #                  /srv/issuer-tokens/tokens.env`
+  issuer-tokens-env:
+    image: '${ISSUER_IMAGE:-midnight-1-offers/issuer:local}'
+    build: *issuer_build
+    entrypoint: ['/usr/local/bin/entrypoint-tokens-env.sh']
+    restart: 'no'
+    deploy:
+      replicas: 0
+    environment:
+      <<: *issuer_env
+    volumes:
+      # READ-ONLY on the registry, read-WRITE on the handoff — the exact opposite of every
+      # consumer, and the reason it is its own service rather than a flag on `issuer-registry`.
+      - 'issuer-registry:/srv/issuer-registry:ro'
+      - 'issuer-tokens:/srv/issuer-tokens'
+
 volumes:
   # Declared here rather than created ad hoc: only a compose-created volume carries the
   # com.docker.compose.project label that `down.sh -v` filters on, so a volume made any other
   # way survives teardown and silently feeds stale state to the next bring-up.
+  issuer-tokens:    # tokens.env — the six token ids, decimals, privacy, symbols and contract
+                    # addresses as a shell-sourceable projection of the registry. Keyed to THIS
+                    # chain exactly as the registry is, and in the wipe group with it: a
+                    # handoff naming colours from a chain that no longer exists would point the
+                    # poster and the solver at tokens nobody can spend.
   issuer-registry:  # metadata.undeployed.json — the six contract addresses, token ids, decimals
                     # and faucet presets. Keyed to THIS chain: the runner records the chain
                     # name, runtime version and genesis hash in it and refuses to resume against

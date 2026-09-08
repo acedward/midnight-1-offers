@@ -1,11 +1,24 @@
 #!/usr/bin/env bash
-# entrypoint-common.sh — the shared prelude for all three offer-files containers.
+# entrypoint-common.sh — the shared prelude for every offer-files container.
 # SOURCED, never executed.
 #
-# One image ships one process per concern — the deploy one-shot, the sync node, the batcher —
-# and all three start the same way: normalise the environment compose handed them, pick up the
-# Celestia auth token off a shared volume, and (for the two that need one) learn the offer-files
-# contract address the one-shot published.
+# One image ships one process per concern — the sync node, the batcher, the poster, the price
+# feed, and (through images/cow-solver) the solver lane — and they all start the same way:
+# normalise the environment compose handed them, and pick up the Celestia auth token off a
+# shared volume.
+#
+# ── WHAT LEFT THIS FILE IN 00020 PR C ────────────────────────────────────────
+# `adopt_contract_address()`, `CONTRACT_SHARE_DIR`, `CONTRACT_FILE`, `MINTED_FILE` and
+# `MINT_MARKER`. Kernel #69 deleted the offer-files contract, so there is no address to adopt
+# and no `minted-tokens.json` to read: the kernel's `GET /v1/midnight/config` no longer carries
+# a `contractAddress`, upstream's own `entrypoint-common.sh` dropped the same function, and
+# `readMidnightContract()` is gone from the tree.
+#
+# WHAT REPLACED IT is `registry-env.sh`, sourced below: the token IDS this stack trades are
+# now ISSUED per chain by the `issuer` profile rather than derived from a contract address, and
+# a consumer learns them from the handoff that profile publishes. Same shape of problem, same
+# shape of answer — a per-stack identity that must be read at container start and never
+# hard-coded — with the file on a different volume and a different producer.
 #
 # WHAT THIS FILE DELIBERATELY DOES NOT DO: supply endpoint defaults.
 # `@effectstream/midnight-contracts` already defaults an unset MIDNIGHT_NETWORK_ID to
@@ -21,22 +34,20 @@ set -euo pipefail
 . /usr/local/bin/wait-for.sh
 
 REPO_ROOT="${REPO_ROOT:-/app}"
-CONTRACT_SHARE_DIR="${CONTRACT_SHARE_DIR:-/srv/offerfiles-deploy}"
 NETWORK_ID="${MIDNIGHT_NETWORK_ID:-undeployed}"
-# The name is not a convention this repository invented: `midnight-contract:deploy` writes,
-# and `readMidnightContract()` reads, exactly `contract-offer-files.<network>.json` inside
-# packages/contracts-midnight.
-CONTRACT_FILE="contract-offer-files.${NETWORK_ID}.json"
-CONTRACT_TARGET_DIR="${REPO_ROOT}/packages/contracts-midnight"
-# Read by the entrypoints that SOURCE this file (deploy publishes both, token-names reads
-# the first), which shellcheck cannot see from inside the library.
-# shellcheck disable=SC2034
-MINTED_FILE="minted-tokens.json"
-# shellcheck disable=SC2034
-MINT_MARKER="${CONTRACT_SHARE_DIR}/.minted"
 
 log() { printf '[%s] %s\n' "${ROLE:-offerfiles}" "$*" >&2; }
 die() { log "FATAL: $*"; exit 1; }
+
+# ── the issuer's token handoff ───────────────────────────────────────────────
+# Sourced HERE, unconditionally, so every entrypoint has `load_issuer_tokens`,
+# `issuer_token_id`, `issuer_token_decimals` and `issuer_whole_coin` available — and sourcing
+# it does nothing on its own: it defines functions and touches no file until a caller asks.
+# The kernel and the batcher never call them; the poster, the solver lane and the e2e driver
+# do. See that file's header for why it contains no registry parser.
+#
+# shellcheck source=images/offerfiles-kernel/registry-env.sh
+. /usr/local/lib/offerfiles/registry-env.sh
 
 # ── "" IS NOT "unset" ────────────────────────────────────────────────────────
 # Compose cannot express "leave this variable out": `FOO: ${FOO}` with FOO absent from .env
@@ -98,69 +109,27 @@ require_env() {
   fi
 }
 
-# ── the contract address ─────────────────────────────────────────────────────
-# The deploy one-shot persists `contract-offer-files.<network>.json` on the shared volume.
-# Readers adopt it TWO ways, and neither is redundant:
-#
-#   1. copied into packages/contracts-midnight/, because that is the literal path
-#      `readMidnightContract()` and the mint script resolve — nothing in the kernel
-#      repository had to change for this to work;
-#   2. exported as MIDNIGHT_CONTRACT_ADDRESS, which the same reader prefers over the file,
-#      and which makes "which contract is this container on?" answerable from
-#      `docker inspect` and from the logs without exec'ing into anything.
-#
-# Copied and not symlinked: the source sits on a read-only volume and the reader resolves
-# paths relative to the package directory.
-adopt_contract_address() {
-  local src="${CONTRACT_SHARE_DIR}/${CONTRACT_FILE}"
-  local timeout="${CONTRACT_WAIT_TIMEOUT_S:-900}" waited=0
-
-  # compose already gates these containers on `service_completed_successfully`, so in the
-  # ordinary case this loop does not spin once. It exists for the case compose cannot cover:
-  # a container restarted by its own restart policy while the volume is being written.
-  while [ ! -f "${src}" ]; do
-    waited=$(( waited + 2 ))
-    if [ "${waited}" -ge "${timeout}" ]; then
-      log "TIMEOUT after ${timeout}s waiting for ${src}"
-      die "the offerfiles-deploy one-shot has published no contract address"
-    fi
-    sleep 2
-  done
-
-  install -m 0644 "${src}" "${CONTRACT_TARGET_DIR}/${CONTRACT_FILE}"
-
-  # Path via ENV, not argv: `bun -e` builds process.argv as ["<bun>", ...trailing args] with
-  # no script-path entry, so the usual argv[2] is undefined.
-  local address
-  address="$(OFFERFILES_CONTRACT_JSON="${src}" bun -e '
-    const json = await Bun.file(process.env.OFFERFILES_CONTRACT_JSON).json();
-    const value = json.contractAddress;
-    if (typeof value !== "string" || value.length === 0) {
-      console.error("contract file carries no string contractAddress");
-      process.exit(1);
-    }
-    process.stdout.write(value);
-  ')" || die "${CONTRACT_FILE} is unreadable or carries no contractAddress"
-
-  export MIDNIGHT_CONTRACT_ADDRESS="${address}"
-  log "offer-files contract ${MIDNIGHT_CONTRACT_ADDRESS} (network ${NETWORK_ID})"
-}
-
 # ── the genesis-1 facade mutex (00011 Q7) ────────────────────────────────────
-# THREE one-shots in this stack drive a wallet facade on the SAME seed — genesis-1:
+# THREE one-shots in this image drive a wallet facade on the SAME seed — genesis-1 — and a
+# fourth in images/issuer does:
 #
-#   solver-provision   funds the solver's NIGHT from genesis before minting its inventory
-#   maker-offer        posts the seeded book offer FROM the genesis wallet (it is the only
-#                      wallet the deploy one-shot's mint credited)
+#   solver-provision   sends the solver four large NIGHT UTXOs from genesis, then runs
+#                      upstream's external-inventory check on the solver's own wallet
 #   poster-provision   sends the poster four large NIGHT UTXOs from genesis
+#   maker-provision    sends the maker four large NIGHT UTXOs from genesis
+#   issuer-deploy      sends the issuer four large NIGHT UTXOs from genesis (compose/issuer.yml)
+#
+# `maker-offer` is NO LONGER one of them (00020 PR C): its wallet used to be genesis-1, because
+# the deleted faucet contract's mint credited exactly that wallet and no other held a test
+# token to give away. It now has its own roster seed …0031, funded by `maker-provision` above
+# and stocked with issuer tokens by `maker-inventory`, so it never opens the genesis facade.
 #
 # Two facades on one seed against one node force each other's connection down (the rule at
-# the top of wallets/wallets.json), and the first two live in `compose/solver.yml` while the
-# third lives in `compose/poster.yml`. A `depends_on` cannot serialise across fragments:
-# compose refuses to render a dependency on a service that is not in the merged set, and
-# `--with poster` WITHOUT `--with solver` is a supported combination. So the three take a
-# `flock` instead, on a file on a named volume both fragments declare identically (compose
-# merges duplicate volume declarations).
+# the top of wallets/wallets.json), and these live in THREE different compose fragments. A
+# `depends_on` cannot serialise across fragments: compose refuses to render a dependency on a
+# service that is not in the merged set, and `--with poster` WITHOUT `--with solver` is a
+# supported combination. So they take a `flock` instead, on a file on a named volume every one
+# of those fragments declares identically (compose merges duplicate volume declarations).
 #
 # NO SOFT BRANCH, deliberately. `mkdir -p` succeeds whether or not the shared volume is
 # mounted: with the volume the lock is shared between containers, without it the lock is
@@ -183,7 +152,7 @@ take_genesis_lock() {
     return 0
   fi
   log "another one-shot has held the genesis-1 facade for ${timeout}s. Its log names it:"
-  log "  docker compose logs solver-provision maker-offer poster-provision"
+  log "  docker compose logs solver-provision poster-provision maker-provision issuer-deploy"
   die "timed out waiting for the genesis-1 facade lock"
 }
 

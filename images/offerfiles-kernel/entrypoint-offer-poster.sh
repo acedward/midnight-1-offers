@@ -3,17 +3,31 @@
 #
 # Every POST_INTERVAL_MS (60 s by default) one tick does exactly one of two things:
 #
-#   re-offer  a coin the journal already owns has come back (its last offer is `expired` or
-#             `cancelled` in the kernel AND its nonce is visible again in the wallet's
-#             availableCoins), so the tick posts a fresh offer for that exact coin; or
-#   mint      no coin is free, so the tick calls the faucet circuit
-#             `mint_shielded(domainSep(GIVE_TOKEN), GIVE_AMOUNT, freshNonce)` — paying the
-#             mint fee from its OWN DUST — waits for the coin, and offers it.
+#   re-offer   a coin the journal already owns has come back (its last offer is `expired` or
+#              `cancelled` in the kernel AND its nonce is visible again in the wallet's
+#              availableCoins), so the tick posts a fresh offer for that exact coin; or
+#   inventory  no journal coin is free, so the tick ADOPTS one unjournaled spendable coin whose
+#              value is EXACTLY GIVE_AMOUNT and offers that.
 #
 # Either way the offer SPENDS ITS COIN WHOLE: no change output, so every offer on the book is
 # a complete, independent swap rather than a slice of a shared balance. The want leg is
 # `suggested_to_amount` from the kernel's own `GET /v1/quote`, which lands the offer exactly
 # on the sponsorship threshold so the batcher pays its Celestia fee.
+#
+# ── IT DOES NOT MINT ANY MORE, AND THAT CHANGES THE PROFILE (00020 PR C) ────
+# Up to `KERNEL_REF=a608fa6…` a tick with nothing free MINTED a fresh coin from the kernel's
+# own faucet circuit, paying the fee out of its own DUST. Kernel #69 deleted that contract and
+# `selectInventoryCoin()` replaced the mint: the poster now picks one coin it ALREADY HOLDS
+# whose `value` EQUALS `GIVE_AMOUNT` — not one worth at least that much — and reports
+# `degraded: insufficient_inventory` when none matches. It does not die; a degraded tick is not
+# a failed tick and `/health` still answers 200 (503 arrives only after HEALTH_STALE_TICKS
+# consecutive FAILED ticks).
+#
+# So the book is now BOUNDED by prefunded inventory. `poster-premint` mints
+# POSTER_PREMINT_COUNT coins of exactly GIVE_AMOUNT through the issuer before this service
+# starts, and once they are all live the poster keeps re-offering released coins and reports
+# `insufficient_inventory` on any tick that has nothing to re-offer. The refill command is in
+# docs/OPERATIONS.md; the budget is in docs/KNOWN-LIMITATIONS.md.
 #
 # This is a PORT of the kernel repository's own `deploy/images/kernel/entrypoint-offer-poster.sh`
 # onto m1's entrypoint-common.sh; the process it execs is the pinned kernel's own
@@ -24,10 +38,12 @@
 # re-running them would re-prove and re-post the same seeding artifact on every bounce. This
 # service is the opposite — a LOOP whose whole job is to keep posting, so a marker would make
 # a restart a permanent no-op. Idempotence lives one level down instead, in the JOURNAL
-# (POSTER_JOURNAL_FILE, on the `poster-state` volume): it is written BEFORE a mint is
-# submitted and after every state change, so a restart re-adopts the coins this poster
-# already owns and re-offers the ones that came back rather than minting a fresh set.
-# Deleting that volume — i.e. `./down.sh -v` — is what "start over" means here.
+# (POSTER_JOURNAL_FILE, on the `poster-state` volume): it is written BEFORE an adopted coin is
+# offered and after every state change, so a restart re-adopts the coins this poster already
+# owns and re-offers the ones that came back rather than duplicating inventory. Deleting that
+# volume — i.e. `./down.sh -v` — is what "start over" means here. At this pin the journal is
+# keyed by NETWORK ID and GIVE-TOKEN ID rather than by a contract address, and it refuses to
+# open against a mismatch rather than merging.
 #
 # ── ONE FACADE PER SEED, EVER ────────────────────────────────────────────────
 # Two wallet facades on one seed against one Midnight node force each other's connection down
@@ -48,10 +64,13 @@ ROLE=offer-poster
 # shellcheck source=images/offerfiles-kernel/entrypoint-common.sh
 . /usr/local/lib/offerfiles/entrypoint-common.sh
 
-# The two the container cannot sensibly default. The WALLET is deliberately NOT checked by
-# require_env: POSTER_SEED xor POSTER_MNEMONIC is an exclusive choice with a collision rule
-# attached, and poster-config.ts reports all of that in one place with the same exit code.
-require_env ZSWAP_API MIDNIGHT_NETWORK_ID
+# The four the container cannot sensibly default. GIVE_TOKEN/WANT_TOKEN joined this list at
+# KERNEL_REF=e3b9388… — `resolveLeg()` makes them required with no fallback of any kind — and
+# failing here means failing before the kernel wait rather than after it. The WALLET is
+# deliberately NOT checked by require_env: POSTER_SEED xor POSTER_MNEMONIC is an exclusive
+# choice with a collision rule attached, and poster-config.ts reports all of that in one place
+# with the same exit code.
+require_env ZSWAP_API MIDNIGHT_NETWORK_ID GIVE_TOKEN WANT_TOKEN
 
 # The wallet, checked here rather than by poster-config.ts alone, because the two sides have
 # DIFFERENT NAMES: the process reads POSTER_SEED / POSTER_MNEMONIC, the operator sets
@@ -80,21 +99,55 @@ fi
 #
 # POSTER_SEED / POSTER_MNEMONIC are NOT in this list: leaving one blank must reach the config
 # parser and be reported as the missing wallet it is.
-unset_if_empty GIVE_TOKEN GIVE_AMOUNT GIVE_MIN GIVE_MAX GIVE_SIZE_SEED \
-               WANT_TOKEN WANT_AMOUNT POST_INTERVAL_MS OFFER_TTL_MINUTES \
-               COIN_VISIBLE_TIMEOUT_MS RECONCILE_INTERVAL_MS \
+# GIVE_TOKEN and WANT_TOKEN are NOT in this list: at this pin they are REQUIRED and a blank
+# one must reach `resolveLeg()` and be reported as the missing token it is. The four knobs
+# kernel #69 deleted — GIVE_SIZE_SEED, COIN_VISIBLE_TIMEOUT_MS, POSTER_MIN_DUST and
+# POSTER_DUST_WAIT_TIMEOUT_MS — are not in it either, because they are not passed at all any
+# more: `poster-config.ts` no longer reads them, and compose no longer sets them.
+unset_if_empty GIVE_AMOUNT GIVE_MIN GIVE_MAX \
+               WANT_AMOUNT POST_INTERVAL_MS OFFER_TTL_MINUTES \
+               RECONCILE_INTERVAL_MS \
                POSTER_MAX_REOFFERS_PER_TICK SHUTDOWN_GRACE_MS HEALTH_STALE_TICKS \
                POSTER_HEALTH_PORT DRY_RUN POSTER_JOURNAL_FILE POSTER_JOURNAL_RESET \
-               POSTER_MIN_DUST POSTER_SYNC_TIMEOUT_MS POSTER_DUST_WAIT_TIMEOUT_MS \
+               POSTER_SYNC_TIMEOUT_MS \
                POSTER_POST_RETRIES POSTER_POST_RETRY_MS POSTER_LIVE_TRIES \
                POSTER_LIVE_INTERVAL_MS
 
-# The contract address, from the shared offerfiles-deploy volume. The poster resolves it
-# itself in the same priority order (MIDNIGHT_CONTRACT_ADDRESS → the share dir → the copy in
-# packages/contracts-midnight), so this call is what makes the first branch true — and the
-# JOURNAL IS KEYED BY THAT ADDRESS: a journal from another deployment is refused at startup
-# rather than merged, because those coins do not exist on this chain.
-adopt_contract_address
+# ── THE TWO TOKEN IDS (00020 PR C) ──────────────────────────────────────────
+# `resolveLeg()` at this pin requires an EXPLICIT 64-hex token id and refuses a name outright
+# ("GIVE_TOKEN is required: set the 64-hex token ID from the selected network's external
+# registry"). Those ids are per-chain — the issuer deploys six contracts and each token's
+# colour derives from its contract address — so they cannot be written into compose or .env.
+#
+# This stack therefore lets an operator configure a NAME (`TWBTC`) and resolves it here from
+# the handoff the `issuer` profile publishes, leaving a raw 64-hex value untouched so a
+# deliberate override still works. A name that is not one of this stack's six fails HERE, with
+# the six listed, rather than as a 64-hex validation error about a value the operator never
+# typed.
+resolve_token_leg() {
+  local var="$1" value
+  eval "value=\${${var}}"
+  case "${value}" in
+    # A 64-hex value is already an id — pass it through untouched, including a deliberate
+    # override that names a token this stack did not issue.
+    *[!0-9a-fA-F]*) : ;;
+    *) if [ "${#value}" -eq 64 ]; then
+         log "${var} is an explicit 64-hex token id (${value:0:16}…)"
+         eval "export ${var}=\$(printf '%s' \"\${value}\" | tr 'A-F' 'a-f')"
+         return 0
+       fi ;;
+  esac
+  load_issuer_tokens
+  local id decimals
+  id="$(issuer_token_id "${value}")"
+  decimals="$(issuer_token_decimals "${value}")"
+  log "${var}=${value} -> ${id} (${decimals} decimals)"
+  eval "export ${var}=\${id}"
+  eval "export M1_${var}_NAME=\${value}"
+  eval "export M1_${var}_DECIMALS=\${decimals}"
+}
+resolve_token_leg GIVE_TOKEN
+resolve_token_leg WANT_TOKEN
 
 wait_http "${ZSWAP_API}/v1/health" "kernel API" "${KERNEL_WAIT_TIMEOUT_S:-600}" \
   || die "the kernel API never answered — nowhere to post an offer"
@@ -108,12 +161,15 @@ mkdir -p "${POSTER_JOURNAL_DIR}"
 cd "${REPO_ROOT}" || die "no ${REPO_ROOT}"
 log "starting the offer poster (deploy/scripts/offer-poster.ts)"
 log "  kernel=${ZSWAP_API} network=${MIDNIGHT_NETWORK_ID} journal=${POSTER_JOURNAL_FILE:-/var/lib/offer-poster/journal.json}"
+# BASE UNITS on both sides of the range now, not whole coins: kernel #69 replaced the
+# log-uniform whole-coin draw with an inclusive base-unit FILTER over coins the wallet already
+# holds. Printing "coins" here would be a claim about a token whose decimals this line does
+# not know.
 if [ -n "${GIVE_MIN:-}" ] || [ -n "${GIVE_MAX:-}" ]; then
-  # A RANGE: the size is drawn log-uniformly per FRESH mint, so there is no single number to
-  # print here. The poster's own banner prints the resolved base units for each mint.
-  log "  give=${GIVE_TOKEN:-WBTC}/${GIVE_MIN:-<unset>}..${GIVE_MAX:-<unset>} coins (log-uniform per mint, seed=${GIVE_SIZE_SEED:-<random>})"
+  log "  give=${M1_GIVE_TOKEN_NAME:-${GIVE_TOKEN:0:16}…}/${GIVE_MIN:-<unset>}..${GIVE_MAX:-<unset>} BASE UNITS (selects a prefunded coin in that range)"
 else
-  log "  give=${GIVE_TOKEN:-WBTC}/${GIVE_AMOUNT:-1000000}"
+  log "  give=${M1_GIVE_TOKEN_NAME:-${GIVE_TOKEN:0:16}…}/${GIVE_AMOUNT:-1} BASE UNITS exactly (selects a prefunded coin of that size)"
 fi
-log "  want=${WANT_TOKEN:-WETH}/${WANT_AMOUNT:-<quoted>} interval=${POST_INTERVAL_MS:-60000}ms"
+log "  want=${M1_WANT_TOKEN_NAME:-${WANT_TOKEN:0:16}…}/${WANT_AMOUNT:-<quoted>} interval=${POST_INTERVAL_MS:-60000}ms"
+log "  giveToken=${GIVE_TOKEN} wantToken=${WANT_TOKEN}"
 exec bun run deploy/scripts/offer-poster.ts

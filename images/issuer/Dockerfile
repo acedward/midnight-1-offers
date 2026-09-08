@@ -25,6 +25,14 @@
 #                       entrypoint-fund.sh       `issuer-fund <TOKEN> <base-units> <seed>` —
 #                                                the headless exact mint every other profile's
 #                                                provisioning calls.
+#                       entrypoint-provision.sh  the compose-side companion to issuer-fund:
+#                       one wallet's whole swap-token inventory from a declarative
+#                       ISSUER_PROVISION_SPEC, under ONE issuer-facade lock, behind a marker on
+#                       the consuming profile's own volume (00020 PR C)
+#                       entrypoint-tokens-env.sh publishes the SHELL-SOURCEABLE token handoff
+#                       (${ISSUER_TOKENS_DIR}/tokens.env) that every kernel-image consumer
+#                       sources — entrypoint-deploy.sh already writes it on both its paths,
+#                       so this one exists for repair and inspection (00020 PR C).
 #                     A fourth, entrypoint-registry.sh, validates and dumps the registry for
 #                     ./verify.sh.
 #   --target faucet   nginx serving the repository's built `frontend/dist` on container :10500,
@@ -532,10 +540,12 @@ COPY entrypoint-common.sh /usr/local/lib/issuer/entrypoint-common.sh
 # `cat`, diff against the kernel's own comment, and run by hand against a live stack.
 COPY sql /usr/local/lib/issuer/sql
 COPY entrypoint-deploy.sh entrypoint-registrar.sh entrypoint-fund.sh entrypoint-registry.sh \
+     entrypoint-tokens-env.sh entrypoint-provision.sh \
      /usr/local/bin/
 RUN set -eux; \
     chmod 0755 /usr/local/bin/entrypoint-deploy.sh /usr/local/bin/entrypoint-registrar.sh \
-               /usr/local/bin/entrypoint-fund.sh /usr/local/bin/entrypoint-registry.sh; \
+               /usr/local/bin/entrypoint-fund.sh /usr/local/bin/entrypoint-registry.sh \
+               /usr/local/bin/entrypoint-tokens-env.sh /usr/local/bin/entrypoint-provision.sh; \
     chmod 0644 /usr/local/lib/issuer/entrypoint-common.sh; \
     chmod 0644 /usr/local/lib/issuer/sql/issuer-registry-patch.sql; \
     test -s /usr/local/lib/issuer/sql/issuer-registry-patch.sql; \

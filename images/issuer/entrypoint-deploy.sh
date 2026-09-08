@@ -191,7 +191,30 @@ REPORT_RC=0
 node --import tsx "${REPO_ROOT}/m1/registry.ts" || REPORT_RC=$?
 [ "${REPORT_RC}" -eq 0 ] || die "the published registry did not validate (exit ${REPORT_RC})"
 
+# ── STEP 4: publish the shell-sourceable token handoff (00020 PR C) ─────────
+#
+# Every token-consuming service in this stack runs the KERNEL image, which has no reader for
+# `metadata.undeployed.json` and must never grow one — this image's `m1/registry.ts` is the
+# single reader, and the one that validates the file two ways. So the ids are projected into
+# `${ISSUER_TOKENS_DIR}/tokens.env`, a plain NAME=value file that
+# `images/offerfiles-kernel/registry-env.sh` sources.
+#
+# ON BOTH PATHS, deploy and resume. A `./up.sh` that resumed six existing deployments still
+# has to leave the handoff in place: the volume may be new (a fresh `issuer-tokens` volume
+# against a kept `issuer-registry` one is exactly what a `./down.sh` without `-v` produces),
+# and the file is cheap to rewrite. It is written from the registry that was just validated,
+# so a resume cannot publish ids the registry does not carry.
+#
+# FATAL. Without it the solver, the maker, the poster and the e2e driver have no token ids at
+# all, and each would wait out its own timeout and then fail with a message about a missing
+# file rather than about the one-shot that should have written it.
+TOKENS_ENV_RC=0
+node --import tsx "${REPO_ROOT}/m1/tokens-env.ts" || TOKENS_ENV_RC=$?
+[ "${TOKENS_ENV_RC}" -eq 0 ] || die "could not publish the token handoff (exit ${TOKENS_ENV_RC})"
+
 log "ISSUER_DEPLOY_RESULT commit=${ISSUER_COMMIT} deploySeconds=${DEPLOY_SECONDS} registry=${ISSUER_REGISTRY_FILE}"
 log "the six colours are now in ${ISSUER_REGISTRY_FILE}; the kernel learns them from"
-log "issuer-registrar, and automation mints with: docker compose run --rm issuer-fund <TOKEN> <base-units> <seed>"
+log "issuer-registrar, every kernel-image consumer reads their ids out of"
+log "${ISSUER_TOKENS_DIR:-/srv/issuer-tokens}/tokens.env, and automation mints with:"
+log "  docker compose run --rm issuer-fund <TOKEN> <base-units> <seed> [count]"
 exit 0

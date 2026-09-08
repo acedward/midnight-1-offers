@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # issuer-fund — MINT AN EXACT AMOUNT OF ONE ISSUER TOKEN TO ONE WALLET, HEADLESSLY.
 #
-#   docker compose run --rm issuer-fund <TOKEN> <base-units> <recipient-seed>
+#   docker compose run --rm issuer-fund <TOKEN> <base-units> <recipient-seed> [count]
 #
 #   docker compose run --rm issuer-fund TWBTC 100000000 \
 #       0000000000000000000000000000000000000000000000000000000000000032
 #   docker compose run --rm issuer-fund twETH 5000000000000000000 @/run/secrets/taker.hex
+#   docker compose run --rm issuer-fund TWBTC 1000000 \
+#       0000000000000000000000000000000000000000000000000000000000000041 12
 #
 # THIS IS THE FUNDING PRIMITIVE the rest of the stack calls. `solver-provision`,
 # `maker-offer`, `poster-provision`, the e2e driver and the shielded-night book chain all need
@@ -24,9 +26,16 @@
 #                    file form keeps a seed out of `docker inspect` and out of compose's own
 #                    echo of the command; the inline form is what this repository's public
 #                    devnet roster makes convenient.
+#   $4  count        OPTIONAL, default 1. Mint the SAME amount this many times, producing that
+#                    many SEPARATE coins each worth exactly $2 — not one coin worth N x $2.
+#                    The offer poster selects an inventory coin BY EXACT VALUE
+#                    (`selectInventoryCoin()` at KERNEL_REF=e3b9388…), so N coins of the
+#                    configured size is its whole inventory and one big coin is useless to it.
+#                    Capped at 200: each coin is its own proving transaction.
 #
 # Each argument may instead be given as ISSUER_FUND_TOKEN / ISSUER_FUND_AMOUNT /
-# ISSUER_FUND_SEED, which is how a compose one-shot with a fixed job states it.
+# ISSUER_FUND_SEED / ISSUER_FUND_COUNT, which is how a compose one-shot with a fixed job
+# states it.
 #
 # ── EXIT CODES (the contract for every caller) ──────────────────────────────
 #   0   minted, and the recipient's balance for that colour moved by EXACTLY the amount
@@ -35,8 +44,10 @@
 #
 # ── THE RECEIPT (one line on stdout; a caller may grep it) ──────────────────
 #   ISSUER_FUND_RESULT token=TWBTC symbol=twBTC tokenId=<64 hex> privacy=shielded decimals=8
-#                      amount=100000000 recipient=…0032 tx=<hash> balanceBefore=0
-#                      balanceAfter=100000000 delta=100000000 verified=true
+#                      amount=100000000 count=1 minted=100000000 recipient=…0032 tx=<hash>
+#                      balanceBefore=0 balanceAfter=100000000 delta=100000000
+#                      coinsBefore=0 coinsAfter=1 coinsAdded=1 coinsAvailable=true
+#                      verified=true seconds=<n>
 #
 # ── ONE FACADE PER SEED, ENFORCED ──────────────────────────────────────────
 # This command opens a wallet facade on the ISSUER's seed (…0051) to pay for and submit the
@@ -64,8 +75,8 @@ ROLE=issuer-fund
 . /usr/local/lib/issuer/entrypoint-common.sh
 
 usage() {
-  log "usage: issuer-fund <TOKEN> <base-units> <recipient-seed|@file>"
-  log "   or: ISSUER_FUND_TOKEN=… ISSUER_FUND_AMOUNT=… ISSUER_FUND_SEED=… issuer-fund"
+  log "usage: issuer-fund <TOKEN> <base-units> <recipient-seed|@file> [count]"
+  log "   or: ISSUER_FUND_TOKEN=… ISSUER_FUND_AMOUNT=… ISSUER_FUND_SEED=… [ISSUER_FUND_COUNT=…] issuer-fund"
   log "TOKEN is one of the six in this stack's registry; run"
   log "  docker compose run --rm --no-deps issuer-registry"
   log "to list them with their ids and decimals."
@@ -77,6 +88,7 @@ usage() {
 TOKEN_ARG="${1:-${ISSUER_FUND_TOKEN:-}}"
 AMOUNT_ARG="${2:-${ISSUER_FUND_AMOUNT:-}}"
 SEED_ARG="${3:-${ISSUER_FUND_SEED:-}}"
+COUNT_ARG="${4:-${ISSUER_FUND_COUNT:-1}}"
 
 if [ -z "${TOKEN_ARG}" ] || [ -z "${AMOUNT_ARG}" ] || [ -z "${SEED_ARG}" ]; then
   log "missing argument(s): token='${TOKEN_ARG}' amount='${AMOUNT_ARG}' seed=$([ -n "${SEED_ARG}" ] && printf 'set' || printf 'MISSING')"
@@ -91,6 +103,19 @@ case "${AMOUNT_ARG}" in
     exit 78
     ;;
 esac
+
+# Checked here as well as in fund.ts so a typo costs nothing: the script would otherwise build
+# and sync two wallet facades before rejecting it.
+case "${COUNT_ARG}" in
+  ''|*[!0-9]*)
+    log "the count must be plain decimal digits, got '${COUNT_ARG}'"
+    exit 78
+    ;;
+esac
+if [ "${COUNT_ARG}" -lt 1 ] || [ "${COUNT_ARG}" -gt 200 ]; then
+  log "the count must be between 1 and 200, got ${COUNT_ARG} (each coin is a proving transaction)"
+  exit 78
+fi
 
 require_env MN_NODE_URL MN_NODE_WS_URL MN_INDEXER_URL MN_INDEXER_WS_URL MN_PROOF_SERVER_URL \
             ISSUER_SEED
@@ -134,6 +159,7 @@ unset ISSUER_FUND_RECIPIENT_SEED
 
 export ISSUER_FUND_TOKEN="${TOKEN_ARG}"
 export ISSUER_FUND_AMOUNT="${AMOUNT_ARG}"
+export ISSUER_FUND_COUNT="${COUNT_ARG}"
 
 cd "${REPO_ROOT}" || die "no ${REPO_ROOT}"
 
@@ -147,7 +173,12 @@ take_issuer_lock
 # The last four characters of the seed identify the roster wallet (…0032 is e2e-taker) without
 # printing a seed. Every record in this repository names a wallet that way.
 RECIPIENT_TAIL="$(tail -c 4 "${MN_RECIPIENT_SEED_FILE}")"
-log "minting ${ISSUER_FUND_AMOUNT} base units of ${ISSUER_FUND_TOKEN} to the wallet …${RECIPIENT_TAIL}"
+if [ "${ISSUER_FUND_COUNT}" = "1" ]; then
+  log "minting ${ISSUER_FUND_AMOUNT} base units of ${ISSUER_FUND_TOKEN} to the wallet …${RECIPIENT_TAIL}"
+else
+  log "minting ${ISSUER_FUND_COUNT} separate coins of ${ISSUER_FUND_AMOUNT} base units of"
+  log "${ISSUER_FUND_TOKEN} to the wallet …${RECIPIENT_TAIL} (one proving transaction each)"
+fi
 
 # `exec`, so the node process IS this container's PID 1 and a compose `stop` reaches it. The
 # `flock` on FD 8 survives the exec (the descriptor is not close-on-exec) and is released when

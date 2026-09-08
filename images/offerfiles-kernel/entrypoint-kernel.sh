@@ -12,14 +12,24 @@
 # `.dev.ts` and not `.preview.ts`/`.mainnet.ts`: "dev" names the target NETWORK. The others
 # resolve hosted endpoints and `check-env.ts` gates them on `MIDNIGHT_NETWORK_ID=preview`.
 #
-# ONE MAIN-SPECIFIC TRAP, and it is why adopt_contract_address copies a file rather than just
-# exporting a variable: `packages/node/config.dev.ts` reads the contract address as
-# `midnightContract!.contractAddress` with NO env fallback (config.preview.ts has one;
-# config.dev.ts does not). `readMidnightContract()` resolves a HARD-CODED path —
-# `packages/contracts-midnight/contract-offer-files.<network>.json` — and additionally requires
-# the compiled `contract-offer-files/src/managed/compiler/contract-info.json` to exist. Setting
-# MIDNIGHT_CONTRACT_ADDRESS alone does NOT work here: that override is applied only AFTER the
-# file read succeeds. The file is the handoff; the variable is a convenience on top of it.
+# ── THE CONTRACT IS GONE, AND SO IS THE TRAP IT CAME WITH (00020 PR C) ──────
+# Up to `KERNEL_REF=a608fa6…` this entrypoint called `adopt_contract_address` and the reason
+# was very specific: `packages/node/config.dev.ts` read the address as
+# `midnightContract!.contractAddress` with NO env fallback, `readMidnightContract()` resolved a
+# HARD-CODED path inside `packages/contracts-midnight`, and it additionally required the
+# COMPILED `contract-offer-files/src/managed/compiler/contract-info.json` to exist — so
+# exporting MIDNIGHT_CONTRACT_ADDRESS alone did not work and a file had to be copied into the
+# package directory.
+#
+# At `e3b9388…` none of that exists: kernel #69 deleted the package, `readMidnightContract()`
+# and the whole contract lane with it, and `GET /v1/midnight/config` now answers with the
+# network endpoints alone. This process needs no token identity of its own — the tokens it
+# indexes are registered through `POST /v1/known-tokens` by the `issuer-registrar` one-shot —
+# so it neither mounts the issuer's handoff nor reads it.
+#
+# ENABLE_TOKEN_REGISTRY / TOKEN_REGISTRY_NETWORK are stated in compose/offerfiles.yml and not
+# here; see that file for why `undeployed` makes the canonical public import a no-op twice
+# over.
 
 # Consumed by log() in the sourced prelude, which shellcheck cannot see from here.
 # shellcheck disable=SC2034
@@ -116,8 +126,6 @@ else
   log "Fix: ./down.sh -v and bring the stack up again so initdb re-runs on an empty volume."
   [ "${PGIVM}" = "no" ] && exit 78
 fi
-
-adopt_contract_address
 
 wait_node_block "${MIDNIGHT_NODE_HTTP}" 1 "${NODE_BLOCK_TIMEOUT_S:-600}" \
   || die "midnight-node produced no block"

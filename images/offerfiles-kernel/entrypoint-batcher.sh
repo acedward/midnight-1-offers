@@ -9,10 +9,13 @@
 # it as its own volume — inputs that have been accepted but not yet submitted live there, and
 # an input parked mid-retry that vanishes on restart is an unexplained gap in the book.
 #
-# It still waits on the deploy one-shot in compose, and that is NOT an address dependency: it
-# is the wallet-serialisation rule. Two wallet facades bootstrapping against one Midnight node
-# force each other's connection down — the second to connect wins and the first silently stops
-# syncing — and the mint wallet runs inside that one-shot.
+# SINCE 00020 PR C IT WAITS ON NOTHING BUT THE CHAIN. It used to depend on
+# `offerfiles-deploy` in compose, and that was never an address dependency: it was the
+# wallet-serialisation rule, because the deleted faucet contract's mint drove a genesis-1
+# facade inside that one-shot. Kernel #69 removed the contract and the mint, this repository
+# retired the one-shot with them, and the genesis facade is now serialised by the `flock` on
+# the shared `genesis-lock` volume among the one-shots that actually take it — none of which
+# is this service. The batcher holds its own dedicated seed (…0003) and collides with nothing.
 #
 # `batcher.dev.ts` throws unless MIDNIGHT_NETWORK_ID=undeployed, so the variable is required
 # here rather than defaulted: a container that reached the throw would restart-loop with the

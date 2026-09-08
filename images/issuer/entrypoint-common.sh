@@ -31,6 +31,19 @@ REPO_ROOT="${REPO_ROOT:-/app}"
 ISSUER_REGISTRY_DIR="${MN_METADATA_OUTPUT_DIR:-/srv/issuer-registry}"
 # shellcheck disable=SC2034  # read by the entrypoints that SOURCE this file
 ISSUER_REGISTRY_FILE="${ISSUER_REGISTRY_DIR}/metadata.undeployed.json"
+# THE TOKEN HANDOFF DIRECTORY (00020 PR C), and a DIRECTORY for the same reason: `tokens.env`
+# is published by rename, which replaces the inode. It is deliberately NOT inside
+# ISSUER_REGISTRY_DIR — that directory is an nginx document root on the `faucet` service, and
+# "the token handoff happens to live in a web root" is a property nobody should have to
+# re-check. Only `issuer-deploy` and `issuer-tokens-env` mount it read-write; every consumer
+# mounts it read-only.
+# shellcheck disable=SC2034  # read by the entrypoints that SOURCE this file
+ISSUER_TOKENS_DIR="${ISSUER_TOKENS_DIR:-/srv/issuer-tokens}"
+# shellcheck disable=SC2034
+ISSUER_TOKENS_FILE="${ISSUER_TOKENS_DIR}/tokens.env"
+# EXPORTED, because `m1/tokens-env.ts` reads it out of the environment rather than being
+# handed a path — one name, one default, in one place.
+export ISSUER_TOKENS_DIR
 # Where the resume journal and the private-state stores live. It is <repo root>/.local because
 # that is where `scripts/v1-deploy.ts` puts them (`resolve(root, ".local", …)`), keyed by
 # sha256(output path + stack identity) — not a path this stack chose, and not one it can move
