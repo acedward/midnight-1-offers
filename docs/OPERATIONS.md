@@ -1,10 +1,10 @@
 # Operations
 
-> **Scope.** This file documents the **`solver`** profile's monitor and status listener, the
-> **`shielded-night`** profile, the `core` profile's own re-pins (the node image), and the
-> `offerfiles`-profile notes that each kernel re-pin makes unavoidable for anyone running an
-> existing stack forward. The rest of the `offerfiles` profile's operating notes are still to be
-> written.
+> **Scope.** This file documents the **`issuer`** profile (the stack's own token source), the
+> **`solver`** profile's monitor and status listener, the **`shielded-night`** profile, the
+> `core` profile's own re-pins (the node image), and the `offerfiles`-profile notes that each
+> kernel re-pin makes unavoidable for anyone running an existing stack forward. The rest of the
+> `offerfiles` profile's operating notes are still to be written.
 
 ## Re-pin the node to `1.0.1` (00020 PR A) — **not breaking; an existing volume keeps working**
 
@@ -324,6 +324,199 @@ repository (an operator with direct DB access on a live, non-devnet deployment c
 the one-line `UPDATE known_tokens SET decimals = 6 WHERE name IN ('NIGHT', 'USDC');` that kernel
 PR #60's own body documents — not applicable here, since this profile only ever runs a
 disposable devnet).
+
+## The `issuer` profile — bringing the stack's own tokens up, and funding wallets with them (00020 PR B)
+
+**NOT BREAKING.** This is a NEW profile. It adds no pin to any existing image, changes no existing
+service, and touches no existing volume; on the kernel pin this repository runs today its six
+tokens **coexist** with the `DEVA`/`DEVB`/`DEVU` colours `offerfiles-deploy` still mints. Nothing
+you already run needs `./down.sh -v` for it. (Phase C, which re-pins the kernel past #69 and
+retires that faucet contract, IS breaking — this is not that.)
+
+### Bring it up
+
+```sh
+./up.sh --with issuer                        # the tokens + the faucet site
+./up.sh --with offerfiles --with issuer      # …and the kernel's registry learns all six colours
+./up.sh --all                                # eight profiles, this one among them
+```
+
+What happens, in order, on a clean chain:
+
+1. **`issuer-deploy`** waits for the node to produce a block and for the proof server and indexer
+   to answer, then takes the shared **`genesis-lock`** and sends the dedicated `issuer` wallet
+   (`…0051`) four NIGHT UTXOs of `5000000000000` each from `genesis-1`. It registers that NIGHT for
+   DUST, waits (bounded) for the DUST to arrive, and **releases the lock** — the long half of this
+   one-shot must not block `solver-provision`, `maker-offer` or `poster-provision`.
+2. It then runs the pinned repository's **own** v1 deploy: six token contracts deployed, each
+   verified against chain state, and `metadata.undeployed.json` published **atomically** onto the
+   `issuer-registry` volume.
+3. **`faucet`** starts only after that one-shot exits 0, and its healthcheck asserts the registry
+   is really being served with `"status": "ready"` in the body — not merely that nginx bound.
+4. When `offerfiles` is up too, `up.sh` runs **`issuer-registrar`**, which teaches the kernel the
+   six colours. **A failure here fails the bring-up** (see `docs/COMPONENTS.md` for why it is
+   fatal where the sNight one is a warning).
+
+**Measured on this host, 2026-09-08** (`m1o00020b-b`, node 1.0.1 / indexer 4.3.3 / proof 8.1.0,
+`--with offerfiles --with issuer` from clean): the whole bring-up **3 m 28 s**, of which the issuer
+one-shot was ~3 minutes — wallet sync, the NIGHT transfer, the DUST registration, one 5-second dust
+wait, then six contract deployments with proving. A SECOND `./up.sh` resumes all six in **9
+seconds**.
+
+### Open the faucet — the `?network=` is not optional
+
+```
+http://127.0.0.1:${FAUCET_HOST_PORT}/?network=undeployed
+```
+
+`FAUCET_HOST_PORT` is `10500` by default and whatever `scripts/pick-ports.sh` emitted on a
+disposable stack; `up.sh` prints the URL at the end of every run. **Without `?network=undeployed`
+the page defaults to Preprod** (effectstream #920's change to the SPA) and shows the PUBLIC tokens,
+which do not exist on this chain.
+
+### THE LACE HAND TEST — the one thing no automated gate here covers
+
+The site mints through a connected browser wallet and **the wallet does the proving**, so there is
+no headless path through it. `./verify.sh` therefore proves the site is SERVED correctly (the shell,
+the registry with its CORS and cache headers, the proving artifacts as bytes, a real 404 for a
+missing artifact) and proves MINTING through `issuer-fund` instead. The browser flow is the
+owner's:
+
+1. `./up.sh --with issuer` (add `--with frontend` if you also want the trading SPA).
+2. Import the `lace-test` wallet into Lace — the seed is in `wallets/wallets.json`, and
+   `docs/WALLETS.md` has the steps. It is funded at genesis, so it can pay for a mint.
+3. Point Lace at this stack's node/indexer/proof-server host ports (Lace supplies those URLs to the
+   page itself through the dApp connector; the page has no endpoint overrides and needs none).
+4. Open `http://127.0.0.1:${FAUCET_HOST_PORT}/?network=undeployed` and connect the wallet. The
+   header should report the network as **Local (undeployed)** and the registry revision.
+5. Press a token's faucet button. The preset amounts are the registry's own
+   (`faucetBaseUnits`): 1 twBTC, 5 twETH, 10 000 twUSDC, 10 000 twUSDM, 10 000 utwUSDC, 1 utwBTC.
+6. **What to check:** the balance the card shows moves by exactly the preset, and — with
+   `offerfiles` up — `GET /v1/known-tokens` already names that colour, so the trading SPA and the
+   offer book show the token by NAME rather than as 64 hex characters.
+
+If the page says the network is unavailable, the registry is not being served: check
+`docker compose logs issuer-deploy` and `docker compose run --rm --no-deps issuer-registry`.
+
+### `issuer-fund` — fund a wallet headlessly
+
+This is the command every other profile's provisioning calls, and the one an operator uses to
+refill a wallet:
+
+```sh
+docker compose run --rm issuer-fund <TOKEN> <base-units> <recipient-seed|@file>
+
+# one whole twBTC (8 decimals) to e2e-taker
+docker compose run --rm issuer-fund TWBTC 100000000 \
+  0000000000000000000000000000000000000000000000000000000000000032
+
+# five whole twETH (18 decimals) to the poster's wallet
+docker compose run --rm issuer-fund TWETH 5000000000000000000 \
+  0000000000000000000000000000000000000000000000000000000000000041
+
+# and with the seed in a file rather than on the command line
+docker compose run --rm issuer-fund utwUSDC 10000000000 @/run/secrets/taker.hex
+```
+
+**BASE UNITS, NOT WHOLE COINS.** These tokens are 8, 18 and 6 decimals, so a whole coin is a
+different number for each of them and there is no safe default. `TWETH` at 18 decimals is past
+`Number.MAX_SAFE_INTEGER` by two orders of magnitude, so the amount is parsed, compared and printed
+as a decimal STRING throughout; anything that is not plain digits is refused (exit 78) rather than
+coerced.
+
+The token may be given as the kernel's name (`TWBTC`) or the registry's symbol (`twBTC`),
+case-insensitively. To see what this stack has:
+
+```sh
+docker compose run --rm --no-deps issuer-registry
+```
+
+**It reads the recipient's balance back**, and requires it to have moved by EXACTLY the amount
+minted — "the transaction was accepted" and "the recipient can spend this coin" are different
+claims, and a provisioning one-shot needs the second. The receipt is one greppable line:
+
+```
+ISSUER_FUND_RESULT token=TWBTC symbol=twBTC tokenId=<64 hex> privacy=shielded decimals=8 \
+  amount=100000000 recipient=…0032 tx=<hash> balanceBefore=0 balanceAfter=100000000 \
+  delta=100000000 verified=true
+```
+
+Exit codes: **0** minted and read back exactly · **78** a bad argument, an unknown token, or no
+registry yet · **1** the mint failed or the balance did not move by exactly the amount.
+
+**ONE AT A TIME, and fund a wallet BEFORE the service that owns it starts.** The command opens a
+facade on the issuer's seed and one on the recipient's, and two facades on one seed against one
+node force each other's connection down. It holds a `flock` so two `issuer-fund` runs (or a run
+during `issuer-deploy`) cannot collide — but the RECIPIENT is the caller's responsibility. Every
+provisioning one-shot in this stack is already gated that way by compose
+(`service_completed_successfully`).
+
+Measured: **32 seconds** for one mint on a warm stack, most of it the recipient wallet's first sync.
+
+### Refilling
+
+Nothing in this profile mints on a schedule; a wallet runs out when it runs out. Two cases worth
+naming:
+
+* **the offer poster** re-offers coins that come back and mints a fresh one otherwise, so on the
+  kernel pin this repository runs today it still supplies itself from the kernel's faucet circuit
+  and needs no refill. (From phase C onwards it cannot mint at all, and
+  `docs/KNOWN-LIMITATIONS.md` carries the budget and the refill command.)
+* **any wallet you funded by hand** — run `issuer-fund` again with the same arguments. It is not
+  idempotent and is not meant to be: each call mints a NEW coin of exactly the amount asked for,
+  and the receipt's `delta` says so.
+
+### Knobs
+
+| Variable | Default | What it does |
+|---|---|---|
+| `FAUCET_HOST_PORT` | `10500` | the faucet site's host port — the only port this profile publishes |
+| `ISSUER_SEED` | `…0051` | the dedicated issuer wallet. Must equal no other seed in `wallets/wallets.json`; the provisioning script exits 78 if it is the genesis seed |
+| `ISSUER_REF` | `7ecad008…` | the pinned `mint-test-tokens` commit. A full 40-hex SHA, enforced at build |
+| `ISSUER_FUND_VERIFY` | `1` | read the recipient's balance back after every mint. Leave it on |
+| `ISSUER_MN_TIMEOUT_MS` | `600000` | how long ONE SDK operation may take. The pinned runner's own default is 180 000, which is tight for a cold proof server |
+| `ISSUER_DEPLOY_TIMEOUT_S` | `5400` | how long the six deployments may take before the one-shot gives up and leaves a reconcilable journal |
+| `ISSUER_VERIFY_BUDGET_S` | `2400` | `./verify.sh`'s budget for the issuer section |
+| `ISSUER_VERIFY_FUND_TOKEN` / `_AMOUNT` / `_SEED` | `TWBTC` / `100000000` / `…0032` | what `./verify.sh` mints to prove the funding lane |
+| `ISSUER_VERIFY_ONCHAIN` | unset | `1` makes `./verify.sh` additionally run the pinned repository's own read-only on-chain verification of all six contracts (minutes) |
+| `ISSUER_REDEPLOY_STALE` | unset | `1` lets the one-shot REPLACE a registry it has marked stale. Read the next section first |
+| `ISSUER_CONFIRM_NO_DEPLOYMENT` | unset | `1` states that an in-flight deployment the journal remembers did NOT finalize. Reconcile the chain first |
+| `ISSUER_SDK_LOG_LEVEL` | unset (silent) | `debug` brings the wallet SDK's own log back |
+
+### A stale registry, and why nothing here fixes it automatically
+
+`./down.sh -v` wipes the chain and both issuer volumes together, so the ordinary reset leaves
+nothing stale. The interesting case is a registry that SURVIVES a chain reset — you wiped only the
+node volume, or hand-mounted a directory. The runner then reads a different stack identity
+(`chain name + runtime version + genesis hash`), marks the file `stale`, and **refuses**:
+
+```
+Registry at /srv/issuer-registry/metadata.undeployed.json was marked stale after a
+chain/runtime/genesis change. Confirm the reset, then rerun with MN_REDEPLOY_STALE=1.
+```
+
+That is the right answer, and this stack does not paper over it: posting stale token ids to the
+kernel is precisely the failure this profile exists to prevent, and replacing the registry
+**discards six contracts' worth of identity** — every coin minted from the old ones becomes a
+different, unspendable token. When you have decided, bring the stack up once with
+`ISSUER_REDEPLOY_STALE=1` in your `.env` (or
+`docker compose run --rm -e ISSUER_REDEPLOY_STALE=1 issuer-deploy`), then take it out again.
+
+If the runner was KILLED mid-deployment it leaves an uncertain in-flight marker instead, and
+refuses until you have reconciled the node and indexer yourself. `ISSUER_CONFIRM_NO_DEPLOYMENT=1`
+is how you tell it you have — only after proving that no contract finalized.
+
+### Troubleshooting
+
+| Symptom | Cause and fix |
+|---|---|
+| `issuer-deploy` exits 78 with `missing required environment` | a `.env` that overrides one of the endpoint variables to empty. The container names which |
+| `MISSING TOOL(S) IN THIS IMAGE` | a base-image change dropped `curl`, `git`, `psql`, `getent` or `flock`. The Dockerfile installs and asserts all five; this message means the image is not the one this repository builds |
+| `the synchronized deployment wallet has no available DUST` | the provisioning step did not run or did not land. `docker compose logs issuer-deploy` — the `ISSUER_PROVISION_RESULT` line states the NIGHT and DUST it measured, and the one-shot refuses to write its marker without both |
+| the faucet page says the network is unavailable | the registry is not being served. `curl -i http://127.0.0.1:${FAUCET_HOST_PORT}/metadata.undeployed.json` — a 404 means `issuer-deploy` published nothing; an `text/html` content type means the nginx exact-match location is gone |
+| `issuer-registrar` says `no kernel on this network` and exits 0 | correct, and not an error: the `offerfiles` profile is not up. The registry is still published for the faucet and for `issuer-fund` |
+| `issuer-registrar` dies with `<NAME> names a colour this stack did not issue` | something else registered that name between the patch and the POST. The one-shot dumps the whole kernel registry; decide by hand which name the colour should carry |
+| `waiting for the issuer facade lock` for a long time | another issuer container is running. `docker compose ps -a` |
 
 ## The solver monitor, and reading the solver's status listener (00011 PR B)
 

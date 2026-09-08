@@ -1,9 +1,10 @@
 # Components
 
 > **Scope.** This file documents the source pins that decide which LINE the stack runs, the
-> **`solver`** profile's own processes, the **`poster`** profile, the **`prices`** profile and
-> the **`shielded-night`** profile. The component notes for `core`, `offerfiles` and `frontend`
-> are still to be written; `README.md` remains the map of the stack.
+> **`solver`** profile's own processes, the **`poster`** profile, the **`prices`** profile, the
+> **`shielded-night`** profile and the **`issuer`** profile. The component notes for `core`,
+> `offerfiles` and `frontend` are still to be written; `README.md` remains the map of the
+> stack.
 
 ## Source pins, and the line they put this stack on
 
@@ -16,6 +17,7 @@ what the stack *means* rather than merely which bytes it runs.
 | `KERNEL_REF` | `a608fa67419c16188e9405417ecdf34f3f7c47a1` — `effectstream/zswap-offerfiles-kernel` `main` | ledger-v8 / 1.x, **the whole-coin line** (kernel #61/#63/#66) plus **#68** (blank-aware price-feed/batcher knobs, the mint's name registration repaired) |
 | `FRONTEND_REF` | `58ab921be5513b77937a37be86bf724a41888302` — `effectstream/effectstream` `midnight-1`, subtree `templates/zswap-da` @ `3ca1d56ffc29f03c73cf43432bdfeeaf3ab43c6b` | the same line's UI (effectstream#918) |
 | `SHIELDED_NIGHT_REF` | `f7fcefa7921bf2c3f634871f9ad3aa3a32251af0` — `effectstream/shielded-night` `main` | unchanged |
+| **`ISSUER_REF`** | `7ecad008b07acb2a491d8291e05455cbd638910f` — `effectstream/mint-test-tokens` `main` | **NEW in 00020 PR B.** The same 1.x line by construction: ledger-v8 8.1.0 (tree-wide `overrides`), compact-runtime 0.16.0, compact-js 2.5.1, midnight-js/testkit 4.1.1, three v1 contracts embedding compactc 0.31.1. It is what replaces the kernel's removed local faucet — see "The `issuer` profile" below |
 
 **There is no solver pin.** Since 00011 PR B `images/cow-solver` is `FROM kernel-image` plus four
 entrypoints, so the solver, its monitor and its two one-shots are all *the kernel commit above*.
@@ -565,6 +567,143 @@ addresses, so the network dropdown shows both alongside *Local (undeployed)*. Th
 unmodified — this profile adds a network rather than removing one. Only *Local (undeployed)*
 has anything to do with this stack.
 
+## The `issuer` profile — this stack issues its own test tokens
+
+### What it is, and why it exists at all
+
+Until 00020 the only token source in this stack was the offer-files kernel's **own faucet
+contract**: `offerfiles-deploy` deployed it and minted `DEVA`/`DEVB`/`DEVU`, and the SPA's Faucet
+tab minted through it in the browser. Kernel
+[#69](https://github.com/effectstream/zswap-offerfiles-kernel/pull/69) **removed that contract.**
+On Preview/Preprod/Stagenet tokens now come from the hosted
+[`mint-test-tokens`](https://github.com/effectstream/mint-test-tokens) registry, and upstream's own
+words are that *a public faucet cannot fund a fresh local chain*. So an `undeployed` stack has to
+**issue its own**, and that repository — public, first-party, and already on this stack's exact 1.x
+line — supports exactly that (`MN_NETWORK=undeployed`).
+
+The profile deploys the six canonical v1 token contracts **once per chain**, publishes their
+registry on a shared volume, serves the static faucet site for humans, teaches the offer-files
+kernel the six colours, and exposes one headless command that every other profile's provisioning
+calls.
+
+### The six tokens — and why every amount in this stack is now a BASE-UNIT count
+
+| Kernel name | Registry symbol | Privacy | Decimals | Reference asset | 1 whole coin |
+|---|---|---|---|---|---|
+| `TWBTC` | `twBTC` | shielded | **8** | `bitcoin` | `100000000` |
+| `TWETH` | `twETH` | shielded | **18** | `ethereum` | `1000000000000000000` |
+| `TWUSDC` | `twUSDC` | shielded | 6 | `usd-coin` | `1000000` |
+| `TWUSDM` | `twUSDM` | shielded | 6 | `usdm-2` | `1000000` |
+| `UTWUSDC` | `utwUSDC` | **unshielded** | 6 | `usd-coin` | `1000000` |
+| `UTWBTC` | `utwBTC` | **unshielded** | 8 | `bitcoin` | `100000000` |
+
+The kernel's name is the registry's symbol upper-cased, and nothing else — that is exactly what
+`POST /v1/known-tokens` does to whatever it is sent, so any other transformation would produce a
+name that could never match a row the kernel seeds.
+
+**This ends the whole-coin line's "6 decimals everywhere" simplification.** Kernel #63 made every
+token 6 decimals and every price per-base-unit; these six are 8, 18 and 6, so an amount is only
+unambiguous as a count of BASE UNITS. `issuer-fund` therefore takes base units and refuses
+anything that is not plain decimal digits, and the receipt it prints states the decimals beside
+the amount.
+
+### Four services and one command
+
+| Service | Target | What it does |
+|---|---|---|
+| `issuer-deploy` | `runtime` | **ONE-SHOT, MANDATORY.** Funds the dedicated `issuer` wallet with four large NIGHT UTXOs from `genesis-1` under the shared `genesis-lock`, registers that NIGHT for DUST, waits for the DUST to arrive, then runs the pinned repository's **own** v1 deploy: six contracts deployed, each verified on chain, and `metadata.undeployed.json` published atomically onto the `issuer-registry` volume. |
+| `faucet` | `faucet` (nginx) | Serves the repository's built static site on container `:10500` (`${FAUCET_HOST_PORT}`) plus that registry and the v1 proving artifacts. **The human lane.** |
+| `issuer-registrar` | `runtime` | **NEVER STARTED BY `up.sh` IMPLICITLY** (`deploy: { replicas: 0 }`). Teaches the kernel the six colours: `UPDATE known_tokens … WHERE upper(name) = …` then `POST /v1/known-tokens`, per token. Run when the `offerfiles` profile is up too. |
+| `issuer-fund` | `runtime` | **NEVER STARTED AT ALL.** `docker compose run --rm issuer-fund <TOKEN> <base-units> <recipient-seed>` — the headless exact mint. |
+| `issuer-registry` | `runtime` | **NEVER STARTED AT ALL.** Validates and dumps the registry. `docker compose run --rm --no-deps issuer-registry`. |
+
+### It depends only on `core`
+
+node, indexer and proof-server — nothing else. `./up.sh --with issuer` alone is legal and
+complete: it deploys the six contracts, publishes the registry and serves the faucet. There is no
+offerfiles dependency, no kernel, no Celestia, no Postgres, and
+`scripts/verify-compose-pins.sh` renders `core issuer` alone to keep that true.
+
+The ONE service that knows the kernel exists therefore cannot say so in compose: compose **rejects**
+a `depends_on` — even `required: false` — naming a service no selected fragment defines, which is
+precisely the case when `issuer` is up without `offerfiles`. So `issuer-registrar` is
+`replicas: 0` and `up.sh` runs it explicitly when `service_present kernel`. That is the same model
+`shielded-night-token-name` has used since 00015, for the same reason.
+
+**One difference from the sNight one-shot, and it is deliberate:** a failure of the sNight
+registration is a WARNING, because a colour without a friendly name is cosmetic. A failure here is
+**FATAL to the bring-up**, because the kernel would be left holding the six canonical NAMES at the
+public **Preprod** colours its own seed shipped (kernel #69) — six rows that confidently
+misidentify colours which do not exist on this chain, so every quote, price and sponsorship
+decision touching a `TW*`/`UTW*` name would be made against the wrong colour. That is worse than
+no label at all.
+
+### The wallet, and the genesis-1 mutex
+
+`ISSUER_SEED` is `…0051` in `wallets/wallets.json`, **dedicated** and assigned to nothing else.
+The deploy runner holds a wallet facade open through six proving deployments, and `genesis-1` is
+already the faucet, the kernel's `MIDNIGHT_WALLET_SEED` and the source every other provisioning
+one-shot draws from; two facades on one seed against one Midnight node force each other's
+connection down with no error naming the cause. So:
+
+* `images/issuer/m1/provision.ts` exits **78** if it is handed the genesis seed, rather than
+  trusting the default;
+* `issuer-fund` refuses to mint to the issuer's own seed;
+* both hold a `flock` on the `issuer-state` volume, so two issuer containers cannot drive `…0051`
+  at once;
+* `issuer-deploy` takes the shared **`genesis-lock`** (00011 Q7) for the ~1 minute it spends on
+  `genesis-1`, and **releases it before it starts deploying** — the long half of the one-shot does
+  not block `solver-provision`, `maker-offer` or `poster-provision`.
+
+**Nothing in mint-test-tokens registers NIGHT for DUST** — it is written for wallets that arrive
+already funded — so `m1/provision.ts` does it, with the recipe read out of the published
+`@effectstream/midnight-contracts` and re-expressed against the wallet facade this tree already
+installs. It is not IMPORTED from that package: that would put a second ledger-v8 wasm instance in
+the image's dependency graph, and two instances fail `instanceof` during proving.
+
+### Resume, and what a chain reset does
+
+The deploy runner keeps a private **resume journal** and its private-state stores under
+`<repo root>/.local` — the `issuer-state` volume — keyed by
+`sha256(registry path + stack identity)`, where stack identity is
+`sha256(chain name + runtime version + genesis hash)` read live off the node. A second `./up.sh`
+therefore re-verifies each recorded contract on chain and prints `[resume] <symbol> <address>`
+instead of deploying. **Measured: 9 seconds for all six, and the registry revision is byte-identical
+afterwards.**
+
+`./down.sh -v` wipes the chain and both issuer volumes together, so the ordinary reset leaves
+nothing stale. A registry that SURVIVES a chain reset (an operator who wiped only the node volume)
+is seen as a different stack identity, marked `stale`, and **refused** with an instruction to
+confirm the reset and rerun with `MN_REDEPLOY_STALE=1`. The entrypoint does not set that by
+default — posting stale ids to the kernel is the failure this profile exists to prevent, and
+"discard six contracts' worth of identity" is an operator's decision, not a bring-up's. Pass
+`ISSUER_REDEPLOY_STALE=1` when you have made it.
+
+### The browser lane is a HAND TEST, on purpose
+
+The faucet site mints through a connected dApp-connector 4.x wallet (Lace) and **the wallet does
+the proving**, so there is no headless path through the site at all. That is why `issuer-fund`
+exists, why every automated gate uses it, and why the browser flow is the owner's hand test
+(`docs/OPERATIONS.md`).
+
+### Provenance
+
+`images/issuer/PROVENANCE.md` carries the whole story. The three things worth knowing here:
+
+1. **The image keeps its `.git`, detached at the pin.** The deploy runner runs `git rev-parse HEAD`,
+   `git diff` and `git ls-files --others` over `contracts/v1` before it will submit anything, and
+   records the resolved commit in every registry record as `artifact.sourceRevision`. An image
+   without the repository cannot issue a token — and the registry this stack publishes therefore
+   names the exact source revision its verifier keys came from.
+2. **All three v1 contracts are recompiled in-image** with compactc 0.31.1 and must reproduce the
+   committed `contracts/v1/managed/` **byte for byte** (measured: 5 + 5 + 9 circuits, zero
+   differences). Unlike `images/shielded-night`, the fresh bytes are NOT copied forward — the
+   runner requires the working tree to equal the pinned commit, so the committed bytes are the ones
+   that ship and the equality is proven instead.
+3. **`images/issuer/nginx.conf` transcribes upstream's `frontend/public/_headers`**, and that file
+   is pinned by SHA-256 in the Dockerfile — so a re-pin that changes the header policy fails the
+   BUILD and names the config, instead of leaving nginx describing a policy upstream no longer has.
+
 ## Appendix — the profile descriptions that used to sit in the README's profiles table
 
 Moved here on 2026-09-07 when the README table became a per-profile service/endpoint table
@@ -580,4 +719,5 @@ maintained** — the live pins are the README's generated table and
 | `shielded-night` | `compose/shielded-night.yml` | the **Shielded NIGHT** dApp (`:10900`): a deploy one-shot that mints the NIGHT ⇄ sNight wrapper contract **once per stack**, and an nginx page that learns that address at container start. Built from `effectstream/shielded-night` at a pinned commit, with the contract **recompiled in-image** (compactc 0.31.1) and required to reproduce the committed artifacts byte-for-byte. **Depends only on `core`.** With `offerfiles` also up it names the sNight colour in the kernel's token registry **and prices it** (`asset_id: midnight-3`, the same reference NIGHT itself uses — `GET /v1/quote` sNight↔NIGHT answers `market_rate: 1`), and `./verify.sh` drives the whole chain — NIGHT → sNight → an offer file on the book → taken → back to NIGHT. |
 | `solver` | `compose/solver.yml` | the Midnight Intents relay (`:13000` HTTP, `:19001` solver WS), the COW solver in execution mode with its read-only **status listener** (`:9100`, bearer-gated, network-internal by design), the **solver monitor** (`:10800` — the six-stage health strip, the published ladder and the book, read-only), the provisioning one-shots, and the intents browser UI (`:10700`). The solver **is the kernel commit**: `images/cow-solver` is the kernel image plus entrypoints, with no second source pin and no `.solver-commit` — see `docs/COMPONENTS.md`. |
 | `poster` | `compose/poster.yml` | the **offer poster** (`:19977` — read-only `/health`, `/metrics`, `/journal`) and the one-shot that funds its DEDICATED wallet with NIGHT from genesis. Every 60 s it either re-offers a coin that came back or mints one whole WBTC coin from the faucet circuit — paying the fee from its own DUST — and posts **one** ZSwap offer whose only input is that exact coin, sized from `GET /v1/quote` so the batcher sponsors it. Each offer spends its coin **whole**: no change output, so every offer is a complete, independently takeable swap. **Opt-in**, and included by `--all`; it needs `offerfiles` and needs neither the relay nor the solver. `./verify.sh` asserts the exact-coin guarantee from outside (`computed.inputNullifiers` == the journal coin's nullifier) and settles one of its offers with a second wallet. |
+| `issuer` | `compose/issuer.yml` | **THIS STACK'S OWN TOKEN ISSUER** and the faucet site for it (`:10500`) — what replaces the local faucet contract kernel #69 removed. `issuer-deploy` deploys the six `mint-test-tokens` v1 token contracts once per chain (`TWBTC` 8 dec, `TWETH` 18, `TWUSDC` 6, `TWUSDM` 6, `UTWUSDC` 6 unshielded, `UTWBTC` 8 unshielded), publishes `metadata.undeployed.json` on the `issuer-registry` volume, and the `faucet` container serves the repository's own static site at `/?network=undeployed` for a Lace-driven mint. **Depends only on `core`.** With `offerfiles` also up, `issuer-registrar` teaches the kernel all six colours with their real decimals (`UPDATE` by name, then `POST /v1/known-tokens`). Automation never uses the browser: `docker compose run --rm issuer-fund <TOKEN> <base-units> <recipient-seed>` mints an exact amount headlessly and reads the recipient's balance back. **Opt-in**, and included by `--all`. |
 | `prices` | `compose/prices.yml` | the **price feed** — one process, no port and no volume, on the kernel image. Every `PRICE_FEED_INTERVAL_MS` (24 h) it asks CoinGecko `simple/price` for the five seeded assets (`bitcoin`, `ethereum`, `usd-coin`, `midnight-3`, `usdm-2`) in **one batched request** and upserts `asset_prices`, so `GET /v1/prices`, `GET /v1/quote`'s `market_rate` and the batcher's sponsorship gate move from the schema's 2026-09-02 seeds (`source: seed`) to live prices (`source: feed`). `COINGECKO_API_KEY` in `.env` is the **only secret in this stack**: sent as the `x-cg-demo-api-key` header, never as a query parameter, never printed (the service logs `key=present`), never given a compose default. **Opt-in**, and included by `--all`; it needs `offerfiles` (the image, and the kernel's schema). **With no key it comes up and idles with a warning rather than crash-looping** — the seeded prices already quote real ratios — and `./verify.sh` reports its section **SKIPPED**, never passed. Take a refresh now with `docker compose run --rm --no-deps price-feed --once`. |

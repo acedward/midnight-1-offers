@@ -56,6 +56,12 @@
       "pinnedIn": "{files:SHIELDED_NIGHT_REF}"
     },
     {
+      "component": "**Token issuer** — `issuer-deploy` · faucet site · `issuer-registrar` · `issuer-fund` (ONE image, two targets)",
+      "source": "[`effectstream/mint-test-tokens`](https://github.com/effectstream/mint-test-tokens) `main` (public, already on the 1.x line); the six v1 token contracts are deployed once per devnet on `undeployed`, and all three v1 contracts are recompiled in-image with compactc 0.31.1 and byte-compared against the committed artifacts. This is what replaces the kernel's removed local faucet: `TWBTC` (8 dec) `TWETH` (18) `TWUSDC` (6) `TWUSDM` (6) `UTWUSDC` (6, unshielded) `UTWBTC` (8, unshielded)",
+      "pin": "{commit:ISSUER_REF@effectstream/mint-test-tokens}",
+      "pinnedIn": "{files:ISSUER_REF}"
+    },
+    {
       "component": "Midnight Intents relay + intents UI",
       "source": "`shieldedtech/midnight-intents-swaps` — **PRIVATE**; you supply the clone via `RELAY_SOURCE_DIR`, `up.sh` verifies it sits at the pin with a clean tree before any build",
       "pin": "{ref:RELAY_REF} (`RELAY_REF`, verified before build)",

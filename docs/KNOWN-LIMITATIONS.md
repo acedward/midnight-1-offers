@@ -1,8 +1,8 @@
 # Known limitations
 
 > **Scope.** This file records the limitations of the **`offerfiles`** (one entry, added by the
-> `a608fa6` re-pin), **`solver`**, **`poster`**, **`prices`** and **`shielded-night`** profiles.
-> The remaining `offerfiles` entries land with 00005 P6.
+> `a608fa6` re-pin), **`solver`**, **`poster`**, **`prices`**, **`shielded-night`** and
+> **`issuer`** profiles. The remaining `offerfiles` entries land with 00005 P6.
 
 ## `offerfiles`
 
@@ -45,6 +45,85 @@ and accepts it only when this stack's colour already carries this stack's name; 
 fails the bring-up naming both names, with the registry dumped. `./verify.sh`'s `kernel` section
 asserts the same property from the outside and fails on **any** `TESTTOKEN*` row. See
 `docs/OPERATIONS.md`, "The dev-token names are guarded now".
+
+## `issuer`
+
+### The faucet SITE cannot be exercised headlessly — the browser mint is the owner's hand test
+
+The site mints through a connected dApp-connector 4.x wallet (Lace) and **the wallet does the
+proving**: it balances, proves and submits the transaction the page composes. There is no server,
+no API and no key in the page, so there is nothing for a script to drive. That is upstream's
+design and it is the right one for a public faucet.
+
+The consequence for this stack is a split that is worth stating rather than discovering:
+`./verify.sh` proves the site is SERVED correctly — the SPA shell, the registry with its
+`Access-Control-Allow-Origin: *` and `max-age=300` headers and a matching revision, the v1
+proving artifacts as binary bytes, and a real 404 for a missing artifact — and proves MINTING
+through `issuer-fund`, which is the lane every automated consumer uses anyway. **Pressing a faucet
+button in a browser is the owner's hand test**, and `docs/OPERATIONS.md` carries the steps.
+
+### An amount is only unambiguous in BASE UNITS, and three of the six tokens are not 6 decimals
+
+`TWBTC` and `UTWBTC` are 8 decimals, `TWETH` is **18**, the other three are 6. There is therefore
+no "one coin" this stack can default to, and `issuer-fund` takes base units and refuses anything
+that is not plain decimal digits. `TWETH`'s whole coin, `1000000000000000000`, is past
+`Number.MAX_SAFE_INTEGER` by two orders of magnitude — every amount in the issuer's own code and
+in `scripts/verify-issuer.sh` is handled as a `bigint` or as a decimal STRING, never as a number,
+and comparisons are string equality.
+
+This ends the whole-coin line's "6 decimals everywhere" simplification (kernel #63) for these six
+colours. `DEVA`/`DEVB`/`DEVU` are still 6, and until phase C retires the kernel's faucet contract
+both sets coexist — so a script that assumed 6 decimals is not yet WRONG, it is merely no longer
+right for every token in the registry.
+
+### Two facades on one seed: the caller must fund a wallet BEFORE the service that owns it starts
+
+`issuer-fund` opens a wallet facade on the issuer's seed and one on the RECIPIENT's, and two
+facades on one seed against one Midnight node force each other's connection down with no error
+naming the cause (`wallets/wallets.json`). The issuer's own side is enforced — a `flock` on the
+`issuer-state` volume serialises every issuer container, and the command refuses to mint to the
+issuer's own seed — but the recipient's is not, and cannot be from inside this profile.
+
+In practice this is not a constraint: every provisioning one-shot in the stack is already gated by
+compose on `service_completed_successfully` before the long-lived service that holds that wallet
+starts. It matters when an operator funds a wallet BY HAND on a running stack: stop the service
+that owns it first, or fund a wallet nothing is holding.
+
+An address-only mode (mint to a shielded address with no recipient facade, which upstream's own
+site does) would remove the constraint entirely and is a plausible follow-up — but it cannot read
+the balance back, which is the assertion this helper exists to make.
+
+### A registry that outlives its chain is REFUSED, not repaired
+
+`./down.sh -v` wipes the chain and both issuer volumes together, so the ordinary reset is clean.
+If a registry survives a chain reset — you wiped only the node volume — the deploy runner sees a
+different stack identity, marks the file `stale` and stops with an instruction rather than
+redeploying. That is deliberate: replacing it discards six contracts' worth of identity and turns
+every coin already minted into a different, unspendable token. `ISSUER_REDEPLOY_STALE=1` is the
+operator's confirmation; `docs/OPERATIONS.md` has the procedure.
+
+### The kernel's `canonical_token_registry_state` marker is left holding the Preprod colours
+
+This is about the kernel pin phase C moves to, and is recorded now because the registrar is
+already written for it. Kernel #69 adds an importer-ownership table beside the seed, recording the
+colour a canonical PUBLIC import last committed for each of the six names. `issuer-registrar`
+deliberately does not touch it, for two reasons: the column carries
+`CHECK (network IN ('preview','preprod','stagenet'))`, so there is **no legal row** for an
+`undeployed` colour; and leaving the Preprod marker in place is the honest state — an explicit
+`TOKEN_REGISTRY_NETWORK=preprod` import on a locally-issued stack then refuses with *"managed token
+TWBTC no longer matches canonical registry provenance"* and is skipped (non-fatal), which is
+exactly right, because a database cannot hold both the public Preprod colours and this stack's own.
+Deleting the marker rows would not change that outcome and would destroy a record this profile does
+not own. On `undeployed` the import is skipped before any of it: `fetchRegistry()` throws
+*"undeployed is a local network with no public canonical registry"*.
+
+### `./verify.sh`'s issuer section leaves a coin behind, and mints one every run
+
+The section funds `e2e-taker` with one whole `TWBTC` and reads the balance back; the coin stays in
+that wallet. It is the last section `verify.sh` runs for exactly that reason — after every section
+that makes assertions about that wallet — and the assertion is on the DELTA, so repeated runs
+accumulate without failing. On a stack where `./verify.sh` has run three times, `e2e-taker` holds
+three whole `TWBTC`.
 
 ## `solver`
 
