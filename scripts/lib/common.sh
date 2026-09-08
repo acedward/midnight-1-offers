@@ -361,12 +361,14 @@ load_env() {
   # unwrap step burn it whole (convertToUnshielded consumes one coin, never part of one).
   : "${SNIGHT_BOOK_AMOUNT:=1000000}"
   : "${SNIGHT_BOOK_WANT_AMOUNT:=750000}"
-  # Which minted demo colour the sNight offer asks for. `shieldedA` is DEVA, `shieldedB` DEVB;
-  # both are minted by the offerfiles deploy one-shot and named by its token-names one-shot.
-  : "${SNIGHT_BOOK_WANT_KEY:=shieldedA}"
+  # WHICH TOKEN THE sNIGHT OFFER ASKS FOR, as an ISSUER TOKEN NAME (00020 PR C). It was
+  # `SNIGHT_BOOK_WANT_KEY=shieldedA`, a key into the deploy one-shot's `minted-tokens.json`;
+  # kernel #69 deleted the mint, the file and the volume it lived on. It must be SHIELDED — the
+  # offer is a shielded-to-shielded swap — which rules out UTWUSDC and UTWBTC.
+  : "${SNIGHT_BOOK_WANT_TOKEN:=TWUSDC}"
   # The taker, and the wallet that funds it. e2e-taker starts empty at genesis (measured), so
-  # the chain provisions it from the faucet wallet — which is also the wallet the demo colours
-  # were minted to, and therefore the only one that can hand it the token the offer demands.
+  # the chain provisions it: NIGHT from the funder below, and the token the offer demands from
+  # `issuer-fund` — since 00020 PR C nothing else on the stack can produce one.
   : "${SNIGHT_BOOK_TAKER_SEED:=${TAKER_SEED:-0000000000000000000000000000000000000000000000000000000000000032}}"
   : "${SNIGHT_BOOK_FUNDER_SEED:=${MIDNIGHT_GENESIS_SEED:-0000000000000000000000000000000000000000000000000000000000000001}}"
   : "${SHIELDED_NIGHT_NAME:=Shielded Night}"
@@ -449,7 +451,7 @@ load_env() {
          SHIELDED_NIGHT_REPO SHIELDED_NIGHT_REF \
          ISSUER_REPO ISSUER_REF \
          SHIELDED_NIGHT_WALLET_SEED SHIELDED_NIGHT_DRIVER_SEED \
-         SNIGHT_BOOK_AMOUNT SNIGHT_BOOK_WANT_AMOUNT SNIGHT_BOOK_WANT_KEY \
+         SNIGHT_BOOK_AMOUNT SNIGHT_BOOK_WANT_AMOUNT SNIGHT_BOOK_WANT_TOKEN \
          SNIGHT_BOOK_TAKER_SEED SNIGHT_BOOK_FUNDER_SEED \
          SHIELDED_NIGHT_NAME SHIELDED_NIGHT_SYMBOL SHIELDED_NIGHT_DECIMALS \
          SHIELDED_NIGHT_LOCK SHIELDED_NIGHT_WAIT_TIMEOUT \
