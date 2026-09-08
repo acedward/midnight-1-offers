@@ -82,6 +82,10 @@ INTENTS_UI_IMAGE=midnight-1-offers/intents-ui:${IMAGE_TAG_SUFFIX}
 # reuse the first one's binaries.
 SHIELDED_NIGHT_IMAGE=midnight-1-offers/shielded-night:${IMAGE_TAG_SUFFIX}
 SHIELDED_NIGHT_DEPLOY_IMAGE=midnight-1-offers/shielded-night-deploy:${IMAGE_TAG_SUFFIX}
+# The token issuer: one build context, TWO runtime targets again (the node runtime that runs
+# the deploy/registrar/fund roles, and the nginx faucet site), so two image names.
+ISSUER_IMAGE=midnight-1-offers/issuer:${IMAGE_TAG_SUFFIX}
+ISSUER_FAUCET_IMAGE=midnight-1-offers/issuer-faucet:${IMAGE_TAG_SUFFIX}
 
 # External runtime images: repository + IMMUTABLE DIGEST, never a tag. All three are good
 # official multiarch indexes (linux/amd64 + linux/arm64). Readable versions: midnight-node
@@ -125,6 +129,12 @@ SOLVER_FRONTEND_HOST_PORT=$(( BASE + 11 ))
 # container). Nothing else in the poster profile publishes a port.
 POSTER_HEALTH_HOST_PORT=$(( BASE + 12 ))
 
+# The issuer's FAUCET SITE (:10500 in the container) — the one port the issuer profile
+# publishes. Open it at http://127.0.0.1:$(( BASE + 13 ))/?network=undeployed
+# (NO BACKTICKS ANYWHERE BELOW: this whole block is an unquoted heredoc, so a backtick would
+# be command substitution and the generated .env would carry its output — or its error.)
+FAUCET_HOST_PORT=$(( BASE + 13 ))
+
 # The status listener's bearer, random per generated stack. Both sides read this ONE value
 # (the solver enforces it; solver-frontend sends it), and the solver REFUSES TO START with
 # fewer than 32 characters whenever its status port is set.
@@ -157,4 +167,8 @@ SOLVER_WAIT_TIMEOUT=${SOLVER_WAIT_TIMEOUT:-300}
 # The shielded-night deploy one-shot proves and submits a real contract deploy on a cold
 # chain before the web container may start; this bounds the web entrypoint's wait for it.
 SHIELDED_NIGHT_WAIT_TIMEOUT=${SHIELDED_NIGHT_WAIT_TIMEOUT:-600}
+# The issuer bring-up: compose will not start the faucet until issuer-deploy has exited 0, and
+# that one-shot funds a wallet, waits for DUST and then proves SIX contract deployments. This
+# is the longest wait in the stack; it bounds up.sh's wait for the faucet container.
+ISSUER_WAIT_TIMEOUT=${ISSUER_WAIT_TIMEOUT:-2700}
 EOF

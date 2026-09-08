@@ -30,7 +30,7 @@ Usage: ./up.sh [options]
 Brings up the core Midnight 1.x stack (node + indexer + proof-server + postgres) and waits
 until each is serving. Reads .env for image pins and host ports (see .env.example).
 
-PROFILES — there are exactly seven, and a profile IS a compose fragment in compose/, named
+PROFILES — there are exactly eight, and a profile IS a compose fragment in compose/, named
 after the file. No compose \`profiles:\` key is used anywhere in this repository.
 
   core           ALWAYS on. midnight-node ${NODE_VERSION}, indexer-standalone ${INDEXER_VERSION},
@@ -53,6 +53,15 @@ after the file. No compose \`profiles:\` key is used anywhere in this repository
                  gate. No port, no volume. Needs \`offerfiles\`. WITHOUT \`COINGECKO_API_KEY\` in
                  .env it comes up and IDLES with a warning — the schema's seeded prices already
                  quote real ratios — and ./verify.sh reports its section SKIPPED, not passed.
+  issuer         THIS STACK'S OWN TOKEN ISSUER, and the faucet site for it (:${FAUCET_HOST_PORT}).
+                 It deploys the six mint-test-tokens v1 contracts ONCE per chain —
+                 TWBTC (8 dec) TWETH (18) TWUSDC (6) TWUSDM (6) UTWUSDC (6, unshielded)
+                 UTWBTC (8, unshielded) — publishes their registry, and serves the static site
+                 that mints them through a connected browser wallet. Open it at
+                 http://${HOST_ADDR}:${FAUCET_HOST_PORT}/?network=undeployed
+                 Depends only on core. With \`offerfiles\` up too, the kernel's token registry
+                 learns all six colours. Automation mints headlessly instead:
+                   docker compose run --rm issuer-fund TWBTC 100000000 <recipient-seed>
 
 Options:
   --with <profile>   ALSO bring up an optional profile; repeatable, and additive — see below.
@@ -353,7 +362,40 @@ if (( ! FAILED )) && [[ " $PROFILES " == *" shielded-night "* ]] && service_pres
     fi
   fi
 fi
-# ── the ONE cross-profile step in this stack, and it lives here on purpose ──
+# The issuer profile. compose gates the `faucet` container on `issuer-deploy`'s
+# `service_completed_successfully`, so reaching healthy here means the whole issuer bring-up
+# finished: the issuer wallet was funded from genesis and DUST-registered, six token contracts
+# were deployed and verified on chain, and the registry was published. That is by far the
+# longest wait in this stack — hence ISSUER_WAIT_TIMEOUT in minutes — and it is why the faucet's
+# healthcheck asserts the registry's own `"status": "ready"` rather than merely that nginx binds.
+if (( ! FAILED )) && [[ " $PROFILES " == *" issuer "* ]] && service_present faucet; then
+  wait_compose_healthy faucet "$ISSUER_WAIT_TIMEOUT" || FAILED=1
+  if (( ! FAILED )); then
+    # Read the six through the faucet container, which mounts the registry volume read-only.
+    # `service_completed_successfully` on the one-shot is NOT enough on its own: it is equally
+    # satisfied by a one-shot that took the RESUME path against a registry from a previous
+    # chain. What matters is that the file names six ACTIVE deployments, and that is asserted
+    # here rather than assumed. `|| true` keeps a failed exec reportable by the assertion below
+    # instead of killing the run.
+    ISSUER_ACTIVE="$(dc exec -T faucet \
+      grep -c '"status": "active"' /srv/issuer-registry/metadata.undeployed.json 2>/dev/null \
+      | tr -cd '0-9' || true)"
+    # `tr -cd '0-9'` first, so a non-numeric answer (an exec that failed, an empty file) becomes
+    # the empty string and then 0 — never an arithmetic expression bash would evaluate as a
+    # variable name. This is a cheap sanity check, not the gate: ./verify.sh's `issuer` section
+    # validates the file against the schema AND the semantic validator.
+    [[ -n "${ISSUER_ACTIVE}" ]] || ISSUER_ACTIVE=0
+    if (( ISSUER_ACTIVE < 6 )); then
+      err "the issuer registry names ${ISSUER_ACTIVE} active deployment(s), expected 6"
+      info "  docker compose logs issuer-deploy"
+      info "  docker compose run --rm --no-deps issuer-registry   # validate and dump it"
+      FAILED=1
+    else
+      ok "the issuer registry names ${ISSUER_ACTIVE} active deployments"
+    fi
+  fi
+fi
+# ── the TWO cross-profile steps in this stack, and they live here on purpose ──
 # When BOTH `offerfiles` and `shielded-night` are up, the kernel's dev token registry is told
 # what the sNight colour is called. It cannot be a compose dependency in either direction:
 # `shielded-night` must work with nothing but core (spec FR-002), and compose rejects a
@@ -385,6 +427,33 @@ if (( ! FAILED )) \
     warn "could not name the sNight colour in the kernel registry (one-shot exit ${SNIGHT_NAME_RC}) — the book will show it as raw hex"
     info "(nothing else is affected; ./verify.sh --shielded-night reports it too. Re-run it alone with:"
     info " docker compose run --rm --no-deps shielded-night-token-name)"
+  fi
+fi
+# The issuer's own half of the same pattern, and for the same reason. When BOTH `offerfiles` and
+# `issuer` are up, the kernel's token registry is told what this stack's six colours are called.
+# It cannot be a compose dependency in either direction: `issuer` must work with nothing but core
+# (spec FR-002), and compose rejects a `depends_on` — even `required: false` — that names a
+# service the selected fragments do not define. The information "is there a kernel?" exists HERE
+# and nowhere else, so `issuer-registrar` is `deploy: { replicas: 0 }` and is invoked explicitly,
+# after both profiles are healthy.
+#
+# FATAL, UNLIKE THE sNIGHT ONE — and the difference is not an inconsistency. A missing sNight
+# LABEL is cosmetic: the offer book, the page and every round trip work identically. Here the
+# kernel would be left holding the six canonical NAMES at the PUBLIC PREPROD colours its own
+# seed shipped (kernel #69), i.e. six rows that confidently misidentify colours which do not
+# exist on this chain — so every quote, every price and every sponsorship decision touching a
+# TW*/UTW* name would be made against the wrong colour. That is worse than no label at all, so a
+# non-zero exit here fails the bring-up and the one-shot's log says why.
+if (( ! FAILED )) \
+   && [[ " $PROFILES " == *" issuer "* ]] && [[ " $PROFILES " == *" offerfiles "* ]] \
+   && service_present faucet && service_present kernel; then
+  log "registering this stack's six issuer colours with the offer-files token registry"
+  if ! dc run --rm --no-deps -T issuer-registrar; then
+    err "could not register the issuer colours in the kernel registry"
+    info "the kernel is left holding the six canonical NAMES at the Preprod colours its own seed"
+    info "shipped — colours that do not exist on this chain. Re-run it alone with:"
+    info "  docker compose run --rm --no-deps issuer-registrar"
+    FAILED=1
   fi
 fi
 # The poster. Its health server binds only AFTER wallet sync, DUST registration, the bounded
@@ -461,6 +530,9 @@ service_present offer-poster && info "offer poster      ${POSTER_URL}/health   (
 # No URL of its own — it serves nothing. What it did is read through the kernel, and the
 # one-off refresh is worth naming here because the loop's own next cycle is a day away.
 service_present price-feed   && info "price feed        ${KERNEL_URL}/v1/prices?tokens=<colour>   (one refresh now: docker compose run --rm --no-deps price-feed --once)"
+service_present faucet       && info "token faucet      ${FAUCET_URL}/?network=undeployed   (the ?network= is not optional)"
+service_present faucet       && info "issuer tokens     docker compose run --rm --no-deps issuer-registry   (six ids + decimals)"
+service_present faucet       && info "fund a wallet     docker compose run --rm issuer-fund TWBTC 100000000 <recipient-seed>"
 echo
 info "next: ./verify.sh    (assert the stack is usable, not merely running)"
 info "      ./down.sh -v   (stop and wipe all chain/indexer/kernel state)"

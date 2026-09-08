@@ -62,11 +62,20 @@ trap 'rm -rf "$EMPTY_ENV" "$RENDER_DIR"' EXIT
 # `prices` is rendered on `offerfiles` alone for the same reason (its only dependency: the
 # kernel image and the kernel's schema), beside `poster` (the pair an operator asking for a
 # self-supplying book on live prices actually brings up), and in the fullest stack.
+# `issuer` is rendered ALONE ON CORE — that requirement is the same one shielded-night carries
+# (spec FR-002: node, indexer and proof server, nothing else) and it has to stay true, because
+# a fragment whose only kernel-aware service acquired a `depends_on: kernel` would stop
+# rendering there and the failure would look identical to "this fragment declares no services".
+# It is also rendered beside `offerfiles` (the combination the kernel registrar needs), beside
+# `poster` and `solver` (all three declare the SAME `genesis-lock` volume, and compose merging
+# those declarations is what the genesis-1 mutex rests on — 00011 Q7), and in the fullest stack.
 COMBOS=(
   "core"
   "core offerfiles"
   "core frontend"
   "core shielded-night"
+  "core issuer"
+  "core offerfiles issuer"
   "core offerfiles frontend"
   "core offerfiles shielded-night"
   "core offerfiles solver"
@@ -75,7 +84,8 @@ COMBOS=(
   "core offerfiles poster prices"
   "core offerfiles frontend solver"
   "core offerfiles poster solver"
-  "core offerfiles frontend solver shielded-night poster prices"
+  "core offerfiles issuer poster solver"
+  "core offerfiles frontend solver shielded-night poster prices issuer"
 )
 
 FAILURES=0

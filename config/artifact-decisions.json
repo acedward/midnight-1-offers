@@ -1,6 +1,6 @@
 {
   "schemaVersion": "artifact-decision-matrix-v2",
-  "pinsDigest": "e54af98cfdca9735e0b7777cd223f1ddd7655897bb050afab07d59821f11a03b",
+  "pinsDigest": "bd4a29be305d56d09e4734a58aa2d8f715d5fb48047b7d683e9acaa97a9d1d63",
   "frozenOn": "2026-09-01",
   "note": "Frozen artifact-selection contract for every external dependency of this Midnight 1.x demo. Each field was re-derived from a live source on the freeze date. scripts/verify-artifact-decisions.sh enforces it offline. Do not edit a digest, SHA or hash to make a build pass: re-verify against the source first, then regenerate pinsDigest with --update-pins so the change is visible in review. Schema v2 differs from the 2.x sibling's v1 by adding `sources` (git-pinned source builds) and `toolchains`, and by replacing the warehouse proof-data generation with a pre-warm strategy.",
   "selectionOrder": [
@@ -454,6 +454,41 @@
       ]
     },
     {
+      "id": "issuer",
+      "role": "the stack's own token issuer — six v1 test-token contracts deployed once per devnet, their registry, the static faucet site, and the headless funding CLI. One image, two runtime targets, four entrypoints",
+      "acquisition": "anonymous-git-fetch",
+      "repository": "https://github.com/effectstream/mint-test-tokens.git",
+      "branch": "main",
+      "ref": "7ecad008b07acb2a491d8291e05455cbd638910f",
+      "envVar": "ISSUER_REF",
+      "verifiedOn": "2026-09-08",
+      "reason": "NEW IN 00020 PR B, and it exists because kernel #69 REMOVED the local faucet contract this stack's only token source used to be: on the public networks tokens now come from mint-test-tokens' hosted registry, and upstream's own words are that \"a public faucet cannot fund a fresh local chain\". This repository is public, first-party, and ALREADY on this stack's exact 1.x line, which is why the profile needed no porting: @midnight-ntwrk/ledger-v8 8.1.0 (with a tree-wide `overrides` pin), compact-runtime 0.16.0, compact-js 2.5.1, midnight-js/testkit 4.1.1, onchain-runtime-v3 3.0.0, and three v1 contracts whose committed artifacts embed compactc 0.31.1 — the same triple this repository's core runs (node 1.0.1 / indexer 4.3.3 / proof-server 8.1.0). Above all it supports MN_NETWORK=undeployed EXPLICITLY (`scripts/lib/network-config.ts`), writes metadata.undeployed.json atomically into an operator-chosen directory (MN_METADATA_OUTPUT_DIR), keeps a resume journal keyed by the chain's own identity, and exposes a `mint(recipient, amount, nonce)` circuit any caller may invoke for any positive Uint<64> amount — which is what makes a headless `issuer-fund` possible at all. `main` was re-checked on 2026-09-08 and had not moved from this commit. THE IMAGE KEEPS ITS .git: the deploy runner runs `git diff`/`git ls-files` over contracts/v1 and records the resolved commit in every registry record as artifact.sourceRevision, so a runtime without the repository cannot deploy — see images/issuer/PROVENANCE.md.",
+      "$comment": [
+        "WHAT THE IMAGE ASSERTS ABOUT THIS TREE, so a re-pin fails at the assertion rather than at",
+        "a hanging one-shot: the five MN_* endpoint overrides; MN_SEED_FILE as the only way a seed",
+        "gets in; MN_METADATA_OUTPUT_DIR and metadataOutputPath(); MN_REDEPLOY_STALE,",
+        "MN_CONFIRM_NO_DEPLOYMENT and markRegistryStale(); `export circuit mint` with a Uint<64> in",
+        "both issuer contracts; additionalCoinEncPublicKeyMappings in the runner (without it a",
+        "third-party shielded mint is undiscoverable); the six symbols with their exact names,",
+        "decimals and privacy; and frontend/public/_headers by SHA-256, because",
+        "images/issuer/nginx.conf transcribes it.",
+        "",
+        "THE v2 LANE IS PRESENT IN THIS TREE AND THAT IS FINE. contracts/v2 and",
+        "frontend/protocols/v2 target Midnight 2.x (compactc 0.34.0, ledger-v9 1.0.0-rc.3) and are",
+        "installed as ISOLATED package roots with their own lockfiles — upstream's own reason is",
+        "that the WASM-backed 1.x and 2.x graphs must never be deduplicated into one incompatible",
+        "runtime. The image asserts the ROOT graph and frontend/protocols/v1 carry ledger-v8 8.1.0",
+        "and NO ledger-v9 key, and asserts the v2 profile still has its own package.json AND its own",
+        "package-lock.json — i.e. it checks the isolation, not the absence.",
+        "",
+        "TWO EXTRA COMMITS ARE FETCHED, shallowly, and they are not a second pin: the frontend",
+        "build's verify-client-artifacts.mjs hashes contracts/{v1,v2}/managed/* from the Git objects",
+        "of the revisions named in frontend/client-artifacts.json and refuses to build if they are",
+        "missing. The image READS those revisions out of that file rather than restating them, so a",
+        "copy here could never disagree with the manifest the verifier actually reads."
+      ]
+    },
+    {
       "id": "intents-relay",
       "role": "the Midnight Intents relay and the phase1-native-swaps browser UI",
       "acquisition": "operator-local-clone",
@@ -573,6 +608,59 @@
         "Linux build stage: forbiddenAssetSubstrings is applied to toolchain assets and the",
         "Dockerfile asserts it a second time."
       ]
+    },
+    {
+      "id": "compact-issuer",
+      "version": "0.31.1",
+      "decision": "official-upstream-direct",
+      "resolved": true,
+      "requiredBy": "images/issuer — the pinned tree's compatibility.json names compiler 0.31.1 for its v1 profile, scripts/v1-deploy.ts hard-codes EMBEDDED_COMPILER_VERSION \"0.31.1\", and every contracts/v1/managed/*/compiler/contract-info.json records it; the image recompiles all THREE v1 contracts with exactly that compiler and FAILS the build if the output is not byte-identical to the committed contracts/v1/managed/",
+      "repository": "midnightntwrk/compact",
+      "releaseTag": "compactc-v0.31.1",
+      "releaseId": 344923756,
+      "reason": "A FOURTH Compact COMPILER in this repository — the THIRD recorded in this matrix (the kernel's 0.30.0 is pinned as a Dockerfile ARG in images/offerfiles-kernel and has no entry here) — and like the others it is DICTATED by the source it compiles, not chosen. It is the SAME VERSION as `compact-shielded-night`, from the same release, with the same two asset SHA-256s — and it is deliberately a SEPARATE ENTRY rather than a reference to that one, because the two are separate build inputs that can be re-pinned independently: collapsing them would mean a shielded-night re-pin silently changed what the issuer compiles with, and the issuer's byte-exactness assertion is what makes its registry's artifact digests mean anything. 0.31.1 also pairs with this tree's compact-runtime 0.16.0, which the generated bindings version-check at import time. The asset is fetched and sha256-verified in the image rather than resolved through the `compact` version manager, whose lookup cannot be pinned.",
+      "assets": {
+        "linux/amd64": {
+          "name": "compactc_v0.31.1_x86_64-unknown-linux-musl.zip",
+          "assetId": 457912387,
+          "outerSize": 27444336,
+          "outerSha256": "e291b4bab4d4e857707008f8b1c25c2b8e0c843f6c737d0ee6c0d9ac69a6bbfb"
+        },
+        "linux/arm64": {
+          "name": "compactc_v0.31.1_aarch64-unknown-linux-musl.zip",
+          "assetId": 457912389,
+          "outerSize": 26738536,
+          "outerSha256": "7c7e38581808779d2671687c3378017bcf2fb3111a192fd1253f3472012df549"
+        }
+      },
+      "verifiedOn": "2026-09-08",
+      "$comment": [
+        "MEASURED, 2026-09-08, before a line of images/issuer/Dockerfile was written: the amd64",
+        "asset at this sha256 was downloaded into a debian:trixie-slim container, reported exactly",
+        "`0.31.1`, and recompiled all three of the pinned tree's v1 contracts FROM THE REPOSITORY",
+        "ROOT — `compactc contracts/v1/<name>.compact contracts/v1/managed/<name>/` — reproducing",
+        "the committed contracts/v1/managed/ with ZERO differences under `diff -r`.",
+        "",
+        "  shielded-token.compact    5 circuits (name symbol decimals tokenColor mint)   17 s",
+        "  unshielded-token.compact  5 circuits (the same set)                            8 s",
+        "  receiver.compact          9 circuits                                          88 s",
+        "",
+        "THE INVOCATION IS PART OF THE OUTPUT. compactc records the input path verbatim in the",
+        "emitted source map; the committed map says sourceRoot \"../../../../../\" with sources",
+        "[\"contracts/v1/shielded-token.compact\", …], so the compile MUST run from the repository",
+        "root with those exact relative paths. Any other cwd produces artifacts that are identical",
+        "in every ZK key and differ in two lines of the map — which would force the assertion to be",
+        "loosened to \"everything except the source map\". images/shielded-night learned this the",
+        "expensive way; this entry records it so the next re-pin does not.",
+        "",
+        "`receiver.compact` is compiled too, although the deploy runner never instantiates it: the",
+        "faucet site serves its proving keys to the browser for a contract-recipient mint, so its",
+        "keys are as load-bearing as the issuers'.",
+        "",
+        "The same release also ships aarch64-darwin and x86_64-darwin zips. Those must never enter a",
+        "Linux build stage, which is why forbiddenAssetSubstrings is applied to toolchain assets and",
+        "asserted again in the Dockerfile."
+      ]
     }
   ],
   "proofData": {
@@ -620,6 +708,12 @@
       "decision": "source-build",
       "inArtifactNormalizationScope": false,
       "reason": "Application code with no reusable warehouse runtime artifact. One image, two runtime targets (the deploy/verify one-shot on the bun base, the nginx page server), built from the `shielded-night` source pin above with the Compact artifacts recompiled in-image by `compact-shielded-night`."
+    },
+    {
+      "id": "issuer-image",
+      "decision": "source-build",
+      "inArtifactNormalizationScope": false,
+      "reason": "Application code with no reusable warehouse runtime artifact. One build context, two runtime targets (the node runtime that carries the pinned tree, its .git and psql for the deploy/registrar/fund/registry roles; and the nginx faucet site), built from the `issuer` source pin above with all three v1 Compact artifacts recompiled in-image by `compact-issuer` and byte-compared against the committed ones."
     },
     {
       "id": "cow-solver-image",

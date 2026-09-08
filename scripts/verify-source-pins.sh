@@ -107,6 +107,7 @@ KERNEL_EXPECTED="${KERNEL_REF:-$(pin 'sources[offerfiles-kernel].ref')}"
 FRONTEND_EXPECTED="${FRONTEND_REF:-$(pin 'sources[zswap-da-template].ref')}"
 RELAY_EXPECTED="${RELAY_REF:-$(pin 'sources[intents-relay].ref')}"
 SHIELDED_NIGHT_EXPECTED="${SHIELDED_NIGHT_REF:-$(pin 'sources[shielded-night].ref')}"
+ISSUER_EXPECTED="${ISSUER_REF:-$(pin 'sources[issuer].ref')}"
 
 if service_present kernel; then
   assert_pin kernel "${KERNEL_IMAGE:-midnight-1-offers/offerfiles-kernel:local}" \
@@ -143,6 +144,32 @@ fi
 if service_present shielded-night-deploy; then
   assert_pin shielded-night-deploy "${SHIELDED_NIGHT_DEPLOY_IMAGE:-midnight-1-offers/shielded-night-deploy:local}" \
     /.shielded-night-commit "$SHIELDED_NIGHT_EXPECTED"
+fi
+# BOTH issuer runtime targets carry the commit, and both are asserted, for the same reason
+# shielded-night's two are: they are two images from one build — the nginx faucet site and the
+# node runtime that deploys, registers and mints — and only one of them is what a browser sees.
+#
+# There is a THIRD, stronger identity inside the runtime image, and it is asserted here too:
+# the tree is a real git checkout DETACHED AT THE PIN. That is not decoration — the pinned
+# repository's deploy runner runs `git rev-parse HEAD` and `git diff` over contracts/v1 before
+# it will submit anything, and records the resolved commit in every registry record as
+# `artifact.sourceRevision`. An image whose HEAD had moved could not issue a token at all, and
+# a registry built by one could not be traced to a source revision.
+if service_present faucet; then
+  assert_pin issuer-faucet "${ISSUER_FAUCET_IMAGE:-midnight-1-offers/issuer-faucet:local}" \
+    /.issuer-commit "$ISSUER_EXPECTED"
+fi
+if service_present faucet || service_present issuer-deploy; then
+  assert_pin issuer "${ISSUER_IMAGE:-midnight-1-offers/issuer:local}" \
+    /.issuer-commit "$ISSUER_EXPECTED"
+  ISSUER_HEAD="$(docker run --rm --entrypoint git "${ISSUER_IMAGE:-midnight-1-offers/issuer:local}" \
+    -C /app rev-parse HEAD 2>/dev/null | tr -d '\r\n' || true)"
+  if [[ "$ISSUER_HEAD" == "$ISSUER_EXPECTED" ]]; then
+    ok "issuer /app is a git checkout detached at ${ISSUER_HEAD:0:12}… (the deploy runner needs this)"
+  else
+    err "issuer: /app git HEAD is ${ISSUER_HEAD:-unreadable}, expected ${ISSUER_EXPECTED}"
+    FAILURES=$(( FAILURES + 1 ))
+  fi
 fi
 # The relay and intents UI are built from the operator's own clone of a PRIVATE repository.
 # Nothing here reads that source: the build bakes the commit it was given, and this asserts

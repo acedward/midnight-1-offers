@@ -53,6 +53,7 @@ SHIELDED_NIGHT_MODE=auto
 SOLVER_MODE=auto
 POSTER_MODE=auto
 PRICES_MODE=auto
+ISSUER_MODE=auto
 
 usage() {
   cat <<'EOF'
@@ -77,6 +78,8 @@ Options:
                  SKIPPED, not passed, when the stack has no COINGECKO_API_KEY — "require the
                  section" is about the PROFILE being up, not about the key being set.
   --no-prices    skip the prices section even if the profile is up
+  --issuer       require the issuer section (fail if the profile is not up)
+  --no-issuer    skip the issuer section even if the profile is up
   -h, --help     this text
 
 Environment:
@@ -86,7 +89,7 @@ EOF
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --core-only)   CORE_ONLY=1; CELESTIA_MODE=off; KERNEL_MODE=off; FRONTEND_MODE=off; SHIELDED_NIGHT_MODE=off; SOLVER_MODE=off; POSTER_MODE=off; PRICES_MODE=off; shift ;;
+    --core-only)   CORE_ONLY=1; CELESTIA_MODE=off; KERNEL_MODE=off; FRONTEND_MODE=off; SHIELDED_NIGHT_MODE=off; SOLVER_MODE=off; POSTER_MODE=off; PRICES_MODE=off; ISSUER_MODE=off; shift ;;
     --celestia)    CELESTIA_MODE=on;  shift ;;
     --no-celestia) CELESTIA_MODE=off; shift ;;
     --kernel)      KERNEL_MODE=on;    shift ;;
@@ -101,6 +104,8 @@ while [[ $# -gt 0 ]]; do
     --no-poster)   POSTER_MODE=off;   shift ;;
     --prices)      PRICES_MODE=on;    shift ;;
     --no-prices)   PRICES_MODE=off;   shift ;;
+    --issuer)      ISSUER_MODE=on;    shift ;;
+    --no-issuer)   ISSUER_MODE=off;   shift ;;
     -h|--help) usage; exit 0 ;;
     *) err "unknown option: $1"; echo; usage; exit 2 ;;
   esac
@@ -338,6 +343,16 @@ if (( ! CORE_ONLY )); then
   # (compose/prices.yml says why), so "present" is all that can be read off the container —
   # whether the feed actually refreshed anything is the section's own first assertion.
   run_section prices   price-feed   "$PRICES_MODE" scripts/verify-prices.sh "./up.sh --with offerfiles --with prices"
+  # The sentinel is the FAUCET, not `issuer-deploy`: the one-shot exits, and a stack whose
+  # faucet is gone but whose exited one-shot lingers must not report a passing section. It is
+  # also the only long-lived service the fragment has — the registrar and the funding CLI are
+  # `replicas: 0` and are RUN by this section, not observed by it.
+  #
+  # LAST, on purpose. The section MINTS: it funds e2e-taker with one whole TWBTC and reads the
+  # balance back. Running it before the shielded-night and solver sections would leave a token
+  # in a wallet those sections make assertions about, which is exactly the kind of
+  # cross-section coupling `run_section` exists to avoid.
+  run_section issuer   faucet   "$ISSUER_MODE"   scripts/verify-issuer.sh   "./up.sh --with issuer"
 fi
 
 echo

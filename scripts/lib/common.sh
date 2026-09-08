@@ -215,13 +215,16 @@ load_env() {
       warn "${retired} is RETIRED and IGNORED — the solver IS the kernel commit; set KERNEL_REF instead"
     fi
   done
-  # There are THREE Compact toolchains here (kernel 0.30.0, zswap-da 0.31.0, shielded-night
-  # 0.31.1), so one variable could never have configured them. Each is pinned where it is
-  # enforced — a Dockerfile ARG in images/offerfiles-kernel, a literal in compose/frontend.yml
-  # and one in compose/shielded-night.yml, both of which scripts/verify-compose-pins.sh binds
-  # to their OWN matrix entry — and none of them reads the environment.
+  # There are FOUR Compact toolchains here (kernel 0.30.0, zswap-da 0.31.0, shielded-night
+  # 0.31.1, issuer 0.31.1), so one variable could never have configured them. Each is pinned
+  # where it is enforced — a Dockerfile ARG in images/offerfiles-kernel, a literal in
+  # compose/frontend.yml, one in compose/shielded-night.yml and one in compose/issuer.yml, each
+  # of which scripts/verify-compose-pins.sh binds to its OWN matrix entry — and none of them
+  # reads the environment. The issuer's and shielded-night's are the same compiler VERSION and
+  # therefore the same release asset and the same two SHA-256s, but they are separate matrix
+  # entries because they are separate build inputs that can be re-pinned independently.
   if [[ -n "${COMPACT_VERSION-}" ]]; then
-    warn "COMPACT_VERSION is IGNORED — kernel 0.30.0, zswap-da 0.31.0, shielded-night 0.31.1, all pinned in-build"
+    warn "COMPACT_VERSION is IGNORED — kernel 0.30.0, zswap-da 0.31.0, shielded-night 0.31.1, issuer 0.31.1, all pinned in-build"
   fi
 
   # ── external runtime images: repository + IMMUTABLE DIGEST, never a tag ─────
@@ -271,6 +274,14 @@ load_env() {
   # patched — see config/artifact-decisions.json -> sources[shielded-night].
   : "${SHIELDED_NIGHT_REPO:=https://github.com/effectstream/shielded-night.git}"
   : "${SHIELDED_NIGHT_REF:=f7fcefa7921bf2c3f634871f9ad3aa3a32251af0}"
+  # THE TOKEN ISSUER (00020 PR B). `effectstream/mint-test-tokens` is public and already on
+  # this stack's exact 1.x line (ledger-v8 8.1.0 / compact-runtime 0.16.0 / compactc 0.31.1 /
+  # midnight-js 4.1.1), and it supports `MN_NETWORK=undeployed` explicitly — which is the only
+  # reason this stack can still have tokens at all now that kernel #69 has removed the local
+  # faucet contract. See images/issuer/PROVENANCE.md and config/artifact-decisions.json ->
+  # sources[issuer].
+  : "${ISSUER_REPO:=https://github.com/effectstream/mint-test-tokens.git}"
+  : "${ISSUER_REF:=7ecad008b07acb2a491d8291e05455cbd638910f}"
   # The relay/intents-UI pin. There is deliberately no *_REPO for it: the source is private
   # and is never fetched by this repository. RELAY_SOURCE_DIR names the operator's own
   # clone, and assert_relay_source() below verifies that clone is at exactly this commit.
@@ -303,6 +314,9 @@ load_env() {
   # calls the host side HOST_OFFER_POSTER_HEALTH_PORT and publishes 19977; this repository's
   # port block keeps the *_HOST_PORT spelling every other service here uses.
   : "${POSTER_HEALTH_HOST_PORT:=19977}"
+  # The issuer's faucet SITE (:10500 in the container). This is the one port the `issuer`
+  # profile publishes: the deploy one-shot, the registrar and the funding CLI publish nothing.
+  : "${FAUCET_HOST_PORT:=10500}"
 
   # ── the shared PostgreSQL (Q7) ─────────────────────────────────────────────
   # The role/database the offer-files kernel authenticates as. Defaulted here as well as in
@@ -377,6 +391,32 @@ load_env() {
   # docs/KNOWN-LIMITATIONS.md.
   : "${POSTER_VERIFY_BUDGET_S:=420}"
 
+  # ── the issuer profile (00020 PR B) ────────────────────────────────────────
+  # A DEDICATED, non-genesis seed — `…0051` in wallets/wallets.json, assigned to nothing else.
+  # The deploy runner holds a wallet facade open through six proving deployments, and genesis-1
+  # is already the faucet, the kernel's MIDNIGHT_WALLET_SEED and the source every other
+  # provisioning one-shot draws from; two facades on one seed silently force each other's
+  # connection down. images/issuer/m1/provision.ts exits 78 if it is handed the genesis seed
+  # rather than trusting this default (project 00020 question Q5).
+  #
+  # As with the poster's, this repository COMMITS a default where upstream ships none: `./up.sh`
+  # on a clean host with no .env must reach a working stack, and the roster is public and
+  # devnet-only.
+  : "${ISSUER_SEED:=0000000000000000000000000000000000000000000000000000000000000051}"
+  # How long ./verify.sh's issuer section waits for the six contracts to be deployed and the
+  # registry published. Six deployments with proving, after a wallet sync, a NIGHT transfer, a
+  # DUST registration and the dust wait — minutes, not seconds. Measured on this host: see
+  # docs/KNOWN-LIMITATIONS.md.
+  : "${ISSUER_VERIFY_BUDGET_S:=2400}"
+  # How much of ONE token ./verify.sh mints to prove the funding lane end to end. 10^8 base
+  # units of TWBTC is exactly one whole coin at its 8 decimals, and it is the amount spec
+  # SC-002 names.
+  : "${ISSUER_VERIFY_FUND_TOKEN:=TWBTC}"
+  : "${ISSUER_VERIFY_FUND_AMOUNT:=100000000}"
+  # e2e-taker, which starts empty at genesis (measured, wallets/wallets.json) — so a balance
+  # read-back on it is unambiguous.
+  : "${ISSUER_VERIFY_FUND_SEED:=${TAKER_SEED:-0000000000000000000000000000000000000000000000000000000000000032}}"
+
   # ── wait timeouts (seconds) ────────────────────────────────────────────────
   : "${NODE_WAIT_TIMEOUT:=180}"
   : "${INDEXER_WAIT_TIMEOUT:=420}"
@@ -394,12 +434,18 @@ load_env() {
   # dust wait and the contract join — the same reason its compose healthcheck has a 15-minute
   # start_period. up.sh's wait has to be of that order or it gives up on a healthy bring-up.
   : "${POSTER_WAIT_TIMEOUT:=900}"
+  # The faucet container itself binds in seconds — but compose will not START it until
+  # `issuer-deploy` has exited 0, and that one-shot funds a wallet, waits for DUST and then
+  # proves six contract deployments. So this budget is the WHOLE issuer bring-up, not nginx's
+  # startup, and it is the longest wait in the stack by a wide margin.
+  : "${ISSUER_WAIT_TIMEOUT:=2700}"
 
   export COMPOSE_PROJECT_NAME \
          NODE_IMAGE INDEXER_IMAGE PROOF_IMAGE \
          NODE_VERSION INDEXER_VERSION PROOF_VERSION \
          KERNEL_REPO KERNEL_REF FRONTEND_REPO FRONTEND_REF \
          SHIELDED_NIGHT_REPO SHIELDED_NIGHT_REF \
+         ISSUER_REPO ISSUER_REF \
          SHIELDED_NIGHT_WALLET_SEED SHIELDED_NIGHT_DRIVER_SEED \
          SNIGHT_BOOK_AMOUNT SNIGHT_BOOK_WANT_AMOUNT SNIGHT_BOOK_WANT_KEY \
          SNIGHT_BOOK_TAKER_SEED SNIGHT_BOOK_FUNDER_SEED \
@@ -411,11 +457,14 @@ load_env() {
          KERNEL_HOST_PORT BATCHER_HOST_PORT CELESTIA_HOST_PORT FRONTEND_HOST_PORT \
          RELAY_HTTP_HOST_PORT RELAY_WS_HOST_PORT INTENTS_UI_HOST_PORT \
          SOLVER_FRONTEND_HOST_PORT SHIELDED_NIGHT_HOST_PORT POSTER_HEALTH_HOST_PORT \
+         FAUCET_HOST_PORT \
          INDEXER_API_PATH OFFERFILES_PG_USER OFFERFILES_PG_DB PROOF_WARM_TIMEOUT \
          NODE_WAIT_TIMEOUT INDEXER_WAIT_TIMEOUT PROOF_WAIT_TIMEOUT POSTGRES_WAIT_TIMEOUT \
          CELESTIA_WAIT_TIMEOUT KERNEL_WAIT_TIMEOUT FRONTEND_WAIT_TIMEOUT \
-         SOLVER_WAIT_TIMEOUT RELAY_WAIT_TIMEOUT POSTER_WAIT_TIMEOUT \
-         OFFER_POSTER_SEED POSTER_VERIFY_BUDGET_S
+         SOLVER_WAIT_TIMEOUT RELAY_WAIT_TIMEOUT POSTER_WAIT_TIMEOUT ISSUER_WAIT_TIMEOUT \
+         OFFER_POSTER_SEED POSTER_VERIFY_BUDGET_S \
+         ISSUER_SEED ISSUER_VERIFY_BUDGET_S \
+         ISSUER_VERIFY_FUND_TOKEN ISSUER_VERIFY_FUND_AMOUNT ISSUER_VERIFY_FUND_SEED
 
   # A host address the scripts can actually connect to. BIND_ADDR may be 0.0.0.0, which
   # is a valid bind target but not a valid connect target.
@@ -431,8 +480,11 @@ load_env() {
   SOLVER_FRONTEND_URL="http://${HOST_ADDR}:${SOLVER_FRONTEND_HOST_PORT}"
   SHIELDED_NIGHT_URL="http://${HOST_ADDR}:${SHIELDED_NIGHT_HOST_PORT}"
   POSTER_URL="http://${HOST_ADDR}:${POSTER_HEALTH_HOST_PORT}"
+  # The faucet SITE. `?network=undeployed` is not decoration: the SPA reads the network out of
+  # the query string, and without it the page defaults to Preprod and shows the public tokens.
+  FAUCET_URL="http://${HOST_ADDR}:${FAUCET_HOST_PORT}"
   export NODE_RPC_URL INDEXER_GQL_URL KERNEL_URL BATCHER_URL RELAY_URL \
-         SOLVER_FRONTEND_URL SHIELDED_NIGHT_URL POSTER_URL
+         SOLVER_FRONTEND_URL SHIELDED_NIGHT_URL POSTER_URL FAUCET_URL
 }
 
 # ── the PRIVATE relay source (spec FR-11, plan Q4) ───────────────────────────
@@ -525,7 +577,8 @@ assert_relay_source() {
 # `--profile`, so a service carrying one would be declared and then never start, which is a
 # uniquely quiet way to break a stack.
 #
-# There are exactly seven: core, offerfiles, frontend, shielded-night, solver, poster, prices.
+# There are exactly EIGHT: core, offerfiles, frontend, shielded-night, solver, poster, prices,
+# issuer.
 
 # KNOWN_FUTURE_PROFILES are profiles this stack reserves ports and documentation for but has
 # not built yet. Empty: every fragment exists. Keep the machinery for the next one.
@@ -614,7 +667,14 @@ pending_profiles() {
 # `offer-poster poster-provision`, measured, and only the new profile gets a new answer
 # (`price-feed`). Above `frontend`/`solver` it would pull the private relay build context in
 # for a profile that has no relay in it.
-PROFILE_LAYER_ORDER="core shielded-night offerfiles poster prices frontend solver"
+#
+# `issuer` sits directly above `prices` for the same reason `prices` sits above `poster`: its
+# own dependency is `core` ALONE (node, indexer, proof server — spec FR-002's requirement, the
+# same one shielded-night carries), and placing it AFTER the profiles that already exist means
+# no EXISTING profile's layer stack changes, so every previously measured `profile_services`
+# answer stays measured. Above `frontend`/`solver` it would pull the private relay build
+# context in for a profile that has no relay in it.
+PROFILE_LAYER_ORDER="core shielded-night offerfiles poster prices issuer frontend solver"
 
 # _layer_files <profile> [--below] — the `-f <fragment>` arguments for every layer up to and
 # including <profile>, or strictly below it, one word per line.

@@ -66,17 +66,24 @@ BUILD_ARG_SOURCES = {
     "KERNEL_REF": "offerfiles-kernel",
     "FRONTEND_REF": "zswap-da-template",
     "SHIELDED_NIGHT_REF": "shielded-night",
+    "ISSUER_REF": "issuer",
     "RELAY_REF": "intents-relay",
 }
 
 # Which Compact toolchain a service's COMPACT_VERSION build arg must equal.
 #
-# THERE ARE THREE COMPILERS IN THIS STACK AND THEY ARE NOT INTERCHANGEABLE: 0.30.0 for the
+# THERE ARE FOUR COMPILERS IN THIS STACK AND THEY ARE NOT INTERCHANGEABLE: 0.30.0 for the
 # kernel's contract (pinned as a Dockerfile ARG, deliberately not a compose build arg),
-# 0.31.0 for the zswap-da template's copy of that same source, and 0.31.1 for shielded-night's
-# entirely different contract. Each side's generated bindings are version-checked against ITS
-# OWN compact-runtime at import time, so a single check against one matrix entry would either
-# reject a correct build or — worse — bless a wrong compiler.
+# 0.31.0 for the zswap-da template's copy of that same source, 0.31.1 for shielded-night's
+# entirely different contract, and 0.31.1 for the issuer's three v1 token contracts. Each
+# side's generated bindings are version-checked against ITS OWN compact-runtime at import time,
+# so a single check against one matrix entry would either reject a correct build or — worse —
+# bless a wrong compiler.
+#
+# The issuer's and shielded-night's happen to be the SAME VERSION today, from the same release,
+# with the same two asset SHA-256s. They are still separate entries: they are separate build
+# inputs that can be re-pinned independently, and collapsing them would mean a shielded-night
+# re-pin silently changed what the issuer compiles with.
 #
 # The map is by SERVICE with an explicit default, not by argument name: a new service that
 # starts passing COMPACT_VERSION is then checked against `compact` rather than silently
@@ -87,6 +94,11 @@ SERVICE_COMPACT_TOOLCHAIN = {
     "shielded-night-deploy": "compact-shielded-night",
     "shielded-night-verify": "compact-shielded-night",
     "shielded-night-token-name": "compact-shielded-night",
+    "issuer-deploy": "compact-issuer",
+    "issuer-registrar": "compact-issuer",
+    "issuer-fund": "compact-issuer",
+    "issuer-registry": "compact-issuer",
+    "faucet": "compact-issuer",
 }
 
 # Anything that looks like a source ref must be a full commit, even if it is not one of the

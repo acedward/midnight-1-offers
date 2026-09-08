@@ -51,9 +51,13 @@
 #                   would then be MISLABELLED while staying healthy: INTENTS_UI_TOKEN_NAMES, the
 #                   SPA's picker, verify-solver.sh and the kernel's name-keyed price map all read
 #                   these names. The block above only proves the colours are LISTED.
-#   token decimals  EVERY row of GET /v1/known-tokens is at exactly 6 decimals — kernel PR #63's
-#                   whole-coin line, where `decimals` DEFAULTS to 6 and every faucet mints whole
-#                   coins scaled by 10^6. This is ALSO the stale-volume detector: 000-init.sql
+#   token decimals  EVERY row of GET /v1/known-tokens carries ITS OWN expected decimals — 6 for
+#                   every colour this stack mints or seeds (kernel PR #63's whole-coin line,
+#                   where `decimals` DEFAULTS to 6 and every faucet mints whole
+#                   coins scaled by 10^6), and the ISSUER's own for its six — TWBTC 8, TWETH 18,
+#                   TWUSDC 6, TWUSDM 6, UTWUSDC 6, UTWBTC 8 (00020 PR B; 6 stopped being the
+#                   only right answer when this stack gained a token source of its own).
+#                   This is ALSO the stale-volume detector: 000-init.sql
 #                   runs once against an empty database and has no IF NOT EXISTS, so a `postgres`
 #                   volume created under an older KERNEL_REF keeps the old `DEFAULT 0` forever
 #                   and merely lies about every price. A row at 0 fails NAMING `./down.sh -v`.
@@ -336,7 +340,7 @@ if [[ -n "$KNOWN" ]]; then
   fi
 fi
 
-# ── THE WHOLE-COIN LINE: every registered token is at 6 decimals ─────────────
+# ── EVERY REGISTERED TOKEN IS AT ITS OWN DECLARED DECIMALS ───────────────────
 #
 # Kernel PR #63 (KERNEL_REF c293ebd…) made `known_tokens.decimals` DEFAULT 6 instead of 0 and
 # made every faucet mint WHOLE COINS scaled by 10^6. The registry is what turns a base-unit
@@ -344,19 +348,55 @@ fi
 # old default silently misprices that colour by a factor of a million — in the SPA, in
 # `GET /v1/quote` and in the batcher's sponsorship verdict.
 #
+# ── 6 IS NO LONGER THE ONLY RIGHT ANSWER (00020 PR B) ────────────────────────
+# This check used to assert `decimals == 6` for EVERY row, and that was correct while every
+# colour on the stack came from the kernel's own faucet contract. The `issuer` profile issues
+# SIX colours that are deliberately not all 6: TWBTC and UTWBTC are 8, TWETH is 18, the other
+# three are 6. Asserting 6 for those would fail a stack that is exactly right.
+#
+# So the sweep now compares each row against its OWN expected value, and the expectation is
+# stated rather than read back from the row it is checking:
+#
+#   * the six canonical issuer names -> the decimals ISSUER_EXPECTED_DECIMALS names below,
+#     which are the pinned registry's own (packages/registry/src/tokens.ts) and the same six
+#     values scripts/verify-issuer.sh asserts independently;
+#   * every other row -> 6, exactly as before.
+#
+# A row at 0 is STILL the stale-volume signature, for any name.
+#
 # THIS IS ALSO THE STALE-VOLUME DETECTOR. `packages/database/migrations/000-init.sql` has no
 # `IF NOT EXISTS` and runs EXACTLY ONCE, against an empty database. A `postgres` volume created
 # under an older KERNEL_REF therefore keeps `decimals DEFAULT 0` and its old seed rows forever,
 # and NOTHING migrates it: the stack comes up healthy and merely lies about every price. A row
 # at 0 is the signature, so it is named as such here with `./down.sh -v` as the fix, rather
 # than being reported as a slow chain or an unregistered colour.
+# `<NAME>:<decimals>` for every token whose right answer is not 6. The six canonical
+# mint-test-tokens names and the pinned registry's own decimals; scripts/verify-issuer.sh
+# asserts the same six against the registry FILE, so a drift between this list and the
+# registry fails there rather than passing quietly here.
+ISSUER_EXPECTED_DECIMALS="TWBTC:8 TWETH:18 TWUSDC:6 TWUSDM:6 UTWUSDC:6 UTWBTC:8"
+
+# expected_decimals <name> — 6 unless the name is one of the six above.
+expected_decimals() {
+  local name spec
+  name="$(printf '%s' "${1:-}" | tr '[:lower:]' '[:upper:]')"
+  for spec in $ISSUER_EXPECTED_DECIMALS; do
+    if [[ "${spec%%:*}" == "$name" ]]; then
+      printf '%s' "${spec#*:}"
+      return 0
+    fi
+  done
+  printf '6'
+}
+
 if [[ -n "$KNOWN" ]]; then
   echo
-  log "kernel: token decimals (the whole-coin line)"
+  log "kernel: token decimals (6 for this stack's own colours; the issuer's own for its six)"
   DEC_ROWS=0
   DEC_OK=0
   DEC_BAD=""
   DEC_STALE=0
+  DEC_NON6=""
   while IFS= read -r row; do
     case "$row" in
       *'"name":'*) : ;;
@@ -366,10 +406,12 @@ if [[ -n "$KNOWN" ]]; then
     ROW_NAME="$(printf '%s' "$row" | sed -n 's/.*"name":"\([^"]*\)".*/\1/p' | head -1)"
     # `[0-9][0-9]*`, never the GNU-only `[0-9]\+`: BSD sed silently matches nothing (00007 H2).
     ROW_DEC="$(printf '%s' "$row" | sed -n 's/.*"decimals":\([0-9][0-9]*\).*/\1/p' | head -1)"
-    if [[ "$ROW_DEC" == "6" ]]; then
+    ROW_WANT="$(expected_decimals "$ROW_NAME")"
+    if [[ "$ROW_DEC" == "$ROW_WANT" ]]; then
       DEC_OK=$(( DEC_OK + 1 ))
+      [[ "$ROW_WANT" == "6" ]] || DEC_NON6="${DEC_NON6} ${ROW_NAME}=${ROW_DEC}"
     else
-      DEC_BAD="${DEC_BAD} ${ROW_NAME:-<unnamed>}=${ROW_DEC:-none}"
+      DEC_BAD="${DEC_BAD} ${ROW_NAME:-<unnamed>}=${ROW_DEC:-none}(want ${ROW_WANT})"
       [[ "$ROW_DEC" == "0" ]] && DEC_STALE=1
     fi
   done <<< "$(printf '%s' "$KNOWN" | tr '{' '\n')"
@@ -377,16 +419,21 @@ if [[ -n "$KNOWN" ]]; then
   if (( DEC_ROWS == 0 )); then
     fail "GET /v1/known-tokens listed no rows at all — nothing is registered on this stack"
   elif (( DEC_OK == DEC_ROWS )); then
-    ok "all ${DEC_ROWS} registered tokens are at exactly 6 decimals (kernel PR #63's whole-coin line)"
+    if [[ -n "$DEC_NON6" ]]; then
+      ok "all ${DEC_ROWS} registered tokens carry their own declared decimals — 6 for this stack's colours, and${DEC_NON6} for the issuer's"
+    else
+      ok "all ${DEC_ROWS} registered tokens are at exactly 6 decimals (kernel PR #63's whole-coin line)"
+    fi
   elif (( DEC_STALE )); then
-    fail "STALE POSTGRES VOLUME: ${DEC_OK}/${DEC_ROWS} tokens are at 6 decimals, and at least one is at the pre-#63 default 0 —${DEC_BAD}
+    fail "STALE POSTGRES VOLUME: ${DEC_OK}/${DEC_ROWS} tokens carry their expected decimals, and at least one is at the pre-#63 default 0 —${DEC_BAD}
           000-init.sql runs ONCE against an EMPTY database and has no IF NOT EXISTS, so a volume
           created under an older KERNEL_REF keeps decimals DEFAULT 0 and its old seed rows, and
           nothing migrates it. Fix: ./down.sh -v && ./up.sh  (there is nothing to migrate on a devnet)"
   else
-    fail "${DEC_OK}/${DEC_ROWS} registered tokens are at 6 decimals; these are not —${DEC_BAD}
-          Every colour this stack mints or seeds is 6 (kernel PR #63). A colour registered at a
-          different scale prices as price_usd / 10^decimals and is wrong by that factor."
+    fail "${DEC_OK}/${DEC_ROWS} registered tokens carry their expected decimals; these do not —${DEC_BAD}
+          Every colour this stack mints or seeds is 6 (kernel PR #63); the issuer's six are
+          8/18/6/6/6/8 (packages/registry/src/tokens.ts). A colour registered at a different
+          scale prices as price_usd / 10^decimals and is wrong by that factor."
   fi
 fi
 

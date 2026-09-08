@@ -6,7 +6,7 @@
 #   ./down.sh -v    also wipe every volume of this compose project (full reset)
 #
 # The -v form wipes the node, indexer, Celestia, Postgres, deploy-share (offer-files AND
-# shielded-night), batcher, solver, maker-offer and offer-poster volumes
+# shielded-night), batcher, solver, maker-offer, offer-poster and ISSUER volumes
 # TOGETHER, and that is not a convenience — it is a correctness requirement. They are one
 # WIPE GROUP because each of them is keyed to a chain genesis:
 #
@@ -18,7 +18,14 @@
 #     start against a mismatched data directory;
 #   * the offer poster's JOURNAL records coins by nonce and nullifier and is keyed by the
 #     contract address, so on a new chain none of those coins exist — it refuses to open
-#     rather than merge, which is the right answer and one more reason the group is one group.
+#     rather than merge, which is the right answer and one more reason the group is one group;
+#   * the ISSUER's registry names six contract addresses and six token colours derived from
+#     them, and its RESUME JOURNAL is keyed by sha256(chain name + runtime version + genesis
+#     hash). Kept beside a fresh chain it is `stale` by definition, and the deploy runner says
+#     so and REFUSES rather than redeploying — correctly, because replacing it discards six
+#     contracts' worth of identity. `issuer-registry` and `issuer-state` are therefore in the
+#     wipe group with everything else, and that is what makes `./down.sh -v` the clean reset
+#     for this profile too (docs/OPERATIONS.md).
 #
 # The proof-data volume is the deliberate exception: it holds architecture-neutral SRS/ledger
 # parameters that no chain identity touches, so plain `./down.sh` keeps it and the next

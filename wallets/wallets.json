@@ -442,6 +442,65 @@
         "userAddress": "7c17172c6330cb94edc1c7cc8402baf8f02c4cbfd5814cbf2108b27690128d69",
         "coinPublic": "a6419d71567e29de4556ea6062171f51b953df693669b358c1cc9753dc591406"
       }
+    },
+    {
+      "name": "issuer",
+      "role": "THE TOKEN ISSUER's wallet — deploys this stack's six mint-test-tokens v1 token contracts once per chain and pays for every headless mint (`issuer-fund`)",
+      "envVar": "ISSUER_SEED",
+      "$comment": [
+        "A DEDICATED, NON-GENESIS seed, added by project 00020 PR B with the `issuer` profile.",
+        "",
+        "  1. THE FACADE HAZARD AT THE TOP OF THIS FILE APPLIES IN FULL. `issuer-deploy` holds",
+        "     a wallet facade open for the length of SIX contract deployments with proving —",
+        "     many minutes — and `issuer-fund` opens one for every mint. So this seed must never",
+        "     equal any other in this roster, and nothing else may ever open a facade on it.",
+        "     images/issuer/m1/provision.ts exits 78 (EX_CONFIG) if it is handed the genesis",
+        "     seed, `issuer-fund` refuses to mint to the issuer's own seed, and both hold a",
+        "     `flock` on the `issuer-state` volume so two issuer containers cannot run at once.",
+        "",
+        "  2. WHY NOT genesis-1, which is what mint-test-tokens' own `undeployed` path would",
+        "     otherwise be pointed at: on this stack genesis-1 is the faucet, the offer-files",
+        "     deploy/mint wallet, the kernel's own MIDNIGHT_WALLET_SEED and the source every",
+        "     other provisioning one-shot draws from. A facade held on it for the length of six",
+        "     proving deployments would take one of those offline with no error naming the",
+        "     cause. Recorded as project 00020 question Q5.",
+        "",
+        "  3. It is NOT funded at genesis (only genesis-1, genesis-2, batcher and lace-test are",
+        "     — measured, see $verification). `issuer-deploy` sends it four large NIGHT UTXOs",
+        "     from genesis-1 under a flock on the shared `genesis-lock` volume, REGISTERS that",
+        "     NIGHT for DUST itself (nothing in mint-test-tokens does — it is written for",
+        "     wallets that arrive already funded), and waits for the DUST to appear before it",
+        "     will deploy anything. Every mint afterwards is paid out of the DUST that NIGHT",
+        "     keeps generating.",
+        "",
+        "  4. It holds NO test tokens of its own by design: `issuer-fund` mints DIRECTLY to the",
+        "     recipient's coin public key (shielded) or user address (unshielded), so nothing is",
+        "     ever minted here and then transferred. That is the opposite of the poster's",
+        "     wallet, which holds one shielded coin per un-offered tick.",
+        "",
+        "  5. `…0051` continues the roster's placeholder pattern (solver `…21`, e2e-maker",
+        "     `…31`, e2e-taker `…32`, poster `…41`) and is deliberately far from every genesis",
+        "     seed."
+      ],
+      "seed": "0000000000000000000000000000000000000000000000000000000000000051",
+      "seedBytes": 32,
+      "funding": "provisioned by issuer-deploy (four large NIGHT UTXOs from genesis-1, then DUST registration by the issuer wallet itself, then a bounded wait for the DUST to arrive)",
+      "provisionedBy": "issuer-deploy (compose/issuer.yml, profile `issuer`)",
+      "expect": {
+        "measuredOn": null,
+        "node": "midnight-node 1.0.1, CFG_PRESET=dev",
+        "emptyAtGenesis": true,
+        "note": "emptyAtGenesis is ASSERTED here rather than measured per-wallet: the dev preset funds exactly four wallets (genesis-1, genesis-2, batcher, lace-test — see $verification) and this seed is none of them. What IS measured is the funding path: issuer-deploy refuses to write its marker unless the wallet really holds >= 5000000000000 NIGHT and strictly positive DUST afterwards, and it prints both numbers."
+      },
+      "addresses": {
+        "unshielded": "mn_addr_undeployed1s7kqvhutmza0v0d0pp569dvmnhc093qn7xtn7m8es8hmdrz697gqa5s7fl",
+        "shielded": "mn_shield-addr_undeployed15zwdkpfagrm7q39r6wj7vl66e4j9evptn9l66zq4ekf8cnvuwfgj4pw5tcl40z2hxnrqgj6zxuaq6nnhuev92py2mhymmsrv57tx6cscpklk0",
+        "dust": "mn_dust_undeployed1wds7euxz423tfx2ne60dmg55lal46gn5s8kltjtzp7d0ez7v2ksnvv80fh2",
+        "userAddress": "87ac065f8bd8baf63daf0869a2b59b9df0f2c413f1973f6cf981efb68c5a2f90",
+        "coinPublic": "a09cdb053d40f7e044a3d3a5e67f5acd645cb02b997fad0815cd927c4d9c7251",
+        "verifyingKey": "e1f4d9fc243594e274c39d2648f98c93597e336227b73e01a854fbee597f7647"
+      },
+      "addressesDerivedOn": "2026-09-08"
     }
   ]
 }
