@@ -165,7 +165,9 @@ take_issuer_lock
 
 STARTED="$(date +%s)"
 RECEIPTS=""
+ENTRY_COUNT=0
 for entry in ${SPEC_NORMALISED}; do
+  ENTRY_COUNT=$(( ENTRY_COUNT + 1 ))
   entry_token="${entry%%:*}"
   entry_rest="${entry#*:}"
   entry_amount="${entry_rest%%:*}"
@@ -203,9 +205,11 @@ if [ -n "${MARKER}" ]; then
   log "marker written to ${MARKER}"
 fi
 
+# The entry count is COUNTED IN THE LOOP above rather than recomputed here from an unquoted
+# expansion: `printf '%s\n' ${SPEC} | grep -c .` needs word splitting to work at all, which is
+# exactly what shellcheck cannot tell apart from the bug it usually is.
 printf 'ISSUER_PROVISION_RESULT role=%s recipient=…%s entries=%s revision=%s seconds=%s\n' \
-  "${PROVISION_ROLE}" "${RECIPIENT_TAIL}" \
-  "$(printf '%s\n' ${SPEC_NORMALISED} | grep -c . || true)" \
+  "${PROVISION_ROLE}" "${RECIPIENT_TAIL}" "${ENTRY_COUNT}" \
   "${REGISTRY_REVISION:-unknown}" "${SECONDS_TAKEN}"
 log "${PROVISION_ROLE} inventory complete in ${SECONDS_TAKEN}s"
 exit 0

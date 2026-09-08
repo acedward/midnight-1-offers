@@ -1,6 +1,6 @@
 {
   "schemaVersion": "artifact-decision-matrix-v2",
-  "pinsDigest": "bd4a29be305d56d09e4734a58aa2d8f715d5fb48047b7d683e9acaa97a9d1d63",
+  "pinsDigest": "f6ae20d832031a9c1e0bbdc692731e974d1c2e75401f3261725b5916ad433b09",
   "frozenOn": "2026-09-01",
   "note": "Frozen artifact-selection contract for every external dependency of this Midnight 1.x demo. Each field was re-derived from a live source on the freeze date. scripts/verify-artifact-decisions.sh enforces it offline. Do not edit a digest, SHA or hash to make a build pass: re-verify against the source first, then regenerate pinsDigest with --update-pins so the change is visible in review. Schema v2 differs from the 2.x sibling's v1 by adding `sources` (git-pinned source builds) and `toolchains`, and by replacing the warehouse proof-data generation with a pre-warm strategy.",
   "selectionOrder": [
@@ -730,7 +730,7 @@
       "id": "cow-solver-image",
       "decision": "source-build",
       "inArtifactNormalizationScope": false,
-      "reason": "Application code with no reusable warehouse runtime artifact, and NO SOURCE PIN OF ITS OWN since 00011 PR B: the image is `FROM kernel-image` plus four entrypoints (solver, solver-frontend, solver-provision, maker-offer), so it inherits the `offerfiles-kernel` source pin above together with that image's already-compiled Compact artifacts. The retired fetch-and-overlay stage is described in images/cow-solver/Dockerfile."
+      "reason": "Application code with no reusable warehouse runtime artifact, and NO SOURCE PIN OF ITS OWN since 00011 PR B: the image is `FROM kernel-image` plus four entrypoints (solver, solver-frontend, solver-provision, maker-offer), so it inherits the `offerfiles-kernel` source pin above. It used to inherit that image's already-compiled Compact artifacts too; kernel #69 deleted the contract, so since 00020 PR C there are none and this image's assertion checks their ABSENCE instead. The retired fetch-and-overlay stage is described in images/cow-solver/Dockerfile."
     },
     {
       "id": "relay-image",

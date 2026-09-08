@@ -147,6 +147,27 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# ── PROFILE DEPENDENCIES, resolved before anything else looks at PROFILES ────
+# `poster` and `solver` REQUIRE `issuer` since 00020 PR C (questions Q9.3). Kernel #69 removed
+# every way this stack had of minting a swap token, so their inventory one-shots run the ISSUER
+# image and their long-lived services read the token handoff that profile publishes. Compose
+# says so structurally — `poster-inventory` and `solver-inventory` `depends_on: issuer-deploy`,
+# so the fragment set REFUSES to render without it — and this turns that refusal into the
+# obvious thing instead, exactly as `core` is always present without being asked for.
+#
+# SAID OUT LOUD, once per added profile. A profile that appears without being typed is a
+# surprise unless the reason is printed with it.
+PROFILE_REQUIRES_ISSUER="poster solver"
+for p in $PROFILE_REQUIRES_ISSUER; do
+  [[ " $PROFILES " == *" $p "* ]] || continue
+  [[ " $PROFILES " == *" issuer "* ]] && break
+  if [[ -f "$REPO_ROOT/compose/issuer.yml" ]]; then
+    PROFILES="$PROFILES issuer"
+    info "profile  ${p} needs \`issuer\` (its swap-token inventory is minted there) — adding it"
+    break
+  fi
+done
+
 export PROFILES
 require_docker
 load_env

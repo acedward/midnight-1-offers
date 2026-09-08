@@ -69,6 +69,11 @@ trap 'rm -rf "$EMPTY_ENV" "$RENDER_DIR"' EXIT
 # It is also rendered beside `offerfiles` (the combination the kernel registrar needs), beside
 # `poster` and `solver` (all three declare the SAME `genesis-lock` volume, and compose merging
 # those declarations is what the genesis-1 mutex rests on — 00011 Q7), and in the fullest stack.
+#
+# SINCE 00020 PR C `issuer` IS PART OF EVERY `poster` AND `solver` COMBINATION, because both
+# profiles depend on it (their inventory one-shots run the issuer image and `depends_on:
+# issuer-deploy`). The combinations WITHOUT it are not dropped — they move to REFUSALS below,
+# which asserts that compose rejects them by name rather than rendering something half-wired.
 COMBOS=(
   "core"
   "core offerfiles"
@@ -78,14 +83,38 @@ COMBOS=(
   "core offerfiles issuer"
   "core offerfiles frontend"
   "core offerfiles shielded-night"
-  "core offerfiles solver"
-  "core offerfiles poster"
+  "core offerfiles issuer solver"
+  "core offerfiles issuer poster"
   "core offerfiles prices"
-  "core offerfiles poster prices"
-  "core offerfiles frontend solver"
-  "core offerfiles poster solver"
+  "core offerfiles issuer poster prices"
+  "core offerfiles issuer frontend solver"
   "core offerfiles issuer poster solver"
   "core offerfiles frontend solver shielded-night poster prices issuer"
+)
+
+# ── COMBINATIONS THAT MUST NOT RENDER ────────────────────────────────────────
+# A profile dependency compose cannot express as a `profiles:` key is expressed as a
+# `depends_on` on a service in the required fragment, which makes the incomplete set a HARD
+# RENDER FAILURE naming the missing service. That is the whole mechanism behind "poster and
+# solver require issuer" (questions Q9.3) and behind the older "poster requires offerfiles", so
+# it is asserted rather than assumed: a `depends_on` quietly dropped in a later edit would turn
+# the guarantee off with nothing failing.
+#
+# Each entry is `<combo>|<substring the error must contain>`.
+#
+# The expected text names the SERVICE compose reports missing, not the profile: the message is
+# `service "X" depends on undefined service "Y"`. **Y IS NOT DETERMINISTIC when more than one
+# dependency is missing** — compose walks its service map, whose iteration order in Go is
+# randomised, and reports the FIRST one it hits. Measured: `core poster` alternates between
+# `kernel` (the `offerfiles` fragment) and `issuer-deploy` (the `issuer` fragment) across
+# consecutive runs of the identical command, which made a single-substring assertion flake
+# roughly one run in three. So the expectation is a COMMA-SEPARATED SET and any member
+# satisfies it — the claim being asserted is "it refuses, and it refuses for one of these
+# reasons", which is exactly as strong as the guarantee compose actually provides.
+REFUSALS=(
+  "core poster|kernel,issuer-deploy"
+  "core offerfiles poster|issuer-deploy"
+  "core offerfiles solver|issuer-deploy"
 )
 
 FAILURES=0
@@ -119,6 +148,38 @@ for combo in "${COMBOS[@]}"; do
   # chance of finding something real to break.
   n=$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1])).get("services") or {}))' "$render")
   if (( n > RICHEST_N )); then RICHEST_N=$n; RICHEST="$render"; fi
+done
+
+# ── the refusals ─────────────────────────────────────────────────────────────
+for entry in "${REFUSALS[@]}"; do
+  combo="${entry%%|*}"
+  want="${entry#*|}"
+  files=()
+  for frag in $combo; do files+=(-f "$REPO_ROOT/compose/${frag}.yml"); done
+  # CAPTURE, THEN MATCH. `… | grep -q` under `pipefail` reports the FILTER's status, not the
+  # render's — the same family of defect as the `docker logs | grep -q` trap in
+  # scripts/lib/common.sh. `|| true` on the capture because a non-zero exit is what we want.
+  out="$(docker compose --env-file "$EMPTY_ENV" ${files[@]+"${files[@]}"} config 2>&1 >/dev/null || true)"
+  if docker compose --env-file "$EMPTY_ENV" ${files[@]+"${files[@]}"} config >/dev/null 2>&1; then
+    err "compose RENDERED an incomplete profile set that must be refused: ${combo}"
+    FAILURES=$(( FAILURES + 1 ))
+  else
+    matched=0
+    # Split on commas WITHOUT `read -a` (bash 3.2 on macOS has no `readarray`, and `read -a`
+    # with IFS is the portable form the rest of this repository uses).
+    old_ifs="$IFS"; IFS=','
+    for alt in $want; do
+      [[ "$out" == *"$alt"* ]] && matched=1
+    done
+    IFS="$old_ifs"
+    if (( matched )); then
+      ok "compose refuses '${combo}' naming one of '${want}'"
+    else
+      err "compose refused '${combo}', but not for a documented reason (wanted one of '${want}'):"
+      printf '%s\n' "$out" | sed 's/^/      /' >&2
+      FAILURES=$(( FAILURES + 1 ))
+    fi
+  fi
 done
 
 if (( SELF_TEST )); then

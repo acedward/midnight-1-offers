@@ -72,10 +72,11 @@ BUILD_ARG_SOURCES = {
 
 # Which Compact toolchain a service's COMPACT_VERSION build arg must equal.
 #
-# THERE ARE FOUR COMPILERS IN THIS STACK AND THEY ARE NOT INTERCHANGEABLE: 0.30.0 for the
-# kernel's contract (pinned as a Dockerfile ARG, deliberately not a compose build arg),
-# 0.31.0 for the zswap-da template's copy of that same source, 0.31.1 for shielded-night's
-# entirely different contract, and 0.31.1 for the issuer's three v1 token contracts. Each
+# THERE ARE THREE COMPILERS IN THIS STACK AND THEY ARE NOT INTERCHANGEABLE: 0.31.0 for the
+# zswap-da template's contract, 0.31.1 for shielded-night's entirely different one, and 0.31.1
+# for the issuer's three v1 token contracts. (There were FOUR up to 00020 PR C: the kernel's
+# own 0.30.0, pinned as a Dockerfile ARG rather than a compose build arg. Kernel #69 deleted
+# the contract it compiled, so images/offerfiles-kernel has no Compact stage at all.) Each
 # side's generated bindings are version-checked against ITS OWN compact-runtime at import time,
 # so a single check against one matrix entry would either reject a correct build or — worse —
 # bless a wrong compiler.
@@ -98,6 +99,7 @@ SERVICE_COMPACT_TOOLCHAIN = {
     "issuer-registrar": "compact-issuer",
     "issuer-fund": "compact-issuer",
     "issuer-registry": "compact-issuer",
+    "issuer-tokens-env": "compact-issuer",
     "faucet": "compact-issuer",
 }
 

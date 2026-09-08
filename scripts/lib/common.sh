@@ -670,13 +670,21 @@ pending_profiles() {
 # (`price-feed`). Above `frontend`/`solver` it would pull the private relay build context in
 # for a profile that has no relay in it.
 #
-# `issuer` sits directly above `prices` for the same reason `prices` sits above `poster`: its
-# own dependency is `core` ALONE (node, indexer, proof server — spec FR-002's requirement, the
-# same one shielded-night carries), and placing it AFTER the profiles that already exist means
-# no EXISTING profile's layer stack changes, so every previously measured `profile_services`
-# answer stays measured. Above `frontend`/`solver` it would pull the private relay build
-# context in for a profile that has no relay in it.
-PROFILE_LAYER_ORDER="core shielded-night offerfiles poster prices issuer frontend solver"
+# `issuer` sits directly above `offerfiles` AND BELOW `poster` — it was above `prices` when the
+# profile was added in 00020 PR B, and 00020 PR C had to move it. Its own dependency is still
+# `core` ALONE (node, indexer, proof server — spec FR-002's requirement, the same one
+# shielded-night carries), so the position is free from its own side; what forces it is that
+# `poster` and `solver` now DEPEND on it. `_render_services poster` renders every layer up to
+# and including `poster`, and with `issuer` above that point the render would fail
+# ("depends on undefined service issuer-deploy") — which `_render_services` cannot distinguish
+# from "this fragment declares no services", so `profile_services poster` would quietly answer
+# nothing and every `service_present` check in up.sh would go silent. Above `frontend`/`solver`
+# it would additionally pull the private relay build context in for a profile that has no relay
+# in it.
+#
+# `poster`'s and `prices`' layer STACKS therefore gained `issuer` beneath them; their own
+# answers did not change, because `profile_services` is a DIFFERENCE against the layers below.
+PROFILE_LAYER_ORDER="core shielded-night offerfiles issuer poster prices frontend solver"
 
 # _layer_files <profile> [--below] — the `-f <fragment>` arguments for every layer up to and
 # including <profile>, or strictly below it, one word per line.

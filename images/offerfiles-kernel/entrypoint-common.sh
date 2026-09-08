@@ -34,6 +34,14 @@ set -euo pipefail
 . /usr/local/bin/wait-for.sh
 
 REPO_ROOT="${REPO_ROOT:-/app}"
+# Read by the entrypoints that SOURCE this file (the kernel prints it in its banner) — not
+# visible from inside the library, hence the suppression below. It stopped being read HERE when
+# `adopt_contract_address` went with the contract in 00020 PR C.
+#
+# (The explanation goes ABOVE the directive on purpose: a comment line whose first word after
+# `#` is `shellcheck` is parsed as a DIRECTIVE, and an unparseable one is SC1073/SC1072 — which
+# then makes every file that sources this one report SC1094 as well.)
+# shellcheck disable=SC2034
 NETWORK_ID="${MIDNIGHT_NETWORK_ID:-undeployed}"
 
 log() { printf '[%s] %s\n' "${ROLE:-offerfiles}" "$*" >&2; }
