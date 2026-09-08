@@ -37,8 +37,10 @@
 #   the kernel        ONLY when the `offerfiles` profile is up: `GET /v1/known-tokens` holds
 #                     the six NAMES at the registry's own colours and decimals, with ZERO of
 #                     the six PREPROD PHANTOM colours the kernel's `000-init.sql` seeds — and
-#                     the current pin's DEVA/DEVB/DEVU rows still present, because until
-#                     phase C retires the kernel's faucet the two token sets coexist.
+#                     ZERO `DEVA`/`DEVB`/`DEVU` rows: kernel #69 deleted the faucet contract
+#                     that minted them, so at this pin a surviving one is a stale `postgres`
+#                     volume. (00020 PR B asserted the opposite — all three PRESENT — and wrote
+#                     it as a count precisely so this phase would meet a changed line.)
 #   RESUME            a second `issuer-deploy` deploys NOTHING: it prints six `[resume]` lines,
 #                     exits 0, and the registry's `registryRevision` is byte-identical
 #                     afterwards. A one-shot that silently redeployed would give the stack six
@@ -401,24 +403,38 @@ if service_present kernel; then
       info "  docker compose run --rm --no-deps issuer-registrar   # re-run the registrar"
     fi
 
-    # THE CURRENT PIN'S OWN COLOURS MUST STILL BE THERE. Until phase C retires the kernel's
-    # faucet contract, `offerfiles-deploy` still mints DEVA/DEVB/DEVU and
-    # `offerfiles-token-names` still registers them — and the solver, the poster, the e2e
-    # driver and the shielded-night book chain all still use them. An issuer that displaced
-    # them would break every one of those in a way this section is the only place to notice.
+    # ── THE ASSERTION THIS PHASE INVERTED, AND WHY (00020 PR C) ──────────────
     #
-    # Asserted as a COUNT so that phase C, which retires those three names, sees a changed line
-    # rather than a silent pass.
+    # 00020 PR B asserted the OPPOSITE here: `DEVA`/`DEVB`/`DEVU` must all THREE still be
+    # present, because at `KERNEL_REF=a608fa6…` `offerfiles-deploy` still minted them and the
+    # solver, the poster and the book chain still traded them — an issuer that displaced them
+    # would have broken all of those, and this was the only place that would have noticed.
+    #
+    # **IT WAS DELIBERATELY WRITTEN AS A COUNT so that phase C would see a CHANGED LINE rather
+    # than a silent pass**, and that is exactly what happened: this assertion failed on the
+    # first `--all` gate at `e3b9388…` with `only 0/3`. Kernel #69 deleted the faucet contract,
+    # the mint and the one-shot that named those colours, so at this pin all three MUST be
+    # absent, and a stack that still holds one is a stale `postgres` volume — `000-init.sql`
+    # has no `IF NOT EXISTS` and runs once, so nothing migrates it.
+    #
+    # Kept as a count in the same shape, for the same reason: a future pin that brings a local
+    # faucet back should meet a changed line here, not silence.
     DEV_PRESENT=0
+    DEV_NAMES=""
     for dev in DEVA DEVB DEVU; do
       if printf '%s' "$KNOWN" | grep -qF "\"name\":\"${dev}\"" 2>/dev/null; then
         DEV_PRESENT=$(( DEV_PRESENT + 1 ))
+        DEV_NAMES="${DEV_NAMES} ${dev}"
       fi
     done
-    if (( DEV_PRESENT == 3 )); then
-      ok "the kernel pin's own DEVA/DEVB/DEVU rows are still present — the two token sets coexist"
+    if (( DEV_PRESENT == 0 )); then
+      ok "zero DEVA/DEVB/DEVU rows — kernel #69 removed the faucet that minted them, as this pin expects"
     else
-      fail "only ${DEV_PRESENT}/3 of DEVA/DEVB/DEVU are in the kernel registry; the issuer must not displace them at this kernel pin"
+      fail "${DEV_PRESENT}/3 of DEVA/DEVB/DEVU are still in the kernel registry:${DEV_NAMES}
+            At KERNEL_REF=e3b9388… there is no faucet contract and no mint, so these colours
+            cannot have been created on this chain. THIS IS THE STALE-VOLUME SIGNATURE:
+            000-init.sql has no IF NOT EXISTS and runs ONCE against an empty database, so a
+            \`postgres\` volume from an older pin keeps the old seed forever. ./down.sh -v."
     fi
 
     # The registrar is IDEMPOTENT by the server's own semantics, and the cheapest proof of that

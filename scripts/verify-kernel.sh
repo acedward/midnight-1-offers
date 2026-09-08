@@ -188,20 +188,31 @@ else
     '{') ok "GET /v1/midnight/config answers JSON (${#CONFIG} bytes)" ;;
     *)   fail "GET /v1/midnight/config answered something that is not JSON: ${CONFIG:0:120}" ;;
   esac
-  # `indexer` and `proofServer` are the two endpoint keys the route has always carried and the
-  # SPA reads; naming them keeps this from passing on an empty `{}`.
+  # THE KEY NAMES ARE `…Uri`, MEASURED AGAINST THE RUNNING ROUTE rather than guessed — the first
+  # version of this check asked for `indexer`/`proofServer` and failed a stack that was exactly
+  # right. At `e3b9388…` the whole body is:
+  #   {"indexerUri":…,"indexerWsUri":…,"proofServerUri":…,"networkId":"undeployed"}
+  # Naming three of the four keeps this from passing on an empty `{}`; `networkId` is asserted
+  # separately below, because its VALUE matters and the others' presence is the claim here.
   CONFIG_MISSING=""
-  for key in indexer proofServer; do
+  for key in indexerUri indexerWsUri proofServerUri; do
     case "$CONFIG" in
       *"\"${key}\""*) : ;;
       *) CONFIG_MISSING="${CONFIG_MISSING} ${key}" ;;
     esac
   done
   if [[ -z "$CONFIG_MISSING" ]]; then
-    ok "it carries the network endpoints (indexer, proofServer)"
+    ok "it carries the network endpoints (indexerUri, indexerWsUri, proofServerUri)"
   else
     fail "GET /v1/midnight/config is missing endpoint key(s):${CONFIG_MISSING} — ${CONFIG:0:200}"
   fi
+  # THE NETWORK GATE, and it belongs here rather than in a comment: this stack is a throwaway
+  # devnet and the whole repository is built on `undeployed`. The route is the one place the
+  # kernel states which network it believes it is on.
+  case "$CONFIG" in
+    *'"networkId":"undeployed"'*) ok "and it reports networkId=undeployed" ;;
+    *) fail "GET /v1/midnight/config does not report networkId=undeployed: ${CONFIG:0:200}" ;;
+  esac
   if [[ "$CONFIG" == *'"contractAddress"'* ]]; then
     fail "GET /v1/midnight/config still carries a contractAddress. Kernel #69 removed the
           offer-files contract and this field with it, and this repository is built for the pin

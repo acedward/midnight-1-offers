@@ -564,8 +564,28 @@ naming:
 | `ISSUER_CONFIRM_NO_DEPLOYMENT` | unset | `1` states that an in-flight deployment the journal remembers did NOT finalize. Reconcile the chain first |
 | `ISSUER_SDK_LOG_LEVEL` | unset (silent) | `debug` brings the wallet SDK's own log back |
 | `POSTER_PREMINT_COUNT` | `12` | how many coins of exactly `OFFER_POSTER_GIVE_AMOUNT` `poster-inventory` mints. ≈ 9 s + 23 s per coin, measured |
-| `SOLVER_INVENTORY_SPEC` | `TWBTC:100000000 TWETH:100000000` | what `solver-inventory` mints into the solver's wallet — BOTH sides of the pair, because a rung whose residual exceeds available tokenOut is withheld with every rung above it |
-| `MAKER_INVENTORY_SPEC` | `TWBTC:100000000` | what `maker-inventory` mints into the maker's wallet. Only the GIVE leg; generous, because `./verify.sh` re-seeds the book when the seeded offer is consumed |
+| `SOLVER_INVENTORY_SPEC` | `TWUSDC:100000000 TWUSDM:100000000` | what `solver-inventory` mints into the solver's wallet — BOTH sides of the pair, because a rung whose residual exceeds available tokenOut is withheld with every rung above it |
+| `MAKER_INVENTORY_SPEC` | `TWUSDC:100000000` | what `maker-inventory` mints into the maker's wallet. Only the GIVE leg; generous, because `./verify.sh` re-seeds the book when the seeded offer is consumed |
+
+### The maker and the poster trade DIFFERENT pairs, on purpose
+
+`maker-offer` gives **TWUSDC** and wants **TWUSDM**; the poster gives **TWBTC** and wants
+**TWETH**. That separation is load-bearing rather than cosmetic, and it was measured:
+
+The solver's published ladder is derived from the **whole book** for a directed pair, and
+`./verify.sh`'s solver section asserts `quote(WANT_AMOUNT) == GIVE_AMOUNT` **exactly** — which
+holds only while the maker's offer is the only one on its pair. Before kernel #69 that was true
+by construction (the poster minted faucet presets, the maker traded contract-derived colours).
+Now every token comes from the issuer, so nothing stops both landing on the same two names — and
+when they did, on the first `--all` gate at this pin, the poster's offers (want leg quoted from
+real USD prices across an 8- and an 18-decimal token) sat in the maker's ladder at a price eleven
+orders of magnitude away and the quote came back
+`422 unfulfillable — amountIn is outside the published price range for this pair`.
+
+TWUSDC and TWUSDM are both 6 decimals, both shielded and both priced, so
+`MAKER_OFFER_GIVE_AMOUNT`/`_WANT_AMOUNT` (`500000`/`750000`, upstream's defaults) mean what they
+meant when every token had 6 decimals. **If you re-point either service, keep the two pairs
+disjoint.**
 
 ### Naming this stack's tokens for the intents UI
 

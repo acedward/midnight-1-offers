@@ -131,8 +131,35 @@ x-issuer-endpoints: &issuer_endpoints
 # filled by a taker who pays the want and receives the give — so from the SOLVER's side that is
 # tokenIn = want, tokenOut = give. `SOLVER_PROVISION_TOKEN_IN`/`_OUT` below follow that, and it
 # is the pair scripts/verify-solver.sh quotes.
-x-swap-give: &swap_give '${MAKER_OFFER_GIVE_TOKEN:-TWBTC}'
-x-swap-want: &swap_want '${MAKER_OFFER_WANT_TOKEN:-TWETH}'
+#
+# ── WHY THIS PAIR IS **TWUSDC → TWUSDM** AND NOT TWBTC → TWETH ───────────────
+# MEASURED, on the first `--all` gate at this pin: with the maker on TWBTC → TWETH the solver's
+# exact-quote assertion failed with
+#   POST /quote … 422 {"error":"unfulfillable","message":"amountIn is outside the published
+#   price range for this pair"}
+# and the cause is structural rather than a tuning problem.
+#
+# THE SOLVER'S PUBLISHED LADDER IS DERIVED FROM THE WHOLE BOOK for a directed pair
+# (`deriveLadder(cache.book.all(), …)`), not from one offer. Before kernel #69 the maker and the
+# poster could not collide by construction — the maker gave a colour `mint-test-tokens.ts`
+# derived from a domain separator, the poster minted its give leg from a faucet PRESET name —
+# and `scripts/verify-solver.sh`'s whole design rests on that: it asserts
+# `quote(WANT_AMOUNT) == GIVE_AMOUNT` EXACTLY, which holds only while the maker's offer is the
+# only one on its pair.
+#
+# At this pin every token comes from the issuer, so a maker and a poster on the same two names
+# land in ONE ladder — and their prices differ by ELEVEN ORDERS OF MAGNITUDE, because the
+# poster's want leg is QUOTED from real USD prices across an 8-decimal and an 18-decimal token
+# while the maker's `500000 → 750000` are upstream's defaults from when both legs were 6
+# decimals. The maker's own rung is then not reachable at its own `amountIn`.
+#
+# So the maker gets a pair of its own, and one whose legs share their decimals — TWUSDC and
+# TWUSDM are both 6, both shielded, and both priced (`usd-coin`, `usdm-2`). That restores the
+# pre-#69 invariant exactly, and it makes upstream's `500000`/`750000` defaults mean what they
+# meant when they were written. The poster keeps TWBTC → TWETH, so 8 and 18 decimals are still
+# exercised end to end — by the poster's take, and by verify-kernel's price rule.
+x-swap-give: &swap_give '${MAKER_OFFER_GIVE_TOKEN:-TWUSDC}'
+x-swap-want: &swap_want '${MAKER_OFFER_WANT_TOKEN:-TWUSDM}'
 
 # NO BUILD ARGS, and no SOLVER_REF: the image IS the kernel image (00011 PR B). Its only
 # input is the named context below, so there is nothing here for a pin to drift from — the
@@ -305,7 +332,8 @@ services:
   # {1000 -> 1000, 100000 -> 99000, 1000000 -> 970000}, so the largest rung needs 10^6 base
   # units of tokenIn on hand. This mints 10^8 of each — a hundred times the deepest rung, with
   # room for the residuals — as ONE coin per token, because unlike the poster the solver does
-  # not select by exact coin value.
+  # not select by exact coin value. Both legs are 6-decimal tokens, so 10^8 base units is 100
+  # whole coins of each.
   solver-inventory:
     image: '${ISSUER_IMAGE:-midnight-1-offers/issuer:local}'
     entrypoint: ['/usr/local/bin/entrypoint-provision.sh']
@@ -314,7 +342,7 @@ services:
       <<: *issuer_endpoints
       ISSUER_PROVISION_ROLE: 'solver'
       ISSUER_PROVISION_SEED: '${SOLVER_SEED:-0000000000000000000000000000000000000000000000000000000000000021}'
-      ISSUER_PROVISION_SPEC: '${SOLVER_INVENTORY_SPEC:-TWBTC:100000000 TWETH:100000000}'
+      ISSUER_PROVISION_SPEC: '${SOLVER_INVENTORY_SPEC:-TWUSDC:100000000 TWUSDM:100000000}'
       # On `solver-config`, which is this profile's own volume and dies with `./down.sh -v`.
       ISSUER_PROVISION_MARKER: '/srv/solver-config/.inventory-provisioned'
     volumes:
@@ -384,7 +412,7 @@ services:
       <<: *issuer_endpoints
       ISSUER_PROVISION_ROLE: 'maker'
       ISSUER_PROVISION_SEED: '${MAKER_OFFER_SEED:-0000000000000000000000000000000000000000000000000000000000000031}'
-      ISSUER_PROVISION_SPEC: '${MAKER_INVENTORY_SPEC:-TWBTC:100000000}'
+      ISSUER_PROVISION_SPEC: '${MAKER_INVENTORY_SPEC:-TWUSDC:100000000}'
       ISSUER_PROVISION_MARKER: '/var/lib/maker-offer/.inventory-provisioned'
     volumes:
       - 'issuer-registry:/srv/issuer-registry:ro'

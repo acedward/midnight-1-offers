@@ -91,17 +91,27 @@
 # The ladder assertion ("the relay advertises both dev colours") is unaffected by design: it
 # asks whether two specific colours are in the relay's union, not how many are.
 #
-# THE POSTER AND THE MAKER NOW TRADE THE SAME PAIR, and that is new at this pin. Up to
-# `KERNEL_REF=a608fa6…` they could not collide by construction: the poster minted its give leg
-# from the FAUCET (a colour derived from a preset name), while the maker gave a colour
-# `mint-test-tokens.ts` derived from a domain separator no preset name maps to. Kernel #69
-# deleted both sources; every token on the stack is now one of the issuer's six, and both
-# services default to TWBTC -> TWETH.
+# THE MAKER AND THE POSTER MUST NOT SHARE A PAIR, and at this pin that is a CONFIGURATION
+# property rather than a structural one. Up to `KERNEL_REF=a608fa6…` they could not collide by
+# construction: the poster minted its give leg from the FAUCET (a colour derived from a preset
+# name), while the maker gave a colour `mint-test-tokens.ts` derived from a domain separator no
+# preset name maps to. Kernel #69 deleted both sources — every token on the stack is now one of
+# the issuer's six — so nothing STOPS an operator pointing both at the same two names.
 #
-# THE ASSERTIONS HERE DO NOT CARE, and it is worth saying why rather than relying on it: every
-# one of them identifies the maker offer BY HASH, read from the `maker-offer` marker and
-# re-read from the kernel. A poster offer on the same colours is simply another live offer in
-# the book — which is exactly the state a real book is in.
+# WHY IT MATTERS HERE, MEASURED RATHER THAN ARGUED. The exact-quote assertion below asks the
+# relay for `quote(WANT_AMOUNT)` and requires EXACTLY `GIVE_AMOUNT`. That holds only while the
+# maker's offer is the only one on its directed pair: the published ladder is derived from the
+# WHOLE BOOK (`deriveLadder(cache.book.all(), …)`), and its rungs are cumulative sums sorted by
+# price. On the first `--all` gate at this pin, with both services on TWBTC -> TWETH, the poster's
+# offers — whose want leg is QUOTED from real USD prices across an 8-decimal and an 18-decimal
+# token — sat in the same ladder at a price ELEVEN ORDERS OF MAGNITUDE from the maker's, and the
+# maker's own rung was no longer reachable at its own amountIn:
+#   POST /quote … 422 {"error":"unfulfillable","message":"amountIn is outside the published
+#   price range for this pair"}
+#
+# So compose gives the maker TWUSDC -> TWUSDM (both 6 decimals, both priced) and leaves the
+# poster on TWBTC -> TWETH. Identifying the maker offer BY HASH — which every assertion below
+# does — is necessary but NOT sufficient; the pair has to be the maker's alone.
 #
 # ── THE ONE SIDE EFFECT THIS SCRIPT DOES HAVE (00011 B.5b) ──────────────────
 # It re-seeds the book when there is no live maker offer left, and it does so LOUDLY.
