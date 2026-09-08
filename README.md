@@ -142,13 +142,19 @@ you use with `docker compose … logs <service>`. Ports are the `.env.example` d
 | Profile | Services | Default endpoints |
 |---|---|---|
 | [`core`](compose/core.yml) — always | `node` · `indexer` · `proof-server` · `proof-warm` · `postgres` | node RPC `http://127.0.0.1:9944` · indexer `http://127.0.0.1:8088` · proof `http://127.0.0.1:6300` · postgres internal |
-| [`offerfiles`](compose/offerfiles.yml) | `celestia` · `offerfiles-deploy` · `kernel` · `batcher` · `offerfiles-token-names` | kernel API `http://127.0.0.1:9999` · batcher `http://127.0.0.1:3334` · Celestia DA RPC `http://127.0.0.1:26658` |
+| [`offerfiles`](compose/offerfiles.yml) | `celestia` · `kernel` · `batcher` | kernel API `http://127.0.0.1:9999` · batcher `http://127.0.0.1:3334` · Celestia DA RPC `http://127.0.0.1:26658` |
 | [`frontend`](compose/frontend.yml) | `frontend` | zswap-da SPA `http://127.0.0.1:10600` |
 | [`shielded-night`](compose/shielded-night.yml) — needs only `core` | `shielded-night-deploy` · `shielded-night` · `shielded-night-token-name` · `shielded-night-verify` | sNight dApp `http://127.0.0.1:10900` |
-| [`solver`](compose/solver.yml) — needs `RELAY_SOURCE_DIR` | `relay` · `solver-provision` · `maker-offer` · `solver` · `solver-frontend` · `intents-ui` | relay `http://127.0.0.1:13000` · relay WS `:19001` · monitor **`http://127.0.0.1:10800`** · intents UI `http://127.0.0.1:10700` · status listener `solver:9100` internal only |
-| [`poster`](compose/poster.yml) | `poster-provision` · `offer-poster` | health `http://127.0.0.1:19977/health` (+ `/metrics`, `/journal`) |
+| [`solver`](compose/solver.yml) — needs `RELAY_SOURCE_DIR` **and `issuer`** | `relay` · `solver-provision` · `solver-inventory` · `maker-provision` · `maker-inventory` · `maker-offer` · `solver` · `solver-frontend` · `intents-ui` | relay `http://127.0.0.1:13000` · relay WS `:19001` · monitor **`http://127.0.0.1:10800`** · intents UI `http://127.0.0.1:10700` · status listener `solver:9100` internal only |
+| [`poster`](compose/poster.yml) — needs **`issuer`** | `poster-provision` · `poster-inventory` · `offer-poster` | health `http://127.0.0.1:19977/health` (+ `/metrics`, `/journal`) |
 | [`prices`](compose/prices.yml) — opt-in, needs `COINGECKO_API_KEY` | `price-feed` | no port; writes `asset_prices`, read back via kernel `/v1/prices` |
-| [`issuer`](compose/issuer.yml) — needs only `core` | `issuer-deploy` · `faucet` · `issuer-registrar` · `issuer-fund` · `issuer-registry` | token faucet **`http://127.0.0.1:10500/?network=undeployed`** (the `?network=` is not optional); `docker compose run --rm issuer-fund <TOKEN> <base-units> <recipient-seed>` for the headless lane |
+| [`issuer`](compose/issuer.yml) — needs only `core`; **required by `poster` and `solver`** | `issuer-deploy` · `faucet` · `issuer-registrar` · `issuer-fund` · `issuer-registry` · `issuer-tokens-env` | token faucet **`http://127.0.0.1:10500/?network=undeployed`** (the `?network=` is not optional); `docker compose run --rm issuer-fund <TOKEN> <base-units> <recipient-seed> [count]` for the headless lane |
+
+> **`poster` and `solver` REQUIRE `issuer` since 00020 PR C.** Kernel
+> [#69](https://github.com/effectstream/zswap-offerfiles-kernel/pull/69) removed the local faucet
+> contract, so their swap-token inventory is minted by the issuer. `./up.sh` adds the profile for
+> you and says so in one line; a hand-rolled `docker compose -f …` without it refuses to render,
+> naming `issuer-deploy`.
 
 What each profile actually does, service by service — the whole-coin line, the sponsorship
 gate, the exact-coin guarantee, the price feed's key rules, the sNight round trip — is in

@@ -112,12 +112,13 @@ by mistake does not additionally leak its key.
 
 | seed | who holds a facade on it | for how long | enforced by |
 |---|---|---|---|
-| `genesis-1` `…0001` | `offerfiles-deploy`, `solver-provision`, `maker-offer`, `poster-provision`, the verify drivers | one-shots only — each exits | `depends_on` inside a fragment, and a **`flock`** on the shared `genesis-lock` volume ACROSS fragments |
+| `genesis-1` `…0001` | `issuer-deploy`, `solver-provision`, `poster-provision`, `maker-provision`, the verify drivers | one-shots only — each exits | `depends_on` inside a fragment, and a **`flock`** on the shared `genesis-lock` volume ACROSS fragments. `maker-offer` LEFT this list in 00020 PR C: it holds …0031 now and takes the lock only if an operator points `MAKER_OFFER_SEED` back at genesis |
 | `genesis-2` `…0002` | `shielded-night-deploy`, then the verify driver | sequentially; the deploy has exited first | the deploy one-shot's `restart: "no"` |
 | `batcher` `…0003` | the `batcher` container | the life of the stack | this table, and nothing else |
-| `solver` `…0021` | `solver-provision` (then it exits), then the `solver` container | the life of the stack | compose's `service_completed_successfully` |
-| **`poster` `…0041`** | `poster-provision` (then it exits), then `offer-poster` | the life of the stack | compose's `service_completed_successfully` **and** `poster-config.ts`, which exits 78 if the seed collides |
-| **`issuer` `…0051`** | `issuer-deploy` (then it exits), and `issuer-fund` per mint | one-shots only — but `issuer-deploy`'s facade is open for MINUTES (six proving deployments) | a **`flock`** on `/app/.local/.issuer-facade.lock` (the `issuer-state` volume), held by every issuer container, **and** `m1/provision.ts`'s exit-78 refusal of the genesis seed |
+| `solver` `…0021` | `solver-provision`, then `solver-inventory` (both exit), then the `solver` container | the life of the stack | compose's `service_completed_successfully`, twice in a row |
+| **`e2e-maker` `…0031`** | `maker-provision`, `maker-inventory`, `maker-offer` and the e2e driver — ALL one-shots | never long-lived, and that is the whole safety argument | compose's `service_completed_successfully`. **NOTHING LONG-LIVED MAY EVER HOLD THIS SEED**: four jobs share it, safely, only because they run one after another. New in 00020 PR C — the maker was genesis-1 until kernel #69 deleted the mint that credited it |
+| **`poster` `…0041`** | `poster-provision`, then `poster-inventory` (both exit), then `offer-poster` | the life of the stack | compose's `service_completed_successfully`, twice in a row, **and** `poster-config.ts`, which exits 78 if the seed collides |
+| **`issuer` `…0051`** | `issuer-deploy` (then it exits), `issuer-fund` per mint, and the three `*-inventory` one-shots | one-shots only — but `issuer-deploy`'s facade is open for MINUTES (six proving deployments), and an inventory run holds it for one lock across ALL its mints | a **`flock`** on `/app/.local/.issuer-facade.lock` (the `issuer-state` volume), held by every issuer container, **and** `m1/provision.ts`'s exit-78 refusal of the genesis seed |
 | `lace-test` | nothing automated — reserved for the operator's browser | — | deliberately unassigned |
 
 **`OFFER_POSTER_SEED` must never equal any other seed in the roster.** It is the only entry

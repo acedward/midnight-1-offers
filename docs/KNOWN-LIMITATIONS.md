@@ -6,6 +6,37 @@
 
 ## `offerfiles`
 
+### The SPA's Faucet tab is DEAD at `KERNEL_REF=e3b9388…` (00020 PR C)
+
+Kernel [#69](https://github.com/effectstream/zswap-offerfiles-kernel/pull/69) deleted
+`packages/node/zk-assets.ts`, so the kernel no longer serves `GET /keys/*` or `GET /zkir/*`. The
+zswap-da SPA's Faucet tab proves its mint IN THE BROWSER and fetches the proving keys from
+exactly those routes, so pressing it fails. `scripts/verify-frontend.sh` asserts the routes are
+**gone** (a 200 would mean `KERNEL_REF` had moved backwards onto a line these images no longer
+build for) and says so where a reader will meet it.
+
+**Nothing automated ever depended on it.** `issuer-fund` is this stack's headless minting path
+and the browser mint has always been an owner hand test. **The hand test moved**, it did not
+disappear: the `issuer` profile's own faucet site on `${FAUCET_HOST_PORT}` mints the six issued
+tokens through a connected Lace wallet in exactly the same way, with the wallet doing the
+proving.
+
+Phase D of project 00020 re-points the SPA's Faucet link at that site.
+
+### There is no `mints` counter any more, and `insufficient_inventory` is a normal state
+
+Two field names people look for are gone with the mint they described: `/health`'s `mints`
+(replaced by `inventoryAdoptions` + `reoffers`) and the journal's `contractAddress` (the journal
+is keyed by NETWORK ID + GIVE-TOKEN ID now). See the `poster` section below for the budget that
+`insufficient_inventory` reports.
+
+### HISTORY — the entry below describes the pin BEFORE `e3b9388`
+
+Kernel #69 deleted the mint, the contract, `offerfiles-deploy` and `offerfiles-token-names`, so
+none of the behaviour described here happens on the current pin. It is kept because a reader
+running an older stack forward will still see it in that stack's logs, and because it records
+why the m1 names were authoritative by construction.
+
 ### The kernel's own mint logs three failed name registrations on every fresh stack, and that is correct
 
 Since `KERNEL_REF=a608fa6…` (kernel
@@ -181,15 +212,62 @@ it up".
 
 ## `poster`
 
+### THE BOOK IS BOUNDED BY PRE-MINTED INVENTORY (00020 PR C)
+
+The poster does not mint. Kernel #69 deleted the faucet circuit, and `selectInventoryCoin()`
+replaced it: every tick either re-offers a coin that came back, or adopts one unjournaled
+spendable coin whose value **equals** `OFFER_POSTER_GIVE_AMOUNT` — not one worth at least that
+much. `poster-inventory` pre-mints `POSTER_PREMINT_COUNT` such coins through the `issuer`
+profile before the poster starts.
+
+**So the book grows to `POSTER_PREMINT_COUNT` offers and then stops.** At one offer per 60 s
+tick, the default of 12 is twelve minutes of growth. After that, every tick with nothing to
+re-offer answers:
+
+```json
+{"state":"degraded","lastMode":"degraded","lastFailure":"insufficient_inventory","freeCoins":0}
+```
+
+**That is a 200, and it is correct.** A poster with no inventory is not a poster a restart would
+fix, so it stays up, keeps re-offering coins as they are released, and reports the condition
+rather than dying. `./verify.sh --poster` treats it as expected only AFTER the budgeted count
+has been produced; before that it diagnoses it as a pre-mint that did not land, which is a real
+defect and usually the same one: `POSTER_PREMINT_COUNT` coins minted at a size that is not
+`OFFER_POSTER_GIVE_AMOUNT`. Compose reads both from the same variable, so that needs an
+override to happen.
+
+**The refill needs no restart:**
+
+```sh
+docker compose run --rm issuer-fund TWBTC 1000000 \
+  0000000000000000000000000000000000000000000000000000000000000041 10
+```
+
+**Why the default is 12 and not 50.** Each coin is its own proving transaction. Measured on this
+stack: ≈ 9 s of fixed cost plus ≈ 23 s per coin, linear (5 coins finalised at 20/44/68/92/116 s;
+3 at 23/42/66 s). Fifty coins is **19 minutes added to every bring-up**; twelve is about five.
+Raise it for a long-running demo and pay the time once, or refill a running stack.
+
+**What would remove the limitation** — and is deliberately NOT done here: a feeder loop that
+tops the wallet up whenever free coins fall below a threshold. It is a second long-lived process
+with its own failure modes and its own wallet facade, for a devnet demo whose book only has to
+be non-empty. Recorded as an additive follow-up in the project's questions file (Q3, option B).
+
+### A configured size RANGE is a filter now, not a draw
+
+`OFFER_POSTER_GIVE_MIN`/`_GIVE_MAX` used to draw a log-uniform size per fresh mint. At this pin
+they are an inclusive BASE-UNIT filter over coins the wallet ALREADY HOLDS, and
+`OFFER_POSTER_SIZE_SEED` is deleted. So a spread of offer sizes needs a WALLET with a spread —
+several `issuer-fund` calls at different sizes — and `poster-inventory` mints exactly one size.
+
 ### The first offer takes minutes, and nothing can make it faster
 
 Before the poster's health server even binds, it has to sync a wallet, register its NIGHT for
-DUST, wait (bounded) for that dust to appear, and join the offer-files contract; then the first
-tick mints a coin, which is a proving transaction (~30 s), waits for the coin to become visible,
-and only then builds and posts the offer. That is why the container healthcheck has a 15-minute
+DUST and wait (bounded) for that dust to appear; then the first tick adopts a coin, builds and
+proves the offer (~30 s) and posts it. That is why the container healthcheck has a 15-minute
 `start_period` and why `./verify.sh`'s poster section carries `POSTER_VERIFY_BUDGET_S` (420 s by
 default) instead of a fixed wait. On a loaded host, raise it rather than reading a red section
-as a defect.
+as a defect. The pre-mint is ahead of all of it — about five minutes at the default count.
 
 ### The kernel does not serve a freshly accepted offer for 5–20 s, and the poster's journal says `live` anyway
 
@@ -218,12 +296,16 @@ sound, and the section's own on-chain take passed in the same run.
 ### `degraded` answers **200**, on purpose
 
 `GET /health` returns 200 while the poster is `starting` and while it is `degraded`; a 503
-arrives only after `HEALTH_STALE_TICKS` consecutive FAILED ticks. `degraded` almost always means
-`insufficient_dust`, i.e. the wallet has no NIGHT — and restarting a poster does not produce
-NIGHT, so failing the healthcheck would only produce a restart loop that hides the cause.
+arrives only after `HEALTH_STALE_TICKS` consecutive FAILED ticks. `degraded` means either
+`insufficient_inventory` (no coin matches the give size — see the budget entry above) or
+`insufficient_dust` (the wallet has no NIGHT), and restarting a poster produces neither a coin
+nor NIGHT, so failing the healthcheck would only produce a restart loop that hides the cause.
 
 The consequence is that **a healthy poster container is not evidence that anything was ever
-posted.** Only the mint and live-offer counters are, which is what `./verify.sh` asserts.
+posted.** Only `inventoryAdoptions + reoffers` and `liveOffers` are, which is what `./verify.sh`
+asserts — and separately `freeCoins + inventoryAdoptions >= POSTER_PREMINT_COUNT`, because a
+poster given ONE coin posts it, re-offers it for ever, and satisfies the first check while the
+book never grows.
 
 ### One poster per stack, and one seed for it alone
 

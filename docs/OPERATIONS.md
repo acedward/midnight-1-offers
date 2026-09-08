@@ -6,6 +6,79 @@
 > kernel re-pin makes unavoidable for anyone running an existing stack forward. The rest of the
 > `offerfiles` profile's operating notes are still to be written.
 
+## Re-pin to kernel `main` @ `e3b9388` (00020 PR C) — **BREAKING. `./down.sh -v` is the upgrade path**
+
+**Read this one first.** It is the newest re-pin, it is the only breaking one in project 00020,
+and it changes where this stack's tokens come from.
+
+```sh
+git pull
+./down.sh -v          # NOT optional — see "why" below
+./up.sh --build --all
+```
+
+### What kernel [#69](https://github.com/effectstream/zswap-offerfiles-kernel/pull/69) removed
+
+**The local faucet contract.** `packages/contracts-midnight/contract-offer-files` — the Compact
+package whose `mint_shielded` circuit was this stack's only token source — is deleted, and with
+it `deploy.ts`, `mint-test-tokens.ts`, `packages/node/zk-assets.ts` (so `GET /keys/*` and
+`GET /zkir/*` no longer exist), and `deploy/scripts/lib/faucet-mint.ts`.
+`GET /v1/midnight/config` no longer carries a `contractAddress`.
+
+So this repository retired, in the same commit:
+
+| gone | why, and what replaced it |
+|---|---|
+| the `offerfiles-deploy` service and its volume | there is no contract to deploy and no address to persist |
+| the `offerfiles-token-names` service | it named the three colours the mint produced; there is no mint |
+| `DEVA` / `DEVB` / `DEVU` | replaced by the **issuer's six**: `TWBTC` (8 dec) `TWETH` (18) `TWUSDC` (6) `TWUSDM` (6) `UTWUSDC` (6, unshielded) `UTWBTC` (8, unshielded) |
+| the kernel image's whole Compact stage | nothing left to compile — and the ~20 minutes of proving-key generation goes with it |
+| `TOKEN_NAME_SHIELDED_A/_B`, `TOKEN_NAME_UNSHIELDED` | the names are the issuer registry's and are not this repository's to choose |
+| `OFFER_POSTER_SIZE_SEED`, `_MIN_DUST`, `_COIN_VISIBLE_TIMEOUT_MS`, `_DUST_WAIT_TIMEOUT_MS` | `poster-config.ts` no longer reads any of them |
+
+### Why `./down.sh -v` is not optional
+
+`packages/database/migrations/000-init.sql` has **no `IF NOT EXISTS`** and runs EXACTLY ONCE,
+against an empty database. At this pin it moves the seeded sNight colour from Preview to
+Preprod, **deletes the `USDC` and `USDM` rows**, adds the six canonical names at the public
+Preprod colours, and adds a new `canonical_token_registry_state` table. Nothing migrates an
+existing volume: the stack would come up healthy holding the OLD seed and merely lie about every
+price. `./verify.sh` names that state directly — a `DEVA`/`USDC`/`USDM` row is reported as the
+stale-volume signature with this command as the fix.
+
+### Two profiles gained a dependency
+
+**`poster` and `solver` now require `issuer`.** Their inventory one-shots run the issuer image
+and their long-lived services read the token handoff that profile publishes. `./up.sh` adds it
+for you and says so in one line:
+
+```
+    profile  poster needs `issuer` (its swap-token inventory is minted there) — adding it
+```
+
+A hand-rolled `docker compose -f compose/core.yml -f compose/offerfiles.yml -f compose/poster.yml`
+refuses to render, naming `issuer-deploy`. That is deliberate and asserted by
+`scripts/verify-compose-pins.sh`.
+
+### The one-shots, and what each is for
+
+| service | image | what it does |
+|---|---|---|
+| `poster-provision` · `maker-provision` | kernel | four large NIGHT UTXOs from genesis to that role's wallet, under the shared `genesis-lock` |
+| `solver-provision` | kernel | the same NIGHT transfer, **and then** upstream's own `provision-solver-fees.ts`, which verifies it, registers it for DUST, and writes the ladder + the provisioning receipt |
+| `poster-inventory` · `maker-inventory` · `solver-inventory` | **issuer** | the swap tokens, minted by the `issuer` profile — the only image carrying the token contracts |
+
+They run one after another because three wallet facades are involved (genesis, the solver's
+…0021, the maker's …0031) and one facade per seed is an SDK rule.
+
+### What this pin costs, stated plainly
+
+The zswap-da SPA's **Faucet tab is dead** on this pin: it proves a mint in the browser and
+fetches its proving keys from `/keys/*`, which no longer exists. Nothing automated depended on
+it — `issuer-fund` is the headless path and the browser mint was always an owner hand test — and
+the `issuer` profile's own faucet site (`${FAUCET_HOST_PORT}`) mints the six issued tokens
+through a connected wallet in exactly the same way. See `docs/KNOWN-LIMITATIONS.md`.
+
 ## Re-pin the node to `1.0.1` (00020 PR A) — **not breaking; an existing volume keeps working**
 
 This is the newest re-pin and the one to read first. `NODE_IMAGE` is now
@@ -414,6 +487,11 @@ docker compose run --rm issuer-fund TWBTC 100000000 \
 docker compose run --rm issuer-fund TWETH 5000000000000000000 \
   0000000000000000000000000000000000000000000000000000000000000041
 
+# TWELVE separate coins of exactly 1000000 base units — what the offer poster needs, because it
+# adopts a coin BY EXACT VALUE. About 9 s of fixed cost plus 23 s per coin, measured.
+docker compose run --rm issuer-fund TWBTC 1000000 \
+  0000000000000000000000000000000000000000000000000000000000000041 12
+
 # and with the seed in a file rather than on the command line
 docker compose run --rm issuer-fund utwUSDC 10000000000 @/run/secrets/taker.hex
 ```
@@ -459,9 +537,12 @@ Nothing in this profile mints on a schedule; a wallet runs out when it runs out.
 naming:
 
 * **the offer poster** re-offers coins that come back and mints a fresh one otherwise, so on the
-  kernel pin this repository runs today it still supplies itself from the kernel's faucet circuit
-  and needs no refill. (From phase C onwards it cannot mint at all, and
-  `docs/KNOWN-LIMITATIONS.md` carries the budget and the refill command.)
+  kernel pin this repository runs today it CANNOT MINT AT ALL — kernel #69 deleted the faucet
+  circuit — so its whole stock is what `poster-inventory` pre-minted, and refilling it is the
+  command above with the poster's seed. The budget is in `docs/KNOWN-LIMITATIONS.md`.
+* **the solver and the maker** — `solver-inventory` and `maker-inventory` stock them once per
+  chain from `SOLVER_INVENTORY_SPEC` / `MAKER_INVENTORY_SPEC`. Top either up with `issuer-fund`
+  against `SOLVER_SEED` (…0021) or `MAKER_OFFER_SEED` (…0031); nothing has to be restarted.
 * **any wallet you funded by hand** — run `issuer-fund` again with the same arguments. It is not
   idempotent and is not meant to be: each call mints a NEW coin of exactly the amount asked for,
   and the receipt's `delta` says so.
@@ -482,6 +563,23 @@ naming:
 | `ISSUER_REDEPLOY_STALE` | unset | `1` lets the one-shot REPLACE a registry it has marked stale. Read the next section first |
 | `ISSUER_CONFIRM_NO_DEPLOYMENT` | unset | `1` states that an in-flight deployment the journal remembers did NOT finalize. Reconcile the chain first |
 | `ISSUER_SDK_LOG_LEVEL` | unset (silent) | `debug` brings the wallet SDK's own log back |
+| `POSTER_PREMINT_COUNT` | `12` | how many coins of exactly `OFFER_POSTER_GIVE_AMOUNT` `poster-inventory` mints. ≈ 9 s + 23 s per coin, measured |
+| `SOLVER_INVENTORY_SPEC` | `TWBTC:100000000 TWETH:100000000` | what `solver-inventory` mints into the solver's wallet — BOTH sides of the pair, because a rung whose residual exceeds available tokenOut is withheld with every rung above it |
+| `MAKER_INVENTORY_SPEC` | `TWBTC:100000000` | what `maker-inventory` mints into the maker's wallet. Only the GIVE leg; generous, because `./verify.sh` re-seeds the book when the seeded offer is consumed |
+
+### Naming this stack's tokens for the intents UI
+
+`INTENTS_UI_TOKEN_NAMES` is a BUILD argument by upstream's design — the UI labels a colour by
+the `TOKEN_<NAME>` key baked into `index.html` — while the six colours only exist AFTER
+`issuer-deploy` has run. The two passes cannot be merged; the second is one command:
+
+```sh
+./scripts/issuer-token-names.sh >> .env       # INTENTS_UI_TOKEN_NAMES=TWBTC=…,TWETH=…
+./scripts/issuer-token-names.sh --table       # the same six with decimals and privacy
+./up.sh --with offerfiles --with solver --build
+```
+
+Until then the UI labels each token by the last 8 characters of its colour, which is cosmetic.
 
 ### A stale registry, and why nothing here fixes it automatically
 
@@ -635,15 +733,43 @@ actual terminal status (by hash, from the one-shot's marker), re-seeds through
 ./verify.sh --poster                          # assert it is WORKING, not merely alive
 ```
 
-Two services come up: `poster-provision` (a one-shot that sends the poster's dedicated wallet
-four large NIGHT UTXOs from genesis and exits) and `offer-poster` (the loop). The poster
-registers that NIGHT for DUST itself, joins the offer-files contract, registers its two token
-names so both legs quote at a real price, and then posts one offer a minute.
+THREE services come up since 00020 PR C — and the `issuer` profile with them, which `./up.sh`
+adds for you:
+
+| service | what it does |
+|---|---|
+| `poster-provision` | four large NIGHT UTXOs from genesis to the poster's dedicated wallet, then exits |
+| `poster-inventory` | mints `POSTER_PREMINT_COUNT` coins of EXACTLY `OFFER_POSTER_GIVE_AMOUNT` through the issuer, then exits |
+| `offer-poster` | the loop |
+
+The poster registers that NIGHT for DUST itself and then posts one offer a minute.
+
+**IT DOES NOT MINT ANY MORE.** Kernel #69 deleted the faucet circuit; `selectInventoryCoin()`
+replaced the mint. Every tick either RE-OFFERS a coin that came back or ADOPTS one unjournaled
+spendable coin whose value **equals** `OFFER_POSTER_GIVE_AMOUNT` — not one worth at least that
+much. So `poster-inventory` mints N SEPARATE coins of that exact size, and a single large coin
+would be worth exactly one offer to this poster.
+
+**THE BOOK IS THEREFORE BOUNDED.** Once all `POSTER_PREMINT_COUNT` coins are live, a tick with
+nothing to re-offer reports `degraded: insufficient_inventory` — a 200 on `/health`, by design,
+because restarting would not produce a coin. Refill without a restart:
+
+```sh
+# ten more coins of the poster's exact give size, to the poster's wallet (…0041)
+docker compose run --rm issuer-fund TWBTC 1000000 \
+  0000000000000000000000000000000000000000000000000000000000000041 10
+```
+
+The next tick adopts one. **MEASURED cost:** about 9 s of fixed cost plus **23 s per coin**
+(5 coins finalised at 20/44/68/92/116 s; 3 at 23/42/66 s) — which is why the default is 12 and
+not the 50 the spec first suggested. The size MUST equal `OFFER_POSTER_GIVE_AMOUNT` exactly;
+a mismatch presents as a full wallet and `insufficient_inventory` for ever, and
+`./verify.sh --poster` says so by name.
 
 **The first offer takes minutes, not seconds.** Wallet sync, DUST registration, the bounded
-dust wait, the contract join and ~30 s of proving all happen before anything reaches the book —
-which is why the container healthcheck has a 15-minute `start_period` and why
-`POSTER_VERIFY_BUDGET_S` defaults to 420.
+dust wait and ~30 s of proving all happen before anything reaches the book — which is why the
+container healthcheck has a 15-minute `start_period` and why `POSTER_VERIFY_BUDGET_S` defaults
+to 420. The pre-mint is ahead of all of it: ~5 minutes at the default count.
 
 ### Reading it
 
@@ -652,7 +778,7 @@ loopback):
 
 | route | what it answers |
 |---|---|
-| `GET /health` | `{state, ready, ticks, mints, reoffers, lastTickAt, lastOfferId, lastError, dustBalance, liveOffers, freeCoins, p95TickMs, journal}` |
+| `GET /health` | `{state, ready, ticks, inventoryAdoptions, reoffers, degradedTicks, lastTickAt, lastOfferId, lastError, lastFailure, liveOffers, freeCoins, candidates, p50TickMs, p95TickMs, journal}` — `mints` was here and is gone with the mint it counted; `inventoryAdoptions` + `reoffers` is the number of offers this loop has produced, and `freeCoins` is how much inventory is left |
 | `GET /metrics` | the same counters in Prometheus text format, plus tick p50/p95 and the overrun count |
 | `GET /journal` | the journal as JSON — every coin, its nullifier, and every offer built from it |
 
@@ -663,11 +789,14 @@ docker compose logs -f offer-poster
 ```
 
 **`degraded` is a 200 BY DESIGN, and so is `starting`.** A 503 arrives only after
-`HEALTH_STALE_TICKS` consecutive FAILED ticks. A poster waiting for NIGHT is not a poster a
-restart would fix, so it says `degraded: insufficient_dust` and keeps servicing re-offers
-(which cost no dust) rather than dying. That is exactly why a green healthcheck is not evidence
-the poster is working, and why `./verify.sh`'s poster section waits for `mints >= 2` and
-`liveOffers >= 2` instead of trusting it.
+`HEALTH_STALE_TICKS` consecutive FAILED ticks. A poster with nothing to post is not a poster a
+restart would fix, so it says `degraded` — `insufficient_inventory` when no coin matches the
+give size, `insufficient_dust` when it has no NIGHT — and keeps servicing re-offers rather than
+dying. That is exactly why a green healthcheck is not evidence the poster is working, and why
+`./verify.sh`'s poster section waits for `inventoryAdoptions + reoffers >= 2` and
+`liveOffers >= 2`, and separately accounts for the pre-mint
+(`freeCoins + inventoryAdoptions >= POSTER_PREMINT_COUNT`) — a poster given ONE coin posts it,
+re-offers it for ever, and would satisfy the first check while the book never grows.
 
 ### Checking the exact-coin guarantee by hand
 
@@ -996,7 +1125,7 @@ performs real proofs; upstream's own timeout for each test is ten minutes.
 | `SHIELDED_NIGHT_WAIT_TIMEOUT` | `600` | how long the web container waits for `contract.json` before failing |
 | `SNIGHT_BOOK_AMOUNT` | `1000000` | book chain: how much NIGHT is wrapped, and the size of the sNight leg of the offer. The taker receives it as ONE coin worth exactly this, which is what lets the unwrap step burn it whole |
 | `SNIGHT_BOOK_WANT_AMOUNT` | `750000` | book chain: how much of the demo colour the offer asks for |
-| `SNIGHT_BOOK_WANT_KEY` | `shieldedA` | book chain: which minted colour to ask for — `shieldedA` is DEVA, `shieldedB` is DEVB |
+| `SNIGHT_BOOK_WANT_TOKEN` | `TWUSDC` | book chain: which ISSUED token the sNight offer asks for. It was `SNIGHT_BOOK_WANT_KEY=shieldedA`, a key into the deleted `minted-tokens.json`; the want leg must be a SHIELDED issuer token (so not `UTWUSDC`/`UTWBTC`), and `./verify.sh` credits the taker with it through `issuer-fund` before the take — genesis-1 holds none |
 | `SNIGHT_BOOK_TAKER_SEED` | `e2e-taker` (`0x…0032`) | book chain: the wallet that takes the offer. Empty at genesis; the chain funds it |
 | `SNIGHT_BOOK_FUNDER_SEED` | `genesis-1` | book chain: funds the taker. It is the faucet **and** the wallet the demo colours were minted to, so it is the only wallet that can hand the taker the token the offer demands |
 | `SHIELDED_NIGHT_SKIP_BOOK` | unset (`0`) | `1`/`true` skips the WHOLE book-chain subsection (below) — not the round trips above it, which always run. For a gate on a time budget that still wants `offerfiles`+`shielded-night` wired together (compose renders, the cross-profile one-shot fires, the sNight pricing and quote are still checked from `verify-kernel.sh`) without paying the book chain's own ~12–20 min of proving |

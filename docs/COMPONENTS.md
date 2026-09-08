@@ -24,30 +24,38 @@ entrypoints, so the solver, its monitor and its two one-shots are all *the kerne
 `SOLVER_REPO`/`SOLVER_REF` are retired — set, they now only produce a warning from
 `scripts/lib/common.sh`. See "The solver IS the kernel commit" below.
 
-### The whole-coin line (kernel #63 + effectstream#918)
+### The whole-coin line (kernel #63 + effectstream#918), and what 00020 PR C made of it
 
-These two are **one change across two repositories** and must always move together. Before them,
+These two were **one change across two repositories** and had to move together. Before them,
 `known_tokens.decimals` defaulted to `0` and a faucet press minted 1 000 *base units*, which the
 registry called 1 000 coins. Since them:
 
-* `known_tokens.decimals` **DEFAULTS to 6**, and every seeded row (NIGHT, SNIGHT, USDC, USDM) is
-  6. Every registration path in and around this repository sends `decimals: 6` **explicitly**
-  anyway — `images/offerfiles-kernel/entrypoint-token-names.sh` for DEVA/DEVB/DEVU,
-  `images/shielded-night/entrypoint-token-name.sh` for sNight, the SPA for anything minted from
-  the faucet — because a kernel pinned before #63 would otherwise silently record `0`.
-* one faucet press is **1 000 whole coins = `1000000000` base units**. The number is defined once,
-  upstream, in `docs/src/wallet/mintable.ts` (`MINT_COINS` / `MINT_AMOUNT`), which the SPA faucet,
-  `deploy/scripts/lib/faucet-mint.ts` and the offer poster all import.
-* prices are served **per base unit**: `asset_prices.price_usd / 10^decimals`. With the seeded
-  coin prices at this pin, `WBTC` is `77387 / 10^6 = 0.077387` and `WETH`
-  `2393.28 / 10^6 = 0.00239328`, exactly.
+* `known_tokens.decimals` **DEFAULTS to 6**, so a registration that forgets it is 6 rather than
+  0. Every registration path in and around this repository still sends `decimals` **explicitly**
+  — a kernel pinned before #63 would otherwise silently record `0`.
+* prices are served **per base unit**: `asset_prices.price_usd / 10^decimals`, as EXACT decimal
+  strings.
 * the SPA reads each token's `decimals` off `GET /v1/known-tokens` and scales everything it shows
-  and submits by `10^decimals`, so the faucet says `1,000` and a take moves a balance by exactly
-  the coins displayed.
+  and submits by `10^decimals`, so a take moves a balance by exactly the coins displayed.
 
-`./verify.sh`'s `kernel` section asserts all of this — see the `token decimals` and `faucet`
-blocks in `scripts/verify-kernel.sh`, and `images/offerfiles-kernel/faucet-probe.ts`, which reads
-the allotment out of the RUNNING image's own tree rather than re-declaring it here.
+**6 STOPPED BEING THE ONLY RIGHT ANSWER IN 00020.** PR B gave the stack a token source of its own
+and PR C made it the ONLY one: the six issued tokens are `TWBTC` 8, `TWETH` 18, `TWUSDC` 6,
+`TWUSDM` 6, `UTWUSDC` 6, `UTWBTC` 8. Two consequences worth naming:
+
+* **the per-row rule is what survives, not the constant.** `./verify.sh` compares every
+  registered row against ITS OWN expected decimals, and asserts the price rule
+  (`per base unit == coin / 10^decimals`, exactly) at **8 and 18** as well as 6. 10^18 exceeds
+  2^53, so 18 is where an implementation that touched a float would start losing digits.
+* **every amount in this repository is BASE UNITS**, and `OFFER_POSTER_GIVE_AMOUNT=1000000` is
+  0.01 whole TWBTC rather than one coin. Shell-side arithmetic is string arithmetic
+  (`decimal_shift_left` in `scripts/lib/common.sh`, `issuer_whole_coin` in
+  `images/offerfiles-kernel/registry-env.sh`) because bash integers are 64-bit signed and
+  `$(( 10 ** 19 ))` silently goes negative.
+
+**AND THE FAUCET HALF IS GONE.** The 1 000-whole-coin allotment, `docs/src/wallet/mintable.ts`,
+`deploy/scripts/lib/faucet-mint.ts` and this repository's `faucet-probe.ts` were all deleted by
+kernel #69 with the contract they served. `./verify.sh`'s `kernel` section asserts what remains —
+the per-row decimals sweep, and the price rule on the two tokens whose decimals are not 6.
 
 **Moving an EXISTING stack onto this line is BREAKING for its `postgres` volume**, silently — see
 `docs/OPERATIONS.md`. `./down.sh -v` is the upgrade path.
@@ -193,9 +201,13 @@ Every `POST_INTERVAL_MS` (60 s by default) exactly one of two things happens:
 * **re-offer** — a coin the journal already owns has come back (its last offer is `expired` or
   `cancelled` in the kernel **and** its nonce is visible again in the wallet's
   `availableCoins`), so the tick posts a fresh offer for that exact coin at today's quote;
-* **mint** — no coin is free, so the tick calls the faucet circuit
-  `mint_shielded(domainSep(GIVE_TOKEN), GIVE_AMOUNT, freshNonce)` — paying the mint fee from
-  its **own DUST** — waits for the coin to appear, and offers it.
+* **inventory** — no journal coin is free, so the tick ADOPTS one unjournaled spendable coin
+  whose value **equals** `GIVE_AMOUNT` and offers that. It **does not mint**: kernel
+  [#69](https://github.com/effectstream/zswap-offerfiles-kernel/pull/69) deleted the faucet
+  circuit, `selectInventoryCoin()` replaced it, and the coins come from `poster-inventory` (the
+  `issuer` profile) before this service starts. A tick with no matching coin reports
+  `degraded: insufficient_inventory` — a 200 on `/health`, by design — and the book is therefore
+  BOUNDED by `POSTER_PREMINT_COUNT`. See `docs/KNOWN-LIMITATIONS.md`.
 
 Either way the offer **spends its coin whole**: there is no change output, so every offer on
 the book is a complete, independent swap rather than a slice of a shared balance. The want leg
@@ -203,12 +215,16 @@ is not a knob by default — it is `suggested_to_amount` from the kernel's `GET 
 that coin's actual value, which lands the offer exactly on the sponsorship threshold so the
 batcher pays its Celestia fee.
 
-### The two services
+### The three services
 
 | service | shape | what it is for |
 |---|---|---|
-| `poster-provision` | one-shot, `restart: "no"`, idempotent through a marker on the `poster-state` volume | four UTXOs of `5_000_000_000_000` NIGHT from genesis-1 to the poster's dedicated wallet, under the genesis-1 `flock`. **NIGHT and nothing else**: the poster registers it for DUST itself at startup. A few LARGE UTXOs rather than many small ones, because a dust coin's capacity is tied to the size of the NIGHT UTXO backing it. |
+| `poster-provision` | one-shot on the KERNEL image, `restart: "no"`, idempotent through a marker on the `poster-state` volume | four UTXOs of `5_000_000_000_000` NIGHT from genesis-1 to the poster's dedicated wallet, under the genesis-1 `flock`. **NIGHT and nothing else**: the poster registers it for DUST itself at startup. A few LARGE UTXOs rather than many small ones, because a dust coin's capacity is tied to the size of the NIGHT UTXO backing it. It is the GENERIC night one-shot since 00020 PR C — `maker-provision` is the same entrypoint with different `M1_NIGHT_*` variables. |
+| `poster-inventory` | one-shot on the **ISSUER** image, `restart: "no"`, marker on the same volume | `POSTER_PREMINT_COUNT` SEPARATE coins of EXACTLY `OFFER_POSTER_GIVE_AMOUNT` base units. Separate coins and not one big one, because the poster adopts a coin by exact value — a coin of N × the give amount is worth exactly one offer to it. It runs the issuer image because that is the only image in the stack carrying the token contracts, which is why the `poster` profile now REQUIRES `issuer`. |
 | `offer-poster` | the LOOP, `restart: unless-stopped`, `/health` on `:9977` (published as `${POSTER_HEALTH_HOST_PORT}`) | the poster itself. No marker: a marker on a loop would make a restart a permanent no-op. Idempotence lives in the JOURNAL instead. |
+
+All three open a facade on the poster's seed, so compose orders them one after another:
+`poster-provision` → `poster-inventory` → `offer-poster`.
 
 ### The exact-coin guarantee
 
@@ -227,12 +243,13 @@ records: the journal's own `nullifier` for the coin, and the kernel's
 ### The journal
 
 `/var/lib/offer-poster/journal.json`, on the `poster-state` volume: one entry per coin the
-poster has ever minted — the coin identity (`type`, `nonce`, `value`, `nullifier`), the mint
-transaction, and every offer built from it with its quote snapshot and last known kernel
-status. Written atomically and **before** a mint is submitted, so a poster killed between
-minting and posting finds the orphan on restart and re-offers it rather than leaking a coin.
+poster has ever ADOPTED — the coin identity (`type`, `nonce`, `value`, `nullifier`) and every
+offer built from it with its quote snapshot and last known kernel status. Written atomically and
+**before** an adopted coin is offered, so a poster killed between selection and posting finds the
+orphan on restart and re-offers it rather than leaking a coin.
 
-It is **keyed by the contract address**, and refuses to open against a different one rather
+It is **keyed by the network id and the give-token id** since kernel #69 (it was the contract
+address, and there is no contract), and refuses to open against a different pair rather
 than merging — those coins do not exist on this chain. That is also why the journal volume is
 in the `./down.sh -v` wipe group with everything else.
 
@@ -546,18 +563,18 @@ unit price (against its seeded USD coin price / 10^6, as an exact decimal string
 **Defaults, and what stays true because of them:** `BATCHER_SPONSOR_POLICY=warn` and
 `BATCHER_SPONSOR_UNPRICED=allow` (upstream's own rollout defaults, kept here). Every sNight
 offer this profile's `verify.sh` posts is therefore sponsored regardless of its price — `warn`
-logs what `enforce` would have refused instead of refusing it, which is what lets the demo
-faucet colours (DEVA/DEVB/DEVU, deliberately left **unpriced** — see `.env.example`'s
-`PRICE_FEED_MAP`) keep trading at all: an `enforce` deployment with no reference price for a
-token refuses every offer that uses it unless `BATCHER_SPONSOR_UNPRICED=allow` is also set.
+logs what `enforce` would have refused instead of refusing it. That mattered most while the demo
+faucet colours DEVA/DEVB/DEVU had no reference asset at all and were permanently `unpriced`; an
+`enforce` deployment refuses every offer that uses such a token unless
+`BATCHER_SPONSOR_UNPRICED=allow` is also set.
 
-**What `BATCHER_SPONSOR_POLICY=enforce` would need, if ever turned on for this stack:** every
-tradeable colour would need either a `PRICE_FEED_MAP` entry or a registered `asset_id`, because
-an unpriced leg under `enforce` + `BATCHER_SPONSOR_UNPRICED=reject` refuses outright — DEVA and
-DEVB have no real-world reference asset, so `enforce` here would need either accepting them as
-permanently unpriced-but-allowed (`BATCHER_SPONSOR_UNPRICED=allow` even under `enforce`, the
-narrower change), or fabricating a reference price for a token that has none (rejected as worse
-than leaving it unpriced — see `.env.example`). This repository does not turn `enforce` on; it
+**SINCE 00020 PR C EVERY TOKEN ON THIS STACK IS PRICED.** The `issuer`'s six carry real
+`asset_id`s (`bitcoin`, `ethereum`, `usd-coin`, `usdm-2`), which `issuer-registrar` writes into
+`known_tokens` and the `prices` profile then fills from CoinGecko. So the remaining reason for
+`BATCHER_SPONSOR_UNPRICED=allow` is narrower and worth stating: a stack brought up WITHOUT the
+`prices` profile still has `asset_prices` rows at their 2026-09-02 seeds, and a stack brought up
+without `issuer` has no tradeable token at all — refusing every offer by default would be a poor
+default for either. This repository does not turn `enforce` on; it
 documents the knob and keeps the defaults that make every existing offer keep flowing.
 
 ### What else the page offers
@@ -714,10 +731,10 @@ maintained** — the live pins are the README's generated table and
 | Profile | Fragment | What it runs |
 |---|---|---|
 | `core` | `compose/core.yml` | midnight-node 1.0.1, indexer-standalone 4.3.3, proof-server 8.1.0 (+ its proof-data pre-warm), PostgreSQL with `pg_ivm`. **Unconditional** — every `up.sh` includes it. |
-| `offerfiles` | `compose/offerfiles.yml` | Celestia DA devnet, the offer-files contract deploy one-shot, the kernel API (`:9999`) and the batcher (`:3334`), built from `effectstream/zswap-offerfiles-kernel` **main** — which includes the COW-solver line, seeded reference asset prices (`GET /v1/prices`), the batcher's sponsorship gate (`BATCHER_SPONSOR_POLICY=warn` / `BATCHER_SPONSOR_UNPRICED=allow` by default) and, since `c293ebd`, **the whole-coin line**: every registered token is at 6 decimals, one faucet press mints 1 000 whole coins (`1000000000` base units), and prices are served PER BASE UNIT (`WBTC` = `0.077387`). Since `a608fa6` (kernel #68) the upstream mint also registers its own `TESTTOKEN*` names — it cannot reach a kernel from this stack's deploy one-shot, and `offerfiles-token-names` now fails loudly rather than accept a foreign name for one of our colours. **Re-pinning past a stack that already ran a `KERNEL_REF` OLDER THAN `c293ebd` is BREAKING for its Postgres volume — see `docs/OPERATIONS.md`, `./down.sh -v` is the upgrade path; the `c293ebd` → `a608fa6` step is not.** |
+| `offerfiles` | `compose/offerfiles.yml` | Celestia DA devnet, the kernel API (`:9999`) and the batcher (`:3334`) — THREE services since 00020 PR C — built from `effectstream/zswap-offerfiles-kernel` **main**, which includes the COW-solver line, seeded reference asset prices (`GET /v1/prices`) and the batcher's sponsorship gate (`BATCHER_SPONSOR_POLICY=warn` / `BATCHER_SPONSOR_UNPRICED=allow` by default). Since `e3b9388` (kernel #69) it has **no contract of its own**: the deploy one-shot, the token-names one-shot, `GET /keys/*`, `GET /zkir/*` and `contractAddress` are all gone, tokens come from the `issuer` profile, and decimals are per token rather than 6 everywhere. **`e3b9388` is BREAKING for an existing Postgres volume — `./down.sh -v` is the upgrade path, see `docs/OPERATIONS.md`.** |
 | `frontend` | `compose/frontend.yml` | the `zswap-da` SPA (`:10600`), built from the frozen `effectstream/effectstream` template — v8-native at that ref, so **no** ledger patch. Includes the reference-rate / sponsorship-threshold UI (effectstream#916) and, since `58ab921`, **whole-coin amounts** (effectstream#918): the page reads each token's `decimals` off the registry, so the faucet says `1,000` and a take moves the balance by exactly the coins shown. |
 | `shielded-night` | `compose/shielded-night.yml` | the **Shielded NIGHT** dApp (`:10900`): a deploy one-shot that mints the NIGHT ⇄ sNight wrapper contract **once per stack**, and an nginx page that learns that address at container start. Built from `effectstream/shielded-night` at a pinned commit, with the contract **recompiled in-image** (compactc 0.31.1) and required to reproduce the committed artifacts byte-for-byte. **Depends only on `core`.** With `offerfiles` also up it names the sNight colour in the kernel's token registry **and prices it** (`asset_id: midnight-3`, the same reference NIGHT itself uses — `GET /v1/quote` sNight↔NIGHT answers `market_rate: 1`), and `./verify.sh` drives the whole chain — NIGHT → sNight → an offer file on the book → taken → back to NIGHT. |
-| `solver` | `compose/solver.yml` | the Midnight Intents relay (`:13000` HTTP, `:19001` solver WS), the COW solver in execution mode with its read-only **status listener** (`:9100`, bearer-gated, network-internal by design), the **solver monitor** (`:10800` — the six-stage health strip, the published ladder and the book, read-only), the provisioning one-shots, and the intents browser UI (`:10700`). The solver **is the kernel commit**: `images/cow-solver` is the kernel image plus entrypoints, with no second source pin and no `.solver-commit` — see `docs/COMPONENTS.md`. |
-| `poster` | `compose/poster.yml` | the **offer poster** (`:19977` — read-only `/health`, `/metrics`, `/journal`) and the one-shot that funds its DEDICATED wallet with NIGHT from genesis. Every 60 s it either re-offers a coin that came back or mints one whole WBTC coin from the faucet circuit — paying the fee from its own DUST — and posts **one** ZSwap offer whose only input is that exact coin, sized from `GET /v1/quote` so the batcher sponsors it. Each offer spends its coin **whole**: no change output, so every offer is a complete, independently takeable swap. **Opt-in**, and included by `--all`; it needs `offerfiles` and needs neither the relay nor the solver. `./verify.sh` asserts the exact-coin guarantee from outside (`computed.inputNullifiers` == the journal coin's nullifier) and settles one of its offers with a second wallet. |
+| `solver` | `compose/solver.yml` | the Midnight Intents relay (`:13000` HTTP, `:19001` solver WS), the COW solver in execution mode with its read-only **status listener** (`:9100`, bearer-gated, network-internal by design), the **solver monitor** (`:10800` — the six-stage health strip, the published ladder and the book, read-only), FIVE provisioning one-shots (`solver-provision` → `solver-inventory` → `maker-provision` → `maker-inventory` → `maker-offer`, ordered because three wallet facades are involved), and the intents browser UI (`:10700`). Since 00020 PR C the solver's NIGHT comes from this deployment and its verification from upstream's own `provision-solver-fees.ts`, its swap tokens from the `issuer` profile, and the maker holds its own …0031 seed rather than genesis-1. It needs `issuer`, which `./up.sh` adds for you. The solver **is the kernel commit**: `images/cow-solver` is the kernel image plus entrypoints, with no second source pin and no `.solver-commit`. |
+| `poster` | `compose/poster.yml` | the **offer poster** (`:19977` — read-only `/health`, `/metrics`, `/journal`) plus TWO one-shots: NIGHT from genesis to its DEDICATED wallet, and `POSTER_PREMINT_COUNT` coins of exactly `OFFER_POSTER_GIVE_AMOUNT` minted through the `issuer` profile. Every 60 s it either re-offers a coin that came back or ADOPTS one pre-minted coin — it **does not mint** since kernel #69 — and posts **one** ZSwap offer whose only input is that exact coin, sized from `GET /v1/quote` so the batcher sponsors it. Each offer spends its coin **whole**: no change output, so every offer is a complete, independently takeable swap, and the book is BOUNDED by the pre-mint. **Opt-in**, and included by `--all`; it needs `offerfiles` and, since 00020 PR C, `issuer` (which `./up.sh` adds for you); it needs neither the relay nor the solver. `./verify.sh` asserts the exact-coin guarantee from outside (`computed.inputNullifiers` == the journal coin's nullifier) and settles one of its offers with a second wallet. |
 | `issuer` | `compose/issuer.yml` | **THIS STACK'S OWN TOKEN ISSUER** and the faucet site for it (`:10500`) — what replaces the local faucet contract kernel #69 removed. `issuer-deploy` deploys the six `mint-test-tokens` v1 token contracts once per chain (`TWBTC` 8 dec, `TWETH` 18, `TWUSDC` 6, `TWUSDM` 6, `UTWUSDC` 6 unshielded, `UTWBTC` 8 unshielded), publishes `metadata.undeployed.json` on the `issuer-registry` volume, and the `faucet` container serves the repository's own static site at `/?network=undeployed` for a Lace-driven mint. **Depends only on `core`.** With `offerfiles` also up, `issuer-registrar` teaches the kernel all six colours with their real decimals (`UPDATE` by name, then `POST /v1/known-tokens`). Automation never uses the browser: `docker compose run --rm issuer-fund <TOKEN> <base-units> <recipient-seed>` mints an exact amount headlessly and reads the recipient's balance back. **Opt-in**, and included by `--all`. |
 | `prices` | `compose/prices.yml` | the **price feed** — one process, no port and no volume, on the kernel image. Every `PRICE_FEED_INTERVAL_MS` (24 h) it asks CoinGecko `simple/price` for the five seeded assets (`bitcoin`, `ethereum`, `usd-coin`, `midnight-3`, `usdm-2`) in **one batched request** and upserts `asset_prices`, so `GET /v1/prices`, `GET /v1/quote`'s `market_rate` and the batcher's sponsorship gate move from the schema's 2026-09-02 seeds (`source: seed`) to live prices (`source: feed`). `COINGECKO_API_KEY` in `.env` is the **only secret in this stack**: sent as the `x-cg-demo-api-key` header, never as a query parameter, never printed (the service logs `key=present`), never given a compose default. **Opt-in**, and included by `--all`; it needs `offerfiles` (the image, and the kernel's schema). **With no key it comes up and idles with a warning rather than crash-looping** — the seeded prices already quote real ratios — and `./verify.sh` reports its section **SKIPPED**, never passed. Take a refresh now with `docker compose run --rm --no-deps price-feed --once`. |
