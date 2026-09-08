@@ -227,8 +227,9 @@ load_env() {
   # ── external runtime images: repository + IMMUTABLE DIGEST, never a tag ─────
   # All three are good official multiarch (linux/amd64 + linux/arm64) indexes, so the same
   # reference resolves natively on Intel and on Apple Silicon. Digests resolved 2026-09-01
-  # and frozen in config/artifact-decisions.json; nothing here may drift from that file.
-  : "${NODE_IMAGE:=docker.io/midnightntwrk/midnight-node@sha256:ede01da35e982b6a4b85461ad8492ae2753ef14246fba33c8039b782aa8e39fb}"
+  # (the node's re-resolved 2026-09-08 when it moved to 1.0.1) and frozen in
+  # config/artifact-decisions.json; nothing here may drift from that file.
+  : "${NODE_IMAGE:=docker.io/midnightntwrk/midnight-node@sha256:a340cdea456d58d79c0d0e6c8891a3988b472febc228496d33c8448cc1b5b632}"
   : "${INDEXER_IMAGE:=docker.io/midnightntwrk/indexer-standalone@sha256:03afd079b00bcd229df29a24771439c5e7695c339cd89216d0763ce40731cc4b}"
   : "${PROOF_IMAGE:=docker.io/midnightntwrk/proof-server@sha256:801bbc0340e9e96f16735f77b523f23c7459e3359842f7c79c2c53f4e994d531}"
   # Reported here, made fatal by assert_image_pins() in whatever is about to start
@@ -238,7 +239,7 @@ load_env() {
 
   # READABLE VERSION LABELS, display only. Nothing resolves an image from these; they exist
   # so logs can say "1.0.0" instead of a 64-character hash. Identity is the digest, only.
-  : "${NODE_VERSION:=1.0.0}"
+  : "${NODE_VERSION:=1.0.1}"
   : "${INDEXER_VERSION:=4.3.3}"
   : "${PROOF_VERSION:=8.1.0}"
 

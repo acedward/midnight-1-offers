@@ -90,10 +90,16 @@ services:
 
   # ── node ───────────────────────────────────────────────────────────────────
   node:
-    # midnight-node 1.0.0 — the official multiarch image, kept as-is and pinned by its
+    # midnight-node 1.0.1 — the official multiarch image, kept as-is and pinned by its
     # complete index digest (linux/amd64 + linux/arm64). Repacking a good official image
     # under another registry owner would add risk and no value, so we do not.
-    image: '${NODE_IMAGE:-docker.io/midnightntwrk/midnight-node@sha256:ede01da35e982b6a4b85461ad8492ae2753ef14246fba33c8039b782aa8e39fb}'
+    #
+    # Re-pinned from 1.0.0 in 00020 PR A (ledger 8.0.2 -> 8.1.0, toolkit/runtime unchanged at
+    # 1.0.0). Every assumption this service block makes was re-measured against the 1.0.1
+    # image before the bump — see .env.example's NODE RE-PINNED paragraph and
+    # docs/OPERATIONS.md; the `undeployed` genesis bytes are identical to 1.0.0's, so an
+    # existing volume is not invalidated.
+    image: '${NODE_IMAGE:-docker.io/midnightntwrk/midnight-node@sha256:a340cdea456d58d79c0d0e6c8891a3988b472febc228496d33c8448cc1b5b632}'
     cap_drop:
       - ALL
     cap_add:
@@ -106,9 +112,11 @@ services:
       # inherits that ownership — so root, stripped of ALL capabilities, cannot create
       # /node/chain inside it. DAC_OVERRIDE is exactly the capability that mkdir needs.
       #
-      # The 2.x sibling also grants CHOWN and FOWNER. Nothing in the 1.0.0 entrypoint chowns
+      # The 2.x sibling also grants CHOWN and FOWNER. Nothing in the 1.0.1 entrypoint chowns
       # or manipulates file ownership, so carrying those here would be cargo-culted
-      # privilege. They are deliberately not granted.
+      # privilege. They are deliberately not granted. (All four facts — root, the entrypoint's
+      # two lines, /node's appuser:appuser 0755, and the absence of any chown — were
+      # re-measured on the 1.0.1 image in 00020 PR A, not inherited from the 1.0.0 note.)
       - DAC_OVERRIDE
     security_opt:
       - 'no-new-privileges:true'
@@ -122,8 +130,10 @@ services:
       - node-data:/node
     environment:
       # CFG_PRESET=dev gives the `undeployed` genesis whose dev seeds hold NIGHT and have
-      # registered DUST addresses. The measured 1.0.0 balances are in wallets/wallets.json —
-      # they were MEASURED on this node, not copied from the 2.x roster.
+      # registered DUST addresses. The measured balances are in wallets/wallets.json — they
+      # were MEASURED on this node, not copied from the 2.x roster. They still hold at 1.0.1:
+      # res/genesis/genesis_{state,block}_undeployed.mn and the whole of res/dev and res/cfg
+      # are byte-identical between the two images.
       CFG_PRESET: 'dev'
       # Storage monitor: the node gracefully terminates when free space on the db volume
       # drops below `threshold` MiB (default 512). On a laptop with a full disk that kills a
@@ -134,8 +144,9 @@ services:
       # Block #1 exists only once the chain has ACTUALLY STARTED PRODUCING, so this is a
       # readiness probe and not just "the RPC socket is open".
       #
-      # It runs in-container because the 1.0.0 image ships curl at /usr/bin/curl and grep at
-      # /usr/bin/grep (both verified). The host-side wait in up.sh is kept as well, and is
+      # It runs in-container because the 1.0.1 image ships curl at /usr/bin/curl and grep at
+      # /usr/bin/grep (both verified again at 1.0.1, whose Dockerfile moved the build
+      # toolchain out to a builder stage — curl and grep survived that slim-down). The host-side wait in up.sh is kept as well, and is
       # the stricter of the two: it also waits for finality to move off genesis, which is
       # what anything building a transaction actually needs.
       test:

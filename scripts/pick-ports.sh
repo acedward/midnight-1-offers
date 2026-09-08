@@ -85,8 +85,8 @@ SHIELDED_NIGHT_DEPLOY_IMAGE=midnight-1-offers/shielded-night-deploy:${IMAGE_TAG_
 
 # External runtime images: repository + IMMUTABLE DIGEST, never a tag. All three are good
 # official multiarch indexes (linux/amd64 + linux/arm64). Readable versions: midnight-node
-# 1.0.0, indexer-standalone 4.3.3, proof-server 8.1.0.
-NODE_IMAGE=${NODE_IMAGE:-docker.io/midnightntwrk/midnight-node@sha256:ede01da35e982b6a4b85461ad8492ae2753ef14246fba33c8039b782aa8e39fb}
+# 1.0.1, indexer-standalone 4.3.3, proof-server 8.1.0.
+NODE_IMAGE=${NODE_IMAGE:-docker.io/midnightntwrk/midnight-node@sha256:a340cdea456d58d79c0d0e6c8891a3988b472febc228496d33c8448cc1b5b632}
 INDEXER_IMAGE=${INDEXER_IMAGE:-docker.io/midnightntwrk/indexer-standalone@sha256:03afd079b00bcd229df29a24771439c5e7695c339cd89216d0763ce40731cc4b}
 PROOF_IMAGE=${PROOF_IMAGE:-docker.io/midnightntwrk/proof-server@sha256:801bbc0340e9e96f16735f77b523f23c7459e3359842f7c79c2c53f4e994d531}
 
