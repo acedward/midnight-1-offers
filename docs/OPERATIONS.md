@@ -1,9 +1,83 @@
 # Operations
 
 > **Scope.** This file documents the **`solver`** profile's monitor and status listener, the
-> **`shielded-night`** profile, and the `offerfiles`-profile notes that each kernel re-pin makes
-> unavoidable for anyone running an existing stack forward. The rest of the `offerfiles`
-> profile's operating notes are still to be written.
+> **`shielded-night`** profile, the `core` profile's own re-pins (the node image), and the
+> `offerfiles`-profile notes that each kernel re-pin makes unavoidable for anyone running an
+> existing stack forward. The rest of the `offerfiles` profile's operating notes are still to be
+> written.
+
+## Re-pin the node to `1.0.1` (00020 PR A) — **not breaking; an existing volume keeps working**
+
+This is the newest re-pin and the one to read first. `NODE_IMAGE` is now
+`docker.io/midnightntwrk/midnight-node@sha256:a340cdea456d58d79c0d0e6c8891a3988b472febc228496d33c8448cc1b5b632`
+— the official multiarch index for **1.0.1**, which is the newest NON-PRERELEASE release on the
+1.x line (1.0.2 exists only as alphas; 2.0.0/2.1.0 are the 2.x line this repository does not
+follow). Nothing else moves with it: indexer 4.3.3, proof-server 8.1.0, `KERNEL_REF`,
+`FRONTEND_REF`, `SHIELDED_NIGHT_REF` and `RELAY_REF` are all unchanged, and the release ships the
+**same** toolkit 1.0.0 and runtime 1.0.0 — which is why `wallets/wallets.json`'s toolkit-derived
+addresses needed no re-derivation.
+
+**What you get.** midnight-ledger **8.0.2 → 8.1.0**. The rest of the stack was already on the 8.1
+line (proof-server 8.1.0, the kernel's `@midnight-ntwrk/ledger-v8` 8.1.0, shielded-night's 8.1.0),
+so this closes a gap rather than opening one. Two other changes are operator-visible:
+
+* error-level logs no longer print the database host, port or name
+  ([#1067](https://github.com/midnightntwrk/midnight-node/pull/1067));
+* parity-db's WAL is drained on `SIGTERM`, removing a silent chain-state truncation after an
+  unclean shutdown ([#1140](https://github.com/midnightntwrk/midnight-node/pull/1140)) — so
+  `./down.sh` *without* `-v` is safer on this pin than it was on 1.0.0;
+* a malformed transaction now says *why* in the node log
+  ([#961](https://github.com/midnightntwrk/midnight-node/pull/961)) — see the DUST note in
+  `docs/KNOWN-LIMITATIONS.md`, whose error code changed presentation because of it.
+
+### Why it is not breaking, measured twice
+
+1.0.1 adds a check that the chainspec's `networkId` matches the one the genesis state was built
+with ([#1265](https://github.com/midnightntwrk/midnight-node/pull/1265)). That would matter if the
+genesis this stack runs had moved. **It did not** — the two files `CFG_PRESET=dev` loads are
+byte-identical in the two images:
+
+| file | sha256, 1.0.0 **and** 1.0.1 |
+|---|---|
+| `res/genesis/genesis_state_undeployed.mn` | `bed6ed25287753e4fb7475ce8f13e9f423df87dc458a42503e1993de81cf6556` |
+| `res/genesis/genesis_block_undeployed.mn` | `3556527e04be152a82abed8c0dfc2ad3d6e981da63907596aacfd0ccc59bbaff` |
+
+`diff -rq` over the whole of `/res/dev` and `/res/cfg` between the two images is empty too —
+`res/cfg/dev.toml`, which supplies the node's actual CLI arguments, included. Of the 20 files in
+`/res/genesis` exactly two differ, and both are `preview`'s, regenerated for the C-to-M bridge's
+Locked pool ([#1699](https://github.com/midnightntwrk/midnight-node/pull/1699)). Nothing here runs
+`preview`.
+
+**And then it was measured on a real volume** (00020 PR A, 2026-09-08, project `m1o00020v-v`):
+`core` was brought up on **1.0.0**, left to produce blocks, torn down with plain `./down.sh` (which
+keeps the chain volume), the `NODE_IMAGE` line swapped to 1.0.1, and the SAME project brought up
+again on the SAME `node-data` volume:
+
+| | on 1.0.0 (fresh volume) | on 1.0.1 (that volume) |
+|---|---|---|
+| `system_version` | `1.0.0-8af7d08a` | **`1.0.1-6d5d2363`** |
+| `chain_getBlockHash(0)` (genesis) | `0xe72f7a21a0397844563b4206f887b779ffa0d937c2d1b2339441faa1f08b9846` | **identical** |
+| `chain_getBlockHash(1)` | `0xe7cbc3fb32633a087d0090ed58d5ef9c05c7c1745bf5b6cfff7df70c17f69024` | **identical** — so this is the same chain, resumed, not a new one |
+| best block | `#3` | `#4` and rising |
+| node log on startup | `Initializing Genesis block/state … header-hash: 0xe72f…9846`, `Loading GRANDPA authority set from genesis on what appears to be first startup`, `📦 Highest known block at #0` | **`📦 Highest known block at #3`** — the existing database was opened at the height it was left; no "first startup" line, no networkId or genesis mismatch, no error |
+
+`./up.sh` returned 0 in both phases, and `./down.sh -v` afterwards left `containers=0 volumes=0
+networks=0`.
+
+### Upgrading an existing stack
+
+`./down.sh -v` is **not** required for this pin. `git pull`, then:
+
+```sh
+./down.sh          # keep your volumes — plain down.sh preserves the chain and indexer data
+./up.sh --with …   # the same profiles you were running
+```
+
+Docker pulls the new digest on the next `up.sh`. If you have overridden `NODE_IMAGE` in your own
+`.env`, update it there too — `.env` wins over the compose default, so a stale override is the one
+way to end up still running 1.0.0 while the repository says 1.0.1. (For the same reason
+`scripts/pick-ports.sh` emits the new digest: a generated `.env` carries its own `NODE_IMAGE`
+line.)
 
 ## Re-pin to kernel `main` @ `a608fa6` (00018) — **not breaking**
 

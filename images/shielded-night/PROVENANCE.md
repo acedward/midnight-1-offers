@@ -60,7 +60,7 @@ shielded-night is already on exactly this stack's line, which is why this profil
 porting: `@midnight-ntwrk/ledger-v8` 8.1.0 (pinned tree-wide through `overrides`, because two
 ledger copies give two class identities and break `instanceof` during proving), midnight-js
 4.1.1, compact-js 2.5.1, compact-runtime 0.16.0, dapp-connector-api 4.0.1 — against this
-repository's node 1.0.0 / indexer 4.3.3 / proof-server 8.1.0.
+repository's node 1.0.1 / indexer 4.3.3 / proof-server 8.1.0.
 
 Nothing but a pin distinguishes that from the 2.x sibling's copy of this same profile, which
 points at a ledger-v9 branch of the same repository. So the pin is checked: the exact v8

@@ -308,7 +308,19 @@ directly) TOO SOON after the stack finishes coming up, and the round trip can be
 chain with `1010: Invalid Transaction: Custom error: 196`
 (`DustDoubleSpend(DustNullifier(...))`, visible in `docker compose … logs node`) — a real
 on-chain rejection, not a flaky test, and it reproduces deterministically until enough time
-passes for `genesis-2`'s DUST to settle after the deploy. A few minutes' gap (which a
+passes for `genesis-2`'s DUST to settle after the deploy.
+
+**The same condition has a second presentation, and on node 1.0.1 it is the one you will see.**
+Measured on the 00020 PR A gate (node 1.0.1, 2026-09-08): the rejection came back as
+`1010: Invalid Transaction: Custom error: **170**`, and the node's own log named the reason —
+`🚫 Rejected transaction … Malformed(InvalidDustSpendProof)` — three times, once per absorbed
+retry. So do not grep only for `196`: **grep the node log for `Dust`**, which catches both
+`DustDoubleSpend(DustNullifier(...))` and `Malformed(InvalidDustSpendProof)`. Naming the reason
+in the log at all is new in 1.0.1
+([#961](https://github.com/midnightntwrk/midnight-node/pull/961), "add warning log when a
+transaction is malformed"); on 1.0.0 the same rejection was silent about *why*. The remedy is
+unchanged, and on that gate the image's own retry absorbed it: both round trips passed
+`(retry x1)` and `./verify.sh` was green on its first invocation after a ten-minute gap. A few minutes' gap (which a
 bring-up that also builds the `frontend` profile gets for free) is enough; retrying the SAME
 `./verify.sh` invocation after a short pause resolves it. This is a property of chaining two
 DUST-spending actions on one wallet in quick succession — upstream's own test suite, and this

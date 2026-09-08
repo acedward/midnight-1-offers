@@ -7,11 +7,12 @@
 
 ## Source pins, and the line they put this stack on
 
-Every external identity lives in `config/artifact-decisions.json`; these are the two that decide
+Every external identity lives in `config/artifact-decisions.json`; these are the ones that decide
 what the stack *means* rather than merely which bytes it runs.
 
 | Pin | Value | Line |
 |---|---|---|
+| `NODE_IMAGE` | `midnightntwrk/midnight-node` **1.0.1**, index digest `a340cdea456d58d79c0d0e6c8891a3988b472febc228496d33c8448cc1b5b632` | the 1.x chain, **ledger 8.1.0** (1.0.1 bumped it from 8.0.2, so the node now sits on the same 8.1 line as proof-server 8.1.0, the kernel's `@midnight-ntwrk/ledger-v8` 8.1.0 and shielded-night's). Toolkit 1.0.0 and runtime 1.0.0 are unchanged. Re-pinned from 1.0.0 in 00020 PR A — **not breaking**: the `undeployed` genesis bytes `CFG_PRESET=dev` loads are identical in both images, so an existing chain volume keeps working (measured; see `docs/OPERATIONS.md`) |
 | `KERNEL_REF` | `a608fa67419c16188e9405417ecdf34f3f7c47a1` — `effectstream/zswap-offerfiles-kernel` `main` | ledger-v8 / 1.x, **the whole-coin line** (kernel #61/#63/#66) plus **#68** (blank-aware price-feed/batcher knobs, the mint's name registration repaired) |
 | `FRONTEND_REF` | `58ab921be5513b77937a37be86bf724a41888302` — `effectstream/effectstream` `midnight-1`, subtree `templates/zswap-da` @ `3ca1d56ffc29f03c73cf43432bdfeeaf3ab43c6b` | the same line's UI (effectstream#918) |
 | `SHIELDED_NIGHT_REF` | `f7fcefa7921bf2c3f634871f9ad3aa3a32251af0` — `effectstream/shielded-night` `main` | unchanged |
@@ -573,7 +574,7 @@ maintained** — the live pins are the README's generated table and
 
 | Profile | Fragment | What it runs |
 |---|---|---|
-| `core` | `compose/core.yml` | midnight-node 1.0.0, indexer-standalone 4.3.3, proof-server 8.1.0 (+ its proof-data pre-warm), PostgreSQL with `pg_ivm`. **Unconditional** — every `up.sh` includes it. |
+| `core` | `compose/core.yml` | midnight-node 1.0.1, indexer-standalone 4.3.3, proof-server 8.1.0 (+ its proof-data pre-warm), PostgreSQL with `pg_ivm`. **Unconditional** — every `up.sh` includes it. |
 | `offerfiles` | `compose/offerfiles.yml` | Celestia DA devnet, the offer-files contract deploy one-shot, the kernel API (`:9999`) and the batcher (`:3334`), built from `effectstream/zswap-offerfiles-kernel` **main** — which includes the COW-solver line, seeded reference asset prices (`GET /v1/prices`), the batcher's sponsorship gate (`BATCHER_SPONSOR_POLICY=warn` / `BATCHER_SPONSOR_UNPRICED=allow` by default) and, since `c293ebd`, **the whole-coin line**: every registered token is at 6 decimals, one faucet press mints 1 000 whole coins (`1000000000` base units), and prices are served PER BASE UNIT (`WBTC` = `0.077387`). Since `a608fa6` (kernel #68) the upstream mint also registers its own `TESTTOKEN*` names — it cannot reach a kernel from this stack's deploy one-shot, and `offerfiles-token-names` now fails loudly rather than accept a foreign name for one of our colours. **Re-pinning past a stack that already ran a `KERNEL_REF` OLDER THAN `c293ebd` is BREAKING for its Postgres volume — see `docs/OPERATIONS.md`, `./down.sh -v` is the upgrade path; the `c293ebd` → `a608fa6` step is not.** |
 | `frontend` | `compose/frontend.yml` | the `zswap-da` SPA (`:10600`), built from the frozen `effectstream/effectstream` template — v8-native at that ref, so **no** ledger patch. Includes the reference-rate / sponsorship-threshold UI (effectstream#916) and, since `58ab921`, **whole-coin amounts** (effectstream#918): the page reads each token's `decimals` off the registry, so the faucet says `1,000` and a take moves the balance by exactly the coins shown. |
 | `shielded-night` | `compose/shielded-night.yml` | the **Shielded NIGHT** dApp (`:10900`): a deploy one-shot that mints the NIGHT ⇄ sNight wrapper contract **once per stack**, and an nginx page that learns that address at container start. Built from `effectstream/shielded-night` at a pinned commit, with the contract **recompiled in-image** (compactc 0.31.1) and required to reproduce the committed artifacts byte-for-byte. **Depends only on `core`.** With `offerfiles` also up it names the sNight colour in the kernel's token registry **and prices it** (`asset_id: midnight-3`, the same reference NIGHT itself uses — `GET /v1/quote` sNight↔NIGHT answers `market_rate: 1`), and `./verify.sh` drives the whole chain — NIGHT → sNight → an offer file on the book → taken → back to NIGHT. |

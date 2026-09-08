@@ -93,7 +93,7 @@ RUN set -eux; \
 
 # THE 1.x / ledger-v8 ASSERTION, in both directions and in both packages.
 #
-# This repository's core is node 1.0.0 / indexer 4.3.3 / proof-server 8.1.0, i.e. the ledger-v8
+# This repository's core is node 1.0.1 / indexer 4.3.3 / proof-server 8.1.0, i.e. the ledger-v8
 # line. The 2.x sibling's copy of this profile pins a ledger-v9 branch of the same repository.
 # Nothing but a pin distinguishes them, so the pin is checked rather than trusted: the exact
 # v8 override must be present, compact-runtime must be 0.16.0, and NO ledger-v9 PACKAGE may

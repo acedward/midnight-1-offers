@@ -39,9 +39,12 @@ exits 78 (`EX_CONFIG`) with an explanation. The same refusal applies to the veri
 
 ### Why the driver is the deployer's own wallet
 
-On this line the `midnight-node` 1.0.0 dev preset funds exactly four wallets — `genesis-1`,
+On this line the `midnight-node` dev preset funds exactly four wallets — `genesis-1`,
 `genesis-2`, `batcher` (genesis seed 3) and `lace-test` — and only those four have DUST
-registered at genesis. A wallet holding NIGHT with **no DUST registration cannot pay a fee at
+registered at genesis. (The figures in `wallets/wallets.json` were measured on node 1.0.0; the
+core was re-pinned to **1.0.1** in 00020 PR A and they still hold, because
+`res/genesis/genesis_{state,block}_undeployed.mn` — the two files `CFG_PRESET=dev` loads — are
+byte-identical in the two images, and so is the whole of `res/dev`.) A wallet holding NIGHT with **no DUST registration cannot pay a fee at
 all**, and this repository has no funding lane (no `fund-wallet.sh`, no pinned toolkit image)
 to provision a fresh seed from nothing. Of the four, `genesis-1` is the kernel's, the faucet's
 and the offer-files mint wallet's, and `genesis-3` is the batcher's — both long-lived facades.
