@@ -16,7 +16,11 @@
 #                     unreachable through the published port — docker's proxy arrives from
 #                     the bridge network, not from 127.0.0.1. `connectedCount` is the only
 #                     direct evidence that the WS handshake and its bearer succeeded.
-#   ladder published  the two minted dev colours appear in /tokens. That union is built from
+#   provisioning      the receipt `provision-solver-fees.ts` MEASURED on the solver's wallet
+#                     (mode external-prefunded, inventorySource external, dustReady) and the
+#                     ladder config it wrote — whose three rungs are FIXED BASE UNITS,
+#                     {1000, 100000, 1000000}, NOT scaled by this pair's 8 and 18 decimals.
+#   ladder published  the two issued colours appear in /tokens. That union is built from
 #                     what connected solvers advertise, which the solver derives from the
 #                     MIRRORED BOOK — so this single assertion covers provisioning, book
 #                     sync, derivation and publication at once. An empty list here is the
@@ -80,19 +84,24 @@
 #      records, and reports the total book size separately.
 #   2. the exact-quote expectation, which came from MAKER_OFFER_GIVE_AMOUNT /
 #      _WANT_AMOUNT in the environment. It now comes from `GET /v1/offers/<maker hash>` —
-#      the offer's OWN legs — and the two dev colours resolved from minted-tokens.json are
+#      the offer's OWN legs — and the two colours resolved from the issuer's registry are
 #      cross-checked against that same offer, so a marker pointing at somebody else's offer
 #      is a failure rather than a wrong expectation.
 #
 # The ladder assertion ("the relay advertises both dev colours") is unaffected by design: it
 # asks whether two specific colours are in the relay's union, not how many are.
 #
-# The poster's own pair CANNOT collide with the maker's on this stack, and that is a property
-# of the two sources rather than of a lucky choice: the poster mints its give leg from the
-# FAUCET, which derives a colour from a preset NAME (WBTC), while the maker gives a colour
-# `mint-test-tokens.ts` minted from a fixed domain separator that no preset name maps to. The
-# assertions above do not rely on that — they identify the offer by hash — but it is why a
-# poster offer can never be mistaken for the seeded one.
+# THE POSTER AND THE MAKER NOW TRADE THE SAME PAIR, and that is new at this pin. Up to
+# `KERNEL_REF=a608fa6…` they could not collide by construction: the poster minted its give leg
+# from the FAUCET (a colour derived from a preset name), while the maker gave a colour
+# `mint-test-tokens.ts` derived from a domain separator no preset name maps to. Kernel #69
+# deleted both sources; every token on the stack is now one of the issuer's six, and both
+# services default to TWBTC -> TWETH.
+#
+# THE ASSERTIONS HERE DO NOT CARE, and it is worth saying why rather than relying on it: every
+# one of them identifies the maker offer BY HASH, read from the `maker-offer` marker and
+# re-read from the kernel. A poster offer on the same colours is simply another live offer in
+# the book — which is exactly the state a real book is in.
 #
 # ── THE ONE SIDE EFFECT THIS SCRIPT DOES HAVE (00011 B.5b) ──────────────────
 # It re-seeds the book when there is no live maker offer left, and it does so LOUDLY.
@@ -191,27 +200,46 @@ else
   fi
 fi
 
-# ── which colours this stack actually minted ─────────────────────────────────
-# Read from the shared volume rather than hard-coded: colours derive from the deployed
-# contract address, so they differ on every fresh stack.
+# ── which colours the seeded offer trades ────────────────────────────────────
+#
+# THE SOURCE MOVED IN 00020 PR C. Up to `KERNEL_REF=a608fa6…` the two colours came out of
+# `minted-tokens.json` on the `offerfiles-deploy` volume, published by the deploy one-shot's
+# mint. Kernel #69 deleted the mint, the file and the volume; the ids are now ISSUED per chain
+# by the `issuer` profile, and `issuer_token_id` (scripts/lib/common.sh) reads them through the
+# one validating reader of that registry.
+#
+# `MAKER_OFFER_GIVE_TOKEN`/`_WANT_TOKEN` are NAMES here, exactly as compose passes them —
+# `TWBTC`/`TWETH` by default — because that is what an operator configures. A raw 64-hex value
+# is still accepted, for the same reason the entrypoints accept one: a deliberate override.
 echo
 log "solver: the seeded pair"
-MINTED="$(dc exec -T solver cat /srv/offerfiles-deploy/minted-tokens.json 2>/dev/null || true)"
-[[ -n "$MINTED" ]] || MINTED="$(dc exec -T kernel cat /srv/offerfiles-deploy/minted-tokens.json 2>/dev/null || true)"
-GIVE_TOKEN="${MAKER_OFFER_GIVE_TOKEN:-}"
-WANT_TOKEN="${MAKER_OFFER_WANT_TOKEN:-}"
-if [[ -z "$GIVE_TOKEN" || -z "$WANT_TOKEN" ]]; then
-  if [[ -z "$MINTED" ]]; then
-    fail "could not read minted-tokens.json from the shared volume, and no colours are configured"
-    exit 1
-  fi
-  GIVE_TOKEN="$(printf '%s' "$MINTED" | grep -oE '"shieldedA"[[:space:]]*:[[:space:]]*"[0-9a-f]{64}"' | grep -oE '[0-9a-f]{64}' | head -1)"
-  WANT_TOKEN="$(printf '%s' "$MINTED" | grep -oE '"shieldedB"[[:space:]]*:[[:space:]]*"[0-9a-f]{64}"' | grep -oE '[0-9a-f]{64}' | head -1)"
-fi
+
+# resolve_pair_leg <configured value> — a 64-hex id, or nothing.
+resolve_pair_leg() {
+  local value="${1:-}"
+  case "$value" in
+    "") return 0 ;;
+    *[!0-9a-fA-F]*) : ;;                       # has a non-hex character, so it is a NAME
+    *) if [[ "${#value}" -eq 64 ]]; then       # already an id
+         printf '%s' "$value" | tr 'A-F' 'a-f'
+         return 0
+       fi ;;
+  esac
+  issuer_token_id "$value" || true
+}
+
+GIVE_NAME="${MAKER_OFFER_GIVE_TOKEN:-TWBTC}"
+WANT_NAME="${MAKER_OFFER_WANT_TOKEN:-TWETH}"
+GIVE_TOKEN="$(resolve_pair_leg "$GIVE_NAME")"
+WANT_TOKEN="$(resolve_pair_leg "$WANT_NAME")"
 if [[ ! "$GIVE_TOKEN" =~ ^[0-9a-f]{64}$ || ! "$WANT_TOKEN" =~ ^[0-9a-f]{64}$ ]]; then
-  fail "could not resolve the two dev colours (give=${GIVE_TOKEN:-?} want=${WANT_TOKEN:-?})"
+  fail "could not resolve the seeded pair (give='${GIVE_NAME}' -> ${GIVE_TOKEN:-?},
+        want='${WANT_NAME}' -> ${WANT_TOKEN:-?}). These are ISSUER token names since 00020 PR C
+        and the ids come from the issuer's registry — is the \`issuer\` profile up?
+        This profile requires it: ./up.sh --with offerfiles --with issuer --with solver"
   exit 1
 fi
+info "pair from the issuer registry: ${GIVE_NAME}=${GIVE_TOKEN:0:16}… ${WANT_NAME}=${WANT_TOKEN:0:16}…"
 # The maker GIVES the first colour and WANTS the second, so from the solver's side the
 # directed pair is tokenIn=want, tokenOut=give. Getting this backwards is the single easiest
 # mistake to make here, and it presents as a 503 that looks like a broken solver.
@@ -321,6 +349,90 @@ maker_hash() {
 
 # mfield <key> — one flat key=value line out of MAKER_FIELDS.
 mfield() { printf '%s\n' "${MAKER_FIELDS:-}" | sed -n "s/^$1=//p" | head -1 || true; }
+
+# ── the provisioning receipt and the ladder config (00020 PR C, spec SC-003) ─
+#
+# NEW AT `KERNEL_REF=e3b9388…`, and it is the only place two of this pin's central claims are
+# observable at all.
+#
+# 1. THE RECEIPT. `deploy/scripts/provision-solver-fees.ts` writes a machine-readable record of
+#    what it MEASURED on the solver's own wallet, at the moment provisioning finished and
+#    before the solver booted — by the only process entitled to open that facade. Its
+#    `mode: "external-prefunded"`, `inventorySource: "external"` and `dustReady: true` are what
+#    "this deployment does not mint the solver's swap tokens" means as an OBSERVATION rather
+#    than as a configuration claim, and the kernel's own settlement driver asserts on exactly
+#    these three fields.
+#
+# 2. THE LADDER CONFIG'S RUNGS ARE FIXED BASE UNITS, and NOT scaled by decimals:
+#    {1000 -> 1000, 100000 -> 99000, 1000000 -> 970000} in both directions, `refPricesUsd` "1"
+#    on both sides. That is worth asserting precisely because it looks like something that
+#    should scale: this stack's pair is 8-decimal TWBTC against 18-decimal TWETH, and a reader
+#    who assumed the rungs followed the decimals would be wrong in a way nothing else here
+#    would catch. They come from the pinned script, so this asserts the pin.
+#
+# BOTH FILES LIVE ON `solver-config`, read through the SOLVER container (which mounts it
+# read-only) rather than through the one-shot, because the one-shot is gone by now.
+echo
+log "solver: provisioning receipt and ladder config"
+RECEIPT="$(dc exec -T solver cat /srv/solver-config/provision-receipt.json 2>/dev/null || true)"
+if [[ -z "$RECEIPT" ]]; then
+  fail "no /srv/solver-config/provision-receipt.json — solver-provision writes it, and the
+        settlement driver asserts on it. Check that one-shot's log."
+else
+  RCPT_BAD=""
+  for want in '"mode":"external-prefunded"' '"inventorySource":"external"' '"dustReady":true'; do
+    # The file is pretty-printed JSON, so whitespace is stripped before matching rather than
+    # matched around: `tr -d` is exact and needs no parser.
+    if [[ "$(printf '%s' "$RECEIPT" | tr -d ' \n')" != *"$want"* ]]; then
+      RCPT_BAD="${RCPT_BAD} ${want}"
+    fi
+  done
+  if [[ -z "$RCPT_BAD" ]]; then
+    ok "the provisioning receipt records mode=external-prefunded inventorySource=external dustReady=true"
+  else
+    fail "the provisioning receipt is missing or contradicts:${RCPT_BAD}
+          ${RECEIPT:0:400}"
+  fi
+  # The two ids it recorded must be the pair everything else here uses. A receipt naming other
+  # tokens means the ladder was written for a pair the maker never trades.
+  R_IN="$(printf '%s' "$RECEIPT" | tr -d ' \n' | sed -n 's/.*"tokenIn":"\([0-9a-f]*\)".*/\1/p' | head -1 || true)"
+  R_OUT="$(printf '%s' "$RECEIPT" | tr -d ' \n' | sed -n 's/.*"tokenOut":"\([0-9a-f]*\)".*/\1/p' | head -1 || true)"
+  if [[ "$R_IN" == "$WANT_TOKEN" && "$R_OUT" == "$GIVE_TOKEN" ]]; then
+    ok "and the pair it provisioned is this stack's: tokenIn=${WANT_NAME} tokenOut=${GIVE_NAME}"
+  else
+    fail "the receipt provisioned tokenIn=${R_IN:0:16}… tokenOut=${R_OUT:0:16}…, but the seeded
+          offer's pair is tokenIn=${WANT_TOKEN:0:16}… (${WANT_NAME}) tokenOut=${GIVE_TOKEN:0:16}… (${GIVE_NAME})"
+  fi
+fi
+
+LADDER_JSON="$(dc exec -T solver cat /srv/solver-config/ladders.dev.json 2>/dev/null || true)"
+if [[ -z "$LADDER_JSON" ]]; then
+  fail "no /srv/solver-config/ladders.dev.json — the solver reads it unconditionally"
+else
+  LADDER_FLAT="$(printf '%s' "$LADDER_JSON" | tr -d ' \n')"
+  RUNG_BAD=""
+  for rung in '{"input":"1000","output":"1000"}' \
+              '{"input":"100000","output":"99000"}' \
+              '{"input":"1000000","output":"970000"}'; do
+    [[ "$LADDER_FLAT" == *"$rung"* ]] || RUNG_BAD="${RUNG_BAD} ${rung}"
+  done
+  if [[ -z "$RUNG_BAD" ]]; then
+    ok "the ladder config carries the pin's three FIXED base-unit rungs (1000/100000/1000000), unscaled by decimals"
+  else
+    fail "the ladder config is missing rung(s):${RUNG_BAD}
+          provision-solver-fees.ts writes {1000->1000, 100000->99000, 1000000->970000} in both
+          directions at this pin — a different set means KERNEL_REF moved or the fallback
+          in-repo ladder was installed instead. ${LADDER_JSON:0:300}"
+  fi
+  if [[ "$LADDER_FLAT" == *"\"TOKEN_IN\":\"${WANT_TOKEN}\""* && "$LADDER_FLAT" == *"\"TOKEN_OUT\":\"${GIVE_TOKEN}\""* ]]; then
+    ok "and it names this stack's own two issued colours"
+  else
+    fail "the ladder config does not name this stack's pair (TOKEN_IN=${WANT_TOKEN:0:16}…,
+          TOKEN_OUT=${GIVE_TOKEN:0:16}…). The in-repo fallback ladder names an older
+          deployment's colours and is installed only when SOLVER_PROVISION_ENABLED=false.
+          ${LADDER_JSON:0:300}"
+  fi
+fi
 
 echo
 log "solver: the book behind the ladder"
@@ -435,14 +547,14 @@ if [[ "$SEEDED" == "yes" && "$MAKER_FIELDS" == *"fetch=ok"* ]]; then
   else
     fail "could not read the maker offer's own legs from the kernel (${MAKER_FIELDS:-no output})"
   fi
-  # The colours the ladder and refusal assertions use come from minted-tokens.json; the offer
-  # is the second, independent witness. A mismatch means the marker points at somebody else's
-  # offer, and every assertion below would be describing the wrong one.
+  # The colours the ladder and refusal assertions use come from the ISSUER's registry; the
+  # offer is the second, independent witness. A mismatch means the marker points at somebody
+  # else's offer, and every assertion below would be describing the wrong one.
   if [[ -n "${MAKER_GIVE_TOKEN:-}" && "$MAKER_GIVE_TOKEN" != "$GIVE_TOKEN" ]]; then
-    fail "the seeded offer gives ${MAKER_GIVE_TOKEN:0:16}…, but this stack's minted give colour is ${GIVE_TOKEN:0:16}…"
+    fail "the seeded offer gives ${MAKER_GIVE_TOKEN:0:16}…, but this stack's ${GIVE_NAME} is ${GIVE_TOKEN:0:16}…"
   fi
   if [[ -n "${MAKER_WANT_TOKEN:-}" && "$MAKER_WANT_TOKEN" != "$WANT_TOKEN" ]]; then
-    fail "the seeded offer wants ${MAKER_WANT_TOKEN:0:16}…, but this stack's minted want colour is ${WANT_TOKEN:0:16}…"
+    fail "the seeded offer wants ${MAKER_WANT_TOKEN:0:16}…, but this stack's ${WANT_NAME} is ${WANT_TOKEN:0:16}…"
   fi
 fi
 

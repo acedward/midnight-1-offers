@@ -977,6 +977,73 @@ service_present() {
     --filter "label=com.docker.compose.service=$1" 2>/dev/null)" ]]
 }
 
+# ── the issuer's six tokens, on the HOST side (00020 PR C) ───────────────────
+#
+# Since kernel #69 the ids this stack trades are ISSUED per chain and every host-side verify
+# script needs them: verify-kernel matches the kernel registry against them, verify-solver
+# resolves the seeded pair, verify-poster resolves the poster's legs, verify-shielded-night
+# resolves the book chain's want leg. They used to come out of `minted-tokens.json` on a shared
+# volume, which is gone with the mint that wrote it.
+#
+# THERE IS EXACTLY ONE READER OF THE REGISTRY FILE and it is not this function:
+# `images/issuer/m1/registry.ts` validates `metadata.undeployed.json` against the pinned tree's
+# JSON schema AND against the semantic validator the faucet site runs, then prints one
+# `ISSUER_TOKEN <NAME> …` line per token. This runs it and parses those lines. A second parser
+# — in shell, over a 40 kB nested document — would be a second definition of "what this stack's
+# tokens are", and the two would drift.
+#
+# CACHED for the life of the process, because `docker compose run` costs a second or two and a
+# verify script asks for the same six ids several times. The cache holds a single space when
+# there is nothing, so "asked and found nothing" is distinguishable from "not asked yet".
+_ISSUER_REGISTRY_CACHE=""
+issuer_registry_lines() {
+  if [[ -z "$_ISSUER_REGISTRY_CACHE" ]]; then
+    if service_present faucet; then
+      # `2>/dev/null` on the run, not on the capture: the reporter logs progress on stderr and
+      # prints its result on stdout. `|| true` so an unreadable registry yields the empty
+      # string and a NAMED failure in the caller, never a `pipefail` exit from inside `$( )`
+      # (00011 C.8).
+      _ISSUER_REGISTRY_CACHE="$(dc run --rm --no-deps -T issuer-registry 2>/dev/null \
+                                 | grep '^ISSUER_TOKEN ' || true)"
+    fi
+    [[ -n "$_ISSUER_REGISTRY_CACHE" ]] || _ISSUER_REGISTRY_CACHE=" "
+  fi
+  [[ "$_ISSUER_REGISTRY_CACHE" == " " ]] && return 0
+  printf '%s\n' "$_ISSUER_REGISTRY_CACHE"
+}
+
+# issuer_token_field <NAME> <field> — one `key=value` field off that token's line, or nothing.
+#
+# NEVER DEFAULTS. A consumer that cannot find its token must fail with the name it was looking
+# for: an offer posted against a silently-wrong colour is accepted by the kernel, unpriceable,
+# unsponsorable and invisible in every panel — the exact class of silent failure this stack
+# keeps paying to remove. Same rule as `issuer_token_id` on the container side
+# (images/offerfiles-kernel/registry-env.sh).
+issuer_token_field() {
+  local name field line
+  name="$(printf '%s' "${1:-}" | tr '[:lower:]' '[:upper:]')"
+  field="${2:-id}"
+  line="$(issuer_registry_lines | grep "^ISSUER_TOKEN ${name} " | head -1 || true)"
+  [[ -n "$line" ]] || return 0
+  # `[[:space:]]` and not `\s`: BSD sed (what macOS ships) does not know the GNU escape and
+  # would silently match nothing.
+  printf '%s' "$line" \
+    | sed -n "s/.*[[:space:]]${field}=\([^[:space:]]*\).*/\1/p" | head -1 || true
+}
+
+# issuer_token_id <NAME> — the 64-hex id, validated. Empty if this stack has no such token.
+issuer_token_id() {
+  local value
+  value="$(issuer_token_field "${1:-}" id)"
+  case "$value" in
+    ????????????????????????????????????????????????????????????????)
+      case "$value" in
+        *[!0-9a-f]*) return 0 ;;
+        *) printf '%s' "$value" ;;
+      esac ;;
+  esac
+}
+
 # ── chain / indexer queries ──────────────────────────────────────────────────
 
 # node_best_height <rpc_url> — prints the best-chain height in decimal, or nothing.

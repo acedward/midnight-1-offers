@@ -29,28 +29,28 @@
 #   sync detail     GET /v1/health/sync — the per-source breakdown. The Celestia lag is REPORTED
 #                   here and nowhere else on main, which is exactly why the DA block cadence is
 #                   pinned at 3s (images/celestia/entrypoint.sh, DIVERGENCE 5).
-#   contract        GET /v1/midnight/config carries a non-empty contract address. This is the
-#                   one route that reads MIDNIGHT_CONTRACT_ADDRESS as a direct fallback, so a
-#                   non-empty answer proves the deploy one-shot's handoff reached the kernel.
+#   midnight config GET /v1/midnight/config answers the four network endpoints — and NO
+#                   `contractAddress`. Its absence is asserted, not merely tolerated: kernel #69
+#                   removed the field with the contract, and a pin that still served one would
+#                   mean KERNEL_REF had moved BACKWARDS while this repository's images, compose
+#                   fragments and verify scripts had not.
 #   offers API      GET /v1/offers answers a JSON body. Empty is correct on a fresh chain; an
 #                   error here means the Postgres half is down even though health is up.
-#   known tokens    GET /v1/known-tokens lists the dev tokens the deploy one-shot minted, matched
-#                   BY COLOUR against the minted-tokens.json it published. Colours derive from
-#                   the deployed contract address, so this is a genuine end-to-end check of
-#                   deploy -> mint -> publish -> name -> serve, not a fixed expectation. If the
-#                   shielded-night profile is ALSO up, a sNight row is expected too, priced
-#                   (decimals + asset_id) rather than merely named — reported, not hard-failed,
-#                   when that profile is not part of this bring-up.
-#   dev-token names WHICH NAME each minted colour ended up with, and that no row anywhere is
-#                   called TESTTOKEN*. Since KERNEL_REF=a608fa6… (kernel PR #68) upstream's mint
-#                   registers TESTTOKENA/B/U itself; in this stack it runs inside
-#                   offerfiles-deploy, before the kernel exists and with no ZSWAP_API, so it
-#                   cannot — and the names must still be the ones TOKEN_NAME_SHIELDED_A/B and
-#                   TOKEN_NAME_UNSHIELDED ask for (DEVA/DEVB/DEVU), at 6 decimals. A TESTTOKEN*
-#                   row is the signature of that ordering having inverted, and the whole stack
-#                   would then be MISLABELLED while staying healthy: INTENTS_UI_TOKEN_NAMES, the
-#                   SPA's picker, verify-solver.sh and the kernel's name-keyed price map all read
-#                   these names. The block above only proves the colours are LISTED.
+#   known tokens    GET /v1/known-tokens lists the SIX ISSUED colours by name, matched against
+#                   the ids the `issuer` profile's own registry reports — a genuine end-to-end
+#                   check of issue -> publish -> register -> serve rather than a fixed
+#                   expectation, since each colour derives from the contract that token was
+#                   deployed at. It also asserts what must NOT be there: no `DEVA`/`DEVB`/`DEVU`
+#                   (the deleted faucet's colours), no `USDC`/`USDM` (rows kernel #69 removed
+#                   from the seed), and no `TESTTOKEN*`. Skipped with a note when the `issuer`
+#                   profile is not part of this bring-up. If `shielded-night` is up too, a
+#                   sNight row is expected, priced rather than merely named.
+#   issued prices   For the two tokens whose decimals are NOT 6 — TWBTC at 8 and TWETH at 18 —
+#                   the per-base-unit price the kernel serves must equal its coin price divided
+#                   by 10^decimals, EXACTLY, as decimal strings. That rule was checked for one
+#                   token at one decimals value before this pin; it is the whole of what
+#                   "decimals-aware" means, and 8 and 18 are where a `Number` would start
+#                   losing digits.
 #   token decimals  EVERY row of GET /v1/known-tokens carries ITS OWN expected decimals — 6 for
 #                   every colour this stack mints or seeds (kernel PR #63's whole-coin line,
 #                   where `decimals` DEFAULTS to 6 and every faucet mints whole
@@ -61,13 +61,12 @@
 #                   runs once against an empty database and has no IF NOT EXISTS, so a `postgres`
 #                   volume created under an older KERNEL_REF keeps the old `DEFAULT 0` forever
 #                   and merely lies about every price. A row at 0 fails NAMING `./down.sh -v`.
-#   faucet          The ALLOTMENT is read out of the RUNNING image's own pinned tree
-#                   (docs/src/wallet/mintable.ts) and must be exactly 1 000 whole coins =
-#                   1_000_000_000 base units at 6 decimals; then the two priced faucet presets
-#                   (WBTC -> bitcoin, WETH -> ethereum), whose colours derive from the deployed
-#                   contract address and so cannot be seeded, are registered idempotently at 6
-#                   decimals and their PER-BASE-UNIT prices asserted as exact decimal strings
-#                   (0.077387 and 0.00239328). See images/offerfiles-kernel/faucet-probe.ts.
+#   (faucet)        THE `faucet` BLOCK IS GONE (00020 PR C). It read the whole-coin ALLOTMENT
+#                   out of the running image's pinned tree and asserted the two priced faucet
+#                   presets WBTC/WETH. Kernel #69 deleted `docs/src/wallet/mintable.ts`, the
+#                   presets and the circuit that minted them; `faucet-probe.ts` went with them.
+#                   What replaced it is the `issued prices` block below, which asserts the same
+#                   arithmetic rule on tokens that exist.
 #   prices          GET /v1/prices?tokens=<NIGHT colour> answers a REAL price (source
 #                   feed|seed|manual, never fallback) for `midnight-3` — kernel PR #54's
 #                   reference-price table, seeded offline by 000-init.sql with no CoinGecko
@@ -79,7 +78,12 @@
 #                   seeded 2026-09-02 LITERALS in the faucet block below are therefore asserted
 #                   only while `source` is `seed`/`fixed` — a live price is supposed to move.
 #                   scripts/verify-prices.sh is what proves a refresh actually happened.
-#   zk assets       /keys/* is mounted — the browser prover fetches from there.
+#   zk assets       /keys/* and /zkir/* are GONE at this pin and their ABSENCE is asserted.
+#                   `packages/node/zk-assets.ts` was deleted by kernel #69 along with the
+#                   contract whose proving keys they served, so a 404 here is the correct
+#                   answer and a 200 would mean the pin had moved backwards. The SPA's faucet
+#                   tab depends on those routes and stays dead until phase D re-points it at the
+#                   issuer's own site, which serves the same class of artifact.
 #   batcher         GET /health on the batcher answers `{"status":"ok"}`. batcher-sdk 0.103.1
 #                   DOES serve a health route (the v9 SDK's did not, which is why the sibling
 #                   repository probes `GET /` instead — on main that is a plain Fastify 404 and
@@ -162,29 +166,51 @@ else
   info "midnight: lag_blocks=${MID_LAG:-?}"
 fi
 
-# ── the contract identity ────────────────────────────────────────────────────
+# ── the midnight config, and the field that must NOT be in it ────────────────
+#
+# Up to `KERNEL_REF=a608fa6…` this block asserted a NON-EMPTY `contractAddress` here and matched
+# it against the copy the deploy one-shot persisted on a shared volume. Kernel #69 deleted the
+# offer-files contract, `readMidnightContract()` and the field: `GET /v1/midnight/config` now
+# answers with the network endpoints alone.
+#
+# THE ABSENCE IS ASSERTED RATHER THAN TOLERATED. Simply deleting the check would leave nothing
+# in this repository that notices a KERNEL_REF moved BACKWARDS onto the faucet line — a pin
+# where the kernel expects a contract, `images/offerfiles-kernel` no longer compiles one, and
+# the failure surfaces much later inside the sync node. The Dockerfile asserts the same thing
+# from the build side; this asserts it from the running API.
 echo
-log "kernel: contract"
+log "kernel: midnight config"
 CONFIG="$(curl -fsS --max-time 10 "$API/v1/midnight/config" 2>/dev/null || true)"
-KERNEL_ADDR="$(printf '%s' "$CONFIG" | grep -oE '"contractAddress"[[:space:]]*:[[:space:]]*"[0-9a-fA-F]+"' | grep -oE '[0-9a-fA-F]{16,}' | head -1)"
-if [[ -n "$KERNEL_ADDR" ]]; then
-  ok "offer-files contract ${KERNEL_ADDR}"
+if [[ -z "$CONFIG" ]]; then
+  fail "GET /v1/midnight/config did not answer"
 else
-  fail "/v1/midnight/config carries no contract address: ${CONFIG:0:200}"
-fi
-
-# The SAME address must be the one persisted on the share volume. If they ever diverge, some
-# path other than the one-shot deployed a contract — the exact failure the one-shot exists to
-# prevent, and one that is invisible from the API alone.
-PERSISTED="$(dc exec -T kernel sh -c 'cat /srv/offerfiles-deploy/contract-offer-files.undeployed.json 2>/dev/null' 2>/dev/null || true)"
-PERSISTED_ADDR="$(printf '%s' "$PERSISTED" | grep -oE '"contractAddress"[[:space:]]*:[[:space:]]*"[0-9a-fA-F]+"' | grep -oE '[0-9a-fA-F]{16,}' | head -1)"
-if [[ -z "$PERSISTED_ADDR" ]]; then
-  warn "could not read the persisted contract address from the share volume"
-elif [[ "$PERSISTED_ADDR" == "$KERNEL_ADDR" ]]; then
-  ok "the served address matches the one persisted by the deploy one-shot"
-else
-  fail "the kernel serves ${KERNEL_ADDR} but the share volume holds ${PERSISTED_ADDR} — something
-        other than offerfiles-deploy deployed a contract"
+  case "${CONFIG:0:1}" in
+    '{') ok "GET /v1/midnight/config answers JSON (${#CONFIG} bytes)" ;;
+    *)   fail "GET /v1/midnight/config answered something that is not JSON: ${CONFIG:0:120}" ;;
+  esac
+  # `indexer` and `proofServer` are the two endpoint keys the route has always carried and the
+  # SPA reads; naming them keeps this from passing on an empty `{}`.
+  CONFIG_MISSING=""
+  for key in indexer proofServer; do
+    case "$CONFIG" in
+      *"\"${key}\""*) : ;;
+      *) CONFIG_MISSING="${CONFIG_MISSING} ${key}" ;;
+    esac
+  done
+  if [[ -z "$CONFIG_MISSING" ]]; then
+    ok "it carries the network endpoints (indexer, proofServer)"
+  else
+    fail "GET /v1/midnight/config is missing endpoint key(s):${CONFIG_MISSING} — ${CONFIG:0:200}"
+  fi
+  if [[ "$CONFIG" == *'"contractAddress"'* ]]; then
+    fail "GET /v1/midnight/config still carries a contractAddress. Kernel #69 removed the
+          offer-files contract and this field with it, and this repository is built for the pin
+          WITHOUT it: images/offerfiles-kernel has no Compact stage, so a kernel that wants a
+          contract will not find one. Check KERNEL_REF (expected e3b9388… or later).
+          ${CONFIG:0:200}"
+  else
+    ok "and NO contractAddress — kernel #69 removed the offer-files contract, as this pin expects"
+  fi
 fi
 
 # ── the book ─────────────────────────────────────────────────────────────────
@@ -199,68 +225,83 @@ case "${OFFERS:0:1}" in
   *) fail "GET /v1/offers answered something that is not JSON: ${OFFERS:0:120}" ;;
 esac
 
-# ── the minted dev tokens, matched by colour ─────────────────────────────────
+# ── the SIX ISSUED tokens, matched by colour ─────────────────────────────────
+#
+# This block asserted THREE MINTED colours up to `KERNEL_REF=a608fa6…`, read out of the
+# `minted-tokens.json` the deploy one-shot published on a shared volume. Kernel #69 deleted the
+# mint, the file and the volume. The colours are now ISSUED, once per chain, by the `issuer`
+# profile, and the same end-to-end property is asserted one step further along the chain:
+# issue -> publish the registry -> `issuer-registrar` POSTs -> the kernel serves them.
+#
+# THE EXPECTATION COMES FROM THE REGISTRY, NEVER FROM A LITERAL. Each token's colour derives
+# from the contract it was deployed at, so it is new on every fresh chain; `issuer-registry` is
+# this repository's ONE validating reader of that file and its `ISSUER_TOKEN` lines are read
+# here exactly as scripts/verify-solver.sh and scripts/verify-poster.sh read them.
+#
+# WHAT MUST NOT BE THERE is asserted too, and it is not symmetry for its own sake:
+#   DEVA/DEVB/DEVU  the deleted faucet's colours. A row means a stale `postgres` volume, i.e. a
+#                   database that skipped `000-init.sql` and is therefore wrong about every
+#                   price on the stack (`./down.sh -v`).
+#   USDC/USDM       placeholder rows kernel #69 DELETED from the seed. Same signature.
+#   TESTTOKEN*      upstream's own mint's names. There is no mint at this pin, so a row here
+#                   would mean something ran one against this kernel.
 echo
 log "kernel: known tokens"
-MINTED="$(dc exec -T kernel sh -c 'cat /srv/offerfiles-deploy/minted-tokens.json 2>/dev/null' 2>/dev/null || true)"
 KNOWN="$(curl -fsS --max-time 10 "$API/v1/known-tokens" 2>/dev/null || true)"
+
+# The six canonical names, in the pinned issuer registry's own order. Stated here so that FIVE
+# rows is a failure rather than a shorter list.
+ISSUER_TOKEN_NAMES="TWBTC TWETH TWUSDC TWUSDM UTWUSDC UTWBTC"
+
+# The issuer profile is optional for THIS section: `--with offerfiles` alone is a supported
+# bring-up and has no issuer in it. `faucet` is the profile's only always-on service, so its
+# presence is what decides between asserting and reporting. (`poster` and `solver` cannot be up
+# without `issuer` at this pin — compose refuses to render — so the assertive path is the one
+# every interesting stack takes.)
+# `issuer_registry_lines` (scripts/lib/common.sh) runs the reporter once and caches it; it is
+# empty when the issuer profile is not up, and every host-side verify script reads the six ids
+# through it so there is one definition of "what this stack's tokens are".
+ISSUER_TOKEN_LINES="$(issuer_registry_lines || true)"
+
 if [[ -z "$KNOWN" ]]; then
   fail "GET /v1/known-tokens did not answer"
-elif [[ -z "$MINTED" ]]; then
-  # The mint is non-fatal by design in the deploy one-shot, so its absence is a warning here and
-  # a failure nowhere: the stack is usable without demo tokens.
-  warn "the deploy one-shot published no minted-tokens.json, so there are no colours to match"
+elif ! service_present faucet; then
+  warn "the issuer profile is not up, so there are no issued colours to match"
+  info "bring it up with: ./up.sh --with offerfiles --with issuer"
   info "known-tokens answered: ${KNOWN:0:200}"
+elif [[ -z "$ISSUER_TOKEN_LINES" ]]; then
+  fail "the issuer profile is up but issuer-registry reported no ISSUER_TOKEN lines —
+        the registry is missing or did not validate (scripts/verify-issuer.sh says why)"
 else
   MATCHED=0
   MISSING=""
-  for key in shieldedA shieldedB unshielded; do
-    COLOUR="$(printf '%s' "$MINTED" | sed -nE "s/.*\"${key}\"[[:space:]]*:[[:space:]]*\"([0-9a-fA-F]+)\".*/\1/p" | head -1)"
+  for NAME in $ISSUER_TOKEN_NAMES; do
+    # `|| true` on every extraction, for the reason above.
+    COLOUR="$(issuer_token_id "$NAME" || true)"
     if [[ -z "$COLOUR" ]]; then
-      MISSING="${MISSING} ${key}(not-minted)"
+      MISSING="${MISSING} ${NAME}(not-issued)"
       continue
     fi
     if [[ "$KNOWN" == *"$COLOUR"* ]]; then
       MATCHED=$(( MATCHED + 1 ))
     else
-      MISSING="${MISSING} ${key}=${COLOUR}"
+      MISSING="${MISSING} ${NAME}=${COLOUR:0:16}…"
     fi
   done
-  if (( MATCHED == 3 )); then
-    ok "all three minted dev-token colours are listed by /v1/known-tokens"
+  if (( MATCHED == 6 )); then
+    ok "all six issued colours are listed by /v1/known-tokens"
   else
-    # This is the offerfiles-token-names one-shot's job. Upstream's mint script cannot do it
-    # from where this stack runs it (inside offerfiles-deploy, before the kernel exists, with no
-    # ZSWAP_API — and up to c293ebd it also posted the pre-/v1 path `/api/known-tokens`, which
-    # main has never served), and it swallows the failure. That is why that one-shot exists at
-    # all — so a miss here means it did not run or did not succeed.
-    fail "/v1/known-tokens lists only ${MATCHED}/3 minted colours; missing:${MISSING}
-          (offerfiles-token-names registers these — check that one-shot's logs)"
+    fail "/v1/known-tokens lists only ${MATCHED}/6 issued colours; missing:${MISSING}
+          (issuer-registrar registers these — check that one-shot's log; up.sh treats its
+          failure as fatal, so a miss here means it was never run against this kernel)"
   fi
 fi
 
-# ── the dev colours carry THIS STACK'S NAMES, at 6 decimals (00018) ──────────
+# ── the names that must NOT be in the registry ───────────────────────────────
 #
-# The block above proves the three minted colours are LISTED. It says nothing about the name
-# each of them ended up with, and since `KERNEL_REF=a608fa6…` (kernel PR #68) that is no longer
-# a formality: upstream's `mint-test-tokens.ts` now registers the very same colours as
-# `TestTokenA/B/U` — stored `TESTTOKENA/B/U`, because the kernel uppercases — through the
-# correct `POST /v1/known-tokens` path, resolving `ZSWAP_API` with a `127.0.0.1:9999` fallback.
-#
-# In this stack that attempt cannot reach a kernel: the mint rides `offerfiles-deploy`, which
-# runs BEFORE the kernel exists (`kernel` waits on `service_completed_successfully`), and that
-# service is given no `ZSWAP_API`, so the POSTs hit its own loopback and are logged as
-# warnings. `offerfiles-token-names` then names the colours DEVA/DEVB/DEVU afterwards. If that
-# ever inverted, the stack would come up healthy and merely be MISLABELLED: docs/OPERATIONS.md,
-# `INTENTS_UI_TOKEN_NAMES`, the SPA's token picker, scripts/verify-solver.sh and the kernel's
-# own name-keyed price map (which is what makes DEVA/DEVB/DEVU `unpriced` for the sponsorship
-# gate) all expect these names. So they are asserted, and a `TESTTOKEN*` row anywhere in the
-# registry is a failure in its own right — it is the signature of the inversion.
-#
-# The expected names come from the SAME variables compose passes to the one-shot, with the same
-# defaults, and are normalised the way the kernel normalises a submitted name
-# (`String(name).trim().toUpperCase().slice(0, 16)`, packages/node/api.ts). bash 3.2 has no
-# `${var^^}`, hence `tr`.
+# Runs whether or not the issuer profile is up: every one of these is wrong on this stack no
+# matter which colour carries it. bash 3.2 has no `${var^^}`, hence `tr`; the normalisation is
+# the kernel's own (`String(name).trim().toUpperCase().slice(0, 16)`, packages/node/api.ts).
 kernel_name() {
   printf '%s' "${1}" \
     | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' \
@@ -270,11 +311,9 @@ kernel_name() {
 
 if [[ -n "$KNOWN" ]]; then
   echo
-  log "kernel: dev-token names"
-
-  # This sweep runs whether or not minted-tokens.json could be read: a TESTTOKEN* row is wrong
-  # on this stack no matter which colour carries it.
-  TESTTOKEN_ROWS=""
+  log "kernel: retired token names"
+  RETIRED_ROWS=""
+  STALE_SEED=0
   while IFS= read -r row; do
     case "$row" in
       *'"name":'*) : ;;
@@ -282,61 +321,24 @@ if [[ -n "$KNOWN" ]]; then
     esac
     ROW_NAME="$(printf '%s' "$row" | sed -n 's/.*"name":"\([^"]*\)".*/\1/p' | head -1 || true)"
     case "$(kernel_name "${ROW_NAME}")" in
-      TESTTOKEN*) TESTTOKEN_ROWS="${TESTTOKEN_ROWS} ${ROW_NAME}" ;;
+      TESTTOKEN*)          RETIRED_ROWS="${RETIRED_ROWS} ${ROW_NAME}(upstream mint)" ;;
+      DEVA|DEVB|DEVU)      RETIRED_ROWS="${RETIRED_ROWS} ${ROW_NAME}(deleted faucet)"; STALE_SEED=1 ;;
+      USDC|USDM)           RETIRED_ROWS="${RETIRED_ROWS} ${ROW_NAME}(deleted seed row)"; STALE_SEED=1 ;;
     esac
   done <<< "$(printf '%s' "$KNOWN" | tr '{' '\n')"
 
-  if [[ -z "$TESTTOKEN_ROWS" ]]; then
-    ok "no TESTTOKEN* row in the registry — the kernel's own mint did not name these colours"
+  if [[ -z "$RETIRED_ROWS" ]]; then
+    ok "no DEVA/DEVB/DEVU, USDC/USDM or TESTTOKEN* row — the registry holds only this pin's tokens"
+  elif (( STALE_SEED )); then
+    fail "the registry still holds row(s) kernel #69 removed:${RETIRED_ROWS}
+          THIS IS THE STALE-VOLUME SIGNATURE. 000-init.sql has no IF NOT EXISTS and runs ONCE
+          against an empty database, so a \`postgres\` volume created under an older KERNEL_REF
+          keeps the old seed forever and nothing migrates it. ./down.sh -v is the upgrade path
+          for this pin — see docs/OPERATIONS.md."
   else
-    fail "the registry holds TESTTOKEN* row(s):${TESTTOKEN_ROWS}
-          Since KERNEL_REF=a608fa6… (kernel PR #68) mint-test-tokens.ts registers TESTTOKENA/B/U
-          itself, and in this stack it must NOT be able to — it runs inside offerfiles-deploy,
-          before the kernel exists, with no ZSWAP_API. A row here means something gave the mint
-          a reachable kernel. Fix the ordering/env, then ./down.sh -v (the colours derive from
-          the contract address, so a fresh stack gets fresh ones)."
-  fi
-
-  if [[ -z "$MINTED" ]]; then
-    warn "no minted-tokens.json, so the three dev colours cannot be matched to their names"
-  else
-    NAME_OK=0
-    NAME_CHECKED=0
-    NAME_BAD=""
-    for pair in "shieldedA:${TOKEN_NAME_SHIELDED_A:-DEVA}" \
-                "shieldedB:${TOKEN_NAME_SHIELDED_B:-DEVB}" \
-                "unshielded:${TOKEN_NAME_UNSHIELDED:-DEVU}"; do
-      key="${pair%%:*}"
-      want="$(kernel_name "${pair#*:}")"
-      COLOUR="$(printf '%s' "$MINTED" | sed -nE "s/.*\"${key}\"[[:space:]]*:[[:space:]]*\"([0-9a-fA-F]+)\".*/\1/p" | head -1 || true)"
-      [[ -z "$COLOUR" ]] && continue
-      NAME_CHECKED=$(( NAME_CHECKED + 1 ))
-      # One record per line, so the name and the decimals must belong to the SAME record as the
-      # colour. Every extraction ends in `|| true`: an empty registry must reach the comparison
-      # as "no row", not abort the script under `pipefail`.
-      ROW="$(printf '%s' "$KNOWN" | tr '{' '\n' | grep -F -- "\"token_color\":\"$(printf '%s' "$COLOUR" | tr 'A-F' 'a-f')\"" | head -1 || true)"
-      GOT="$(kernel_name "$(printf '%s' "$ROW" | sed -n 's/.*"name":"\([^"]*\)".*/\1/p' | head -1 || true)")"
-      GOT_DEC="$(printf '%s' "$ROW" | sed -n 's/.*"decimals":\([0-9][0-9]*\).*/\1/p' | head -1 || true)"
-      if [[ "$GOT" == "$want" && "$GOT_DEC" == "6" ]]; then
-        NAME_OK=$(( NAME_OK + 1 ))
-        info "  ${key} ${COLOUR:0:16}… = ${want} at 6 decimals"
-      else
-        NAME_BAD="${NAME_BAD} ${key}(want ${want}@6, got ${GOT:-<no row>}@${GOT_DEC:-none})"
-      fi
-    done
-
-    if (( NAME_CHECKED == 0 )); then
-      warn "minted-tokens.json carries no colour for any of the three keys"
-    elif (( NAME_OK == NAME_CHECKED )); then
-      ok "all ${NAME_OK} minted dev colour(s) carry this stack's names at 6 decimals"
-    else
-      fail "${NAME_OK}/${NAME_CHECKED} minted dev colours carry the expected name at 6 decimals;
-          these do not —${NAME_BAD}
-          The names come from TOKEN_NAME_SHIELDED_A/B and TOKEN_NAME_UNSHIELDED (defaults
-          DEVA/DEVB/DEVU) and are registered by the offerfiles-token-names one-shot, which since
-          00018 reads the registry back on a 409 and fails rather than accept a foreign name —
-          so check that one-shot's log first."
-    fi
+    fail "the registry holds TESTTOKEN* row(s):${RETIRED_ROWS}
+          There is no mint at this pin (kernel #69 deleted mint-test-tokens.ts), so something
+          ran one against this kernel. ./down.sh -v afterwards: the colours are per chain."
   fi
 fi
 
@@ -573,147 +575,135 @@ else
   fi
 fi
 
-# ── the whole-coin FAUCET, and the two preset colours it mints ───────────────
+# ── THE DECIMALS-AWARE PRICE RULE, on tokens that are not 6 decimals ─────────
 #
-# Two things kernel PR #63 specifies, neither of which any other section can see:
+# WHAT THIS REPLACED. Up to `KERNEL_REF=a608fa6…` this was the `faucet` block: it read the
+# whole-coin ALLOTMENT out of the running image's own pinned tree (`docs/src/wallet/mintable.ts`,
+# 1 000 coins = 1 000 000 000 base units), registered the two priced faucet presets WBTC/WETH
+# through `faucet-probe.ts`, and asserted their per-base-unit prices as exact decimal strings.
+# Kernel #69 deleted the circuit, the presets, `mintable.ts` and the probe.
 #
-#   1. THE ALLOTMENT. One faucet press is 1 000 WHOLE COINS = 1_000_000_000 base units at 6
-#      decimals. The number is read out of the RUNNING kernel image's own pinned tree
-#      (docs/src/wallet/mintable.ts — the single definition the SPA faucet, the deploy mint and
-#      the offer poster all import), never re-declared here, so this asserts what the pinned
-#      commit ships rather than what someone remembered about it.
-#   2. THE TWO PRICED PRESETS. WBTC and WETH are the faucet names the kernel's built-in map
-#      prices (WBTC -> bitcoin, WETH -> ethereum). Their colours derive from the deployed
-#      contract address, so 000-init.sql cannot seed them; the probe registers them (with an
-#      explicit decimals: 6, exactly the body the SPA sends after a mint) and this section then
-#      asserts the per-base-unit prices the whole-coin line implies, as EXACT DECIMAL STRINGS:
-#        WBTC  77387    / 10^6 = 0.077387
-#        WETH  2393.28  / 10^6 = 0.00239328
-#      Those two coin prices are the values seeded by packages/database/migrations/000-init.sql
-#      at KERNEL_REF; the expectation is DERIVED from the assets[] row the kernel itself serves,
-#      not hard-coded, and then cross-checked against the literal the spec names — but ONLY
-#      while the row is still the seed. With the 00014 `prices` profile up, a CoinGecko refresh
-#      moves both coin prices and flips `source` to `feed`; the derived exactness rule still
-#      holds (and is still asserted), and the literal becomes context rather than an
-#      expectation. See the `case "$P_SOURCE"` below.
+# WHAT SURVIVES IS THE ARITHMETIC RULE, and it is the one that matters:
 #
-# The probe mints nothing, holds no wallet and signs nothing — it is a derivation plus two
-# idempotent registry POSTs, so it is safe on every ./verify.sh run.
-if [[ -n "$KERNEL_ADDR" ]]; then
+#     price per base unit  ==  the asset's COIN price  /  10^decimals,  EXACTLY
+#
+# It was previously only ever checked at ONE value of `decimals` — 6, for every colour on the
+# stack. This stack now issues tokens at 8 and 18, which is precisely where the rule stops being
+# a formality: 10^18 exceeds 2^53, so any implementation that touched a float would start losing
+# digits here, and a mispriced token is invisible (it makes every quote, every sponsorship
+# verdict and every SPA figure quietly wrong rather than failing).
+#
+# Compared as STRINGS with `decimal_shift_left` (scripts/lib/common.sh), never as numbers: bash
+# has no float arithmetic, and that is deliberately not worked around — a float comparison is
+# exactly the class of bug this assertion exists to rule out on the kernel side too (see
+# packages/database/price-map.ts's `tokenPriceFromAsset()`). scripts/verify-prices.sh applies
+# the same helper to FED values.
+#
+# THE COIN PRICE IS READ FROM THE KERNEL'S OWN assets[] ROW, never hard-coded: whether it is
+# `seed` (000-init.sql's offline capture) or `feed` (a CoinGecko refresh, the `prices` profile)
+# the rule holds identically, and a live price is supposed to move.
+if [[ -n "$KNOWN" ]] && [[ -n "$ISSUER_TOKEN_LINES" ]]; then
   echo
-  log "kernel: faucet (whole coins)"
-  PROBE="$(dc exec -T -e "FAUCET_PROBE_CONTRACT=${KERNEL_ADDR}" -e 'KERNEL_API_URL=http://127.0.0.1:9999' \
-             kernel bun run /usr/local/lib/offerfiles/faucet-probe.ts 2>/dev/null || true)"
-  PROBE_SUMMARY="$(printf '%s' "$PROBE" | tr ' ' '\n' | grep -c '^allotmentBaseUnits=' || true)"
-  if [[ "$PROBE_SUMMARY" != "1" ]]; then
-    fail "the faucet probe did not run inside the kernel container (is the image rebuilt at this KERNEL_REF?): ${PROBE:0:300}"
-  else
-    ALLOT_COINS="$(printf '%s' "$PROBE" | sed -n 's/.*allotmentCoins=\([0-9][0-9]*\).*/\1/p' | head -1)"
-    ALLOT_UNITS="$(printf '%s' "$PROBE" | sed -n 's/.*allotmentBaseUnits=\([0-9][0-9]*\).*/\1/p' | head -1)"
-    ALLOT_DEC="$(printf '%s' "$PROBE" | sed -n 's/.*defaultDecimals=\([0-9][0-9]*\).*/\1/p' | head -1)"
-    if [[ "$ALLOT_COINS" == "1000" && "$ALLOT_UNITS" == "1000000000" && "$ALLOT_DEC" == "6" ]]; then
-      ok "one faucet mint is exactly ${ALLOT_COINS} whole coins = ${ALLOT_UNITS} base units at ${ALLOT_DEC} decimals"
-    else
-      fail "the faucet allotment is coins=${ALLOT_COINS:-none} baseUnits=${ALLOT_UNITS:-none} decimals=${ALLOT_DEC:-none},
-            expected 1000 / 1000000000 / 6 (kernel PR #63) — KERNEL_REF may be pinned before the whole-coin line"
-    fi
+  log "kernel: issued-token prices (per base unit == coin / 10^decimals, exactly)"
 
-    WBTC_COLOUR="$(printf '%s' "$PROBE" | grep 'name=WBTC ' | sed -n 's/.*colour=\([0-9a-f]\{64\}\).*/\1/p' | head -1)"
-    WETH_COLOUR="$(printf '%s' "$PROBE" | grep 'name=WETH ' | sed -n 's/.*colour=\([0-9a-f]\{64\}\).*/\1/p' | head -1)"
-    if [[ -z "$WBTC_COLOUR" || -z "$WETH_COLOUR" ]]; then
-      fail "the faucet probe did not report both preset colours: ${PROBE:0:300}"
-    else
-      ok "faucet presets registered at 6 decimals: WBTC ${WBTC_COLOUR:0:16}…, WETH ${WETH_COLOUR:0:16}…"
-      PP="$(curl -fsS --max-time 15 "$API/v1/prices?tokens=${WBTC_COLOUR},${WETH_COLOUR}" 2>/dev/null || true)"
-      if [[ -z "$PP" ]]; then
-        fail "GET /v1/prices for the two faucet presets did not answer"
-      else
-        # One row per preset: <name> <colour> <asset id> <the literal the whole-coin line names>.
-        # Read field by field rather than `set --`, which would clobber this script's own "$@".
-        #
-        # THE SEEDED LITERAL IS ONLY AN EXPECTATION WHILE THE PRICE IS SEEDED (00014 FR-005).
-        # `0.077387` and `0.00239328` are 000-init.sql's 2026-09-02 captures, and the `prices`
-        # profile exists to replace them: after one CoinGecko refresh WBTC reads whatever
-        # bitcoin costs today, `source` moves from `seed` to `feed`, and comparing against the
-        # literal would fail a stack that is working exactly as designed. So the literal is
-        # asserted for `seed`/`fixed` rows and REPORTED for `feed`/`manual` ones.
-        #
-        # The assertion that holds either way — and the one that actually encodes the whole-coin
-        # line — is the EXACTNESS rule directly above it: per-base-unit == coin / 10^decimals,
-        # as decimal strings. That is checked on whichever value is live, and
-        # scripts/verify-prices.sh checks it again on FED values with the same helper.
-        while read -r P_NAME P_COLOUR P_ASSET P_WANT; do
-          [[ -n "$P_NAME" ]] || continue
-          P_TOKEN_ROW="$(printf '%s' "$PP" | tr '{' '\n' | grep -E "\"token_color\":\"${P_COLOUR}\"" | head -1)"
-          P_ASSET_ROW="$(printf '%s' "$PP" | tr '{' '\n' | grep "\"asset_id\":\"${P_ASSET}\"" | grep -v '"token_color"' | head -1)"
-          if [[ -z "$P_TOKEN_ROW" ]]; then
-            fail "GET /v1/prices has no tokens[] row for ${P_NAME} (${P_COLOUR:0:16}…): ${PP:0:300}"
-            continue
-          fi
-          if [[ -z "$P_ASSET_ROW" ]]; then
-            fail "GET /v1/prices has no assets[] row for ${P_ASSET} — ${P_NAME} is not priced by the built-in NAME map"
-            continue
-          fi
-          P_DEC="$(printf '%s' "$P_TOKEN_ROW" | sed -n 's/.*"decimals":\([0-9][0-9]*\).*/\1/p' | head -1)"
-          P_UNIT="$(printf '%s' "$P_TOKEN_ROW" | sed -n 's/.*"price_usd":"\([0-9.]*\)".*/\1/p' | head -1)"
-          P_COIN="$(printf '%s' "$P_ASSET_ROW" | sed -n 's/.*"price_usd":"\([0-9.]*\)".*/\1/p' | head -1)"
-          P_SOURCE="$(printf '%s' "$P_TOKEN_ROW" | sed -n 's/.*"source":"\([a-z-]*\)".*/\1/p' | head -1)"
-          if [[ "$P_DEC" != "6" ]]; then
-            fail "${P_NAME} is registered at ${P_DEC:-none} decimals, expected exactly 6"
-            continue
-          fi
-          if [[ -z "$P_UNIT" || -z "$P_COIN" ]]; then
-            fail "could not read ${P_NAME}'s per-base-unit / coin price_usd: ${P_TOKEN_ROW:0:200}"
-            continue
-          fi
-          P_EXPECTED="$(decimal_shift_left "$P_COIN" "$P_DEC")"
-          if [[ "$P_UNIT" != "$P_EXPECTED" ]]; then
-            fail "${P_NAME}'s per-base-unit price is ${P_UNIT}, expected ${P_COIN} / 10^${P_DEC} = ${P_EXPECTED} exactly
-                  (source=${P_SOURCE:-none})"
-            continue
-          fi
-          case "$P_SOURCE" in
-            feed|manual)
-              # A REFRESH HAPPENED (or an operator set the row). The exactness rule above is
-              # what the whole-coin line means here, and it passed; the seeded literal is
-              # printed as context, never asserted, because a live price is supposed to move.
-              ok "${P_NAME} per base unit is ${P_UNIT} == ${P_COIN} / 10^${P_DEC}, exactly (source=${P_SOURCE}; the 2026-09-02 seed was ${P_WANT})" ;;
-            seed|fixed|"")
-              if [[ "$P_UNIT" == "$P_WANT" ]]; then
-                ok "${P_NAME} per base unit is ${P_UNIT} == ${P_COIN} / 10^${P_DEC}, exactly (source=${P_SOURCE:-seed})"
-              else
-                fail "${P_NAME} prices at ${P_UNIT} per base unit, but the whole-coin line specifies ${P_WANT}
-                      (seeded ${P_ASSET} coin price in 000-init.sql is ${P_COIN}, source=${P_SOURCE:-seed}) — the seed moved"
-              fi ;;
-            *)
-              # `fallback` (or `demo-fallback`) means the colour is not priced from an asset at
-              # all — the deterministic colour-hash demo price. It is NOT a market price and
-              # the sponsorship gate treats it as unpriced, so it must not pass here.
-              fail "${P_NAME}'s price has source='${P_SOURCE}' — expected a real price (seed/feed/manual/fixed).
-                    'fallback' is the colour-derived demo value and means this preset is not mapped to ${P_ASSET}." ;;
-          esac
-        done <<EOF
-WBTC ${WBTC_COLOUR} bitcoin 0.077387
-WETH ${WETH_COLOUR} ethereum 0.00239328
-EOF
-      fi
+  # TWBTC (8) and TWETH (18) are the two whose decimals are NOT 6, and the two the price feed
+  # actually prices (bitcoin, ethereum). Together they are the poster's and the maker's pair, so
+  # a failure here is a failure of the very quote those services depend on.
+  PRICED_CHECKED=0
+  for spec in "TWBTC:8:bitcoin" "TWETH:18:ethereum"; do
+    P_NAME="${spec%%:*}"
+    P_REST="${spec#*:}"
+    P_WANT_DEC="${P_REST%%:*}"
+    P_ASSET="${P_REST#*:}"
+    P_COLOUR="$(issuer_token_id "$P_NAME" || true)"
+    if [[ -z "$P_COLOUR" ]]; then
+      fail "the issuer registry reports no id for ${P_NAME} — cannot check its price"
+      continue
     fi
+    PP="$(curl -fsS --max-time 15 "$API/v1/prices?tokens=${P_COLOUR}" 2>/dev/null || true)"
+    if [[ -z "$PP" ]]; then
+      fail "GET /v1/prices for ${P_NAME} (${P_COLOUR:0:16}…) did not answer"
+      continue
+    fi
+    # Two DIFFERENT records carry the same asset_id: the top-level assets[] entry (the COIN
+    # price) and the tokens[] entry (the PER-BASE-UNIT price, divided server-side). Only the
+    # second carries `token_color`, which is how they are told apart.
+    P_TOKEN_ROW="$(printf '%s' "$PP" | tr '{' '\n' | grep -E "\"token_color\":\"${P_COLOUR}\"" | head -1 || true)"
+    P_ASSET_ROW="$(printf '%s' "$PP" | tr '{' '\n' | grep "\"asset_id\":\"${P_ASSET}\"" | grep -v '"token_color"' | head -1 || true)"
+    if [[ -z "$P_TOKEN_ROW" ]]; then
+      fail "GET /v1/prices has no tokens[] row for ${P_NAME} (${P_COLOUR:0:16}…): ${PP:0:300}"
+      continue
+    fi
+    if [[ -z "$P_ASSET_ROW" ]]; then
+      fail "GET /v1/prices has no assets[] row for ${P_ASSET} — ${P_NAME} is registered without
+            an asset_id, so it cannot be priced. issuer-registrar writes that column; check it."
+      continue
+    fi
+    P_DEC="$(printf '%s' "$P_TOKEN_ROW" | sed -n 's/.*"decimals":\([0-9][0-9]*\).*/\1/p' | head -1 || true)"
+    P_UNIT="$(printf '%s' "$P_TOKEN_ROW" | sed -n 's/.*"price_usd":"\([0-9.]*\)".*/\1/p' | head -1 || true)"
+    P_COIN="$(printf '%s' "$P_ASSET_ROW" | sed -n 's/.*"price_usd":"\([0-9.]*\)".*/\1/p' | head -1 || true)"
+    P_SOURCE="$(printf '%s' "$P_TOKEN_ROW" | sed -n 's/.*"source":"\([a-z-]*\)".*/\1/p' | head -1 || true)"
+    if [[ "$P_DEC" != "$P_WANT_DEC" ]]; then
+      fail "${P_NAME} is priced at ${P_DEC:-none} decimals, expected exactly ${P_WANT_DEC} —
+            the kernel row's decimals disagree with the issuer's registry"
+      continue
+    fi
+    if [[ -z "$P_UNIT" || -z "$P_COIN" ]]; then
+      fail "could not read ${P_NAME}'s per-base-unit / coin price_usd: ${P_TOKEN_ROW:0:200}"
+      continue
+    fi
+    case "$P_SOURCE" in
+      feed|seed|manual|fixed) : ;;
+      *)
+        # `fallback` is the deterministic colour-hash demo value, not a market price, and the
+        # sponsorship gate treats it as unpriced. It must not pass.
+        fail "${P_NAME}'s price has source='${P_SOURCE:-none}' — expected seed/feed/manual/fixed.
+              'fallback' means this colour is not mapped to ${P_ASSET}: issuer-registrar writes
+              the asset_id, so check that one-shot's log."
+        continue ;;
+    esac
+    P_EXPECTED="$(decimal_shift_left "$P_COIN" "$P_DEC")"
+    PRICED_CHECKED=$(( PRICED_CHECKED + 1 ))
+    if [[ "$P_UNIT" == "$P_EXPECTED" ]]; then
+      ok "${P_NAME} per base unit is ${P_UNIT} == ${P_COIN} / 10^${P_DEC}, exactly (source=${P_SOURCE})"
+    else
+      fail "${P_NAME}'s per-base-unit price is ${P_UNIT}, expected ${P_COIN} / 10^${P_DEC} = ${P_EXPECTED}
+            exactly (source=${P_SOURCE})"
+    fi
+  done
+  if (( PRICED_CHECKED == 2 )); then
+    ok "the decimals-aware price rule holds at BOTH 8 and 18 decimals"
   fi
 fi
 
 # ── ZK assets ────────────────────────────────────────────────────────────────
 echo
 log "kernel: zk assets"
-# A REAL asset, not the bare `/keys/` prefix. `/keys/*` 404s on anything it cannot resolve to
-# a file, and an unmounted route 404s too — so probing `/keys/` proves nothing at all. Naming
-# a file that the image's compact stage actually produced turns this into an end-to-end check
-# of build -> image -> served bytes, which is what the browser prover depends on.
+# THE EXPECTATION IS INVERTED AT THIS PIN (00020 PR C). These routes served the proving keys
+# and the ZK IR of the offer-files contract's `mint_shielded` circuit, and this block asserted
+# they answered 200 with bytes. Kernel #69 deleted `packages/node/zk-assets.ts` — the whole
+# `registerZkAssetRoutes(server)` call is gone from `packages/node/api.ts` — along with the
+# contract they belonged to. So a 200 here would mean KERNEL_REF had moved BACKWARDS onto the
+# faucet line, on a stack whose kernel image no longer compiles a contract at all.
+#
+# A REAL asset path, not the bare `/keys/` prefix, for the same reason it was a real path
+# before: an unresolvable file and an unmounted route both 404, so probing the prefix proves
+# nothing in either direction. What makes the assertion meaningful is that this exact path was
+# served, with bytes, at the previous pin.
+#
+# WHAT THIS COSTS, stated rather than buried: the zswap-da SPA's Faucet tab fetches proving keys
+# from `/keys/*`, so it is DEAD until phase D re-points it at the issuer's own site — which
+# serves the same class of artifact for the six issued tokens. docs/KNOWN-LIMITATIONS.md.
 for asset in "/keys/mint_shielded.prover" "/keys/mint_shielded.verifier" "/zkir/mint_shielded.bzkir"; do
   read -r code size <<<"$(curl -s --max-time 20 -o /dev/null -w '%{http_code} %{size_download}' "${API}${asset}" 2>/dev/null || echo '000 0')"
-  if [[ "$code" == "200" ]] && (( size > 0 )); then
-    ok "${asset} served (${size} bytes)"
+  if [[ "$code" == "404" ]]; then
+    ok "${asset} is GONE (HTTP 404) — kernel #69 removed the ZK asset routes, as this pin expects"
+  elif [[ "$code" == "200" ]]; then
+    fail "${asset} is still SERVED (${size} bytes). Kernel #69 deleted packages/node/zk-assets.ts
+          with the contract those keys belong to, and this repository is built for the pin
+          WITHOUT them — images/offerfiles-kernel has no Compact stage. Check KERNEL_REF."
   else
-    fail "${asset} not served (HTTP ${code}, ${size} bytes) — the browser prover fetches from here"
+    warn "${asset} answered HTTP ${code} rather than 404 — expected gone at this pin"
   fi
 done
 

@@ -12,10 +12,19 @@
 #                   because restarting a poster whose operator has not sent it NIGHT would
 #                   not produce NIGHT. So a green healthcheck is NOT evidence that anything
 #                   was ever posted — which is exactly why the next check exists.
-#   it is WORKING   within POSTER_VERIFY_BUDGET_S, `mints >= 2` and `liveOffers >= 2`. Two,
-#                   not one: one mint could be a lucky first tick, two means the loop is a
-#                   loop. Budget exhaustion is a FAILURE naming the last state and lastError,
-#                   never a skip.
+#   the inventory   the pre-mint landed: `/health`'s `freeCoins` plus the coins already
+#                   adopted account for POSTER_PREMINT_COUNT. The poster does not mint at this
+#                   pin — `poster-inventory` does, before it starts — so a poster with an empty
+#                   wallet is `degraded: insufficient_inventory` for ever while looking healthy.
+#   it is WORKING   within POSTER_VERIFY_BUDGET_S, `inventoryAdoptions + reoffers >= 2` and
+#                   `liveOffers >= 2`. Two, not one: one could be a lucky first tick, two means
+#                   the loop is a loop. `mints` WAS the field here and is gone from /health at
+#                   this pin, with the mint it counted (kernel #69); `inventoryAdoptions` counts
+#                   ticks that adopted a prefunded coin and `reoffers` ticks that re-offered a
+#                   released one — the two ways a tick can produce an offer now. Budget
+#                   exhaustion is a FAILURE naming the last state and lastError, never a skip.
+#                   `degraded: insufficient_inventory` is accepted ONLY after the budgeted count
+#                   has been reached: before that it means the pre-mint did not land.
 #   the exact coin  THE strongest claim this profile makes, and the reason the poster builds
 #                   its own facade with a pinned coin selector at all: every offer spends
 #                   exactly ONE coin, WHOLE. Asserted from OUTSIDE the poster by comparing
@@ -37,7 +46,7 @@
 #                   lands on the sponsorship threshold BY CONSTRUCTION and would make this a
 #                   check that cannot fail. With it, this is the batcher's real question —
 #                   "would I pay this offer's Celestia fee?" — asked of the offer as posted.
-#   size range      only when a range is configured: the last two mints differ in size.
+#   size range      only when a range is configured: the last two adopted coins differ in size.
 #   a real take     e2e-taker settles ONE poster offer on chain and is credited EXACTLY the
 #                   give amount, having paid EXACTLY the want amount. Offers that are listed
 #                   but not settle-able would satisfy everything above.
@@ -48,10 +57,13 @@
 # a poster running beside a taker legitimately oscillates.
 #
 # ── THE ONE SIDE EFFECT THIS SCRIPT HAS ─────────────────────────────────────
-# The take CONSUMES one poster offer, and funds `e2e-taker` with NIGHT from genesis and with
-# the demanded token from the faucet circuit to do it. That is a real settlement on a
-# throwaway devnet, and it is the point. Set POSTER_VERIFY_SKIP_TAKE=true to skip it (it
-# costs two provings, ~2-4 min); the skip is printed with its reason, never silent.
+# The take CONSUMES one poster offer, and to do it this script funds `e2e-taker` — NIGHT from
+# genesis (inside the driver) and the DEMANDED TOKEN through `issuer-fund` (here, before the
+# driver runs). The second half is new at this pin: up to `KERNEL_REF=a608fa6…` the taker minted
+# the demanded token itself from the faucet circuit, and kernel #69 deleted that circuit. That
+# is a real settlement on a throwaway devnet, and it is the point. Set
+# POSTER_VERIFY_SKIP_TAKE=true to skip it (it costs a mint plus two provings, ~3-5 min); the
+# skip is printed with its reason, never silent.
 #
 # ── bash 3.2 AND `pipefail` ─────────────────────────────────────────────────
 # Every count/extract helper below ends in `|| true`. Under `set -euo pipefail` a `grep` or
@@ -76,12 +88,18 @@ BIND="${HOST_ADDR:-127.0.0.1}"
 POSTER="http://${BIND}:${POSTER_HEALTH_HOST_PORT:-19977}"
 KERNEL="http://${BIND}:${KERNEL_HOST_PORT:-9999}"
 
-# How long the poster may take to reach two mints and two live offers. The FIRST mint is
-# wallet sync + DUST registration + the dust wait + a contract join + ~30 s of proving, and
-# the second is one POST_INTERVAL_MS later — so this is minutes, not seconds.
+# How long the poster may take to reach two produced offers and two live offers. The FIRST is
+# wallet sync + DUST registration + the dust wait + ~30 s of proving, and the second is one
+# POST_INTERVAL_MS later — so this is minutes, not seconds.
 BUDGET_S="${POSTER_VERIFY_BUDGET_S:-420}"
-WANT_MINTS="${POSTER_VERIFY_MIN_MINTS:-2}"
+# `POSTER_VERIFY_MIN_MINTS` is still accepted as the override name so an existing `.env` keeps
+# working; what it now bounds is `inventoryAdoptions + reoffers`, because the poster no longer
+# mints anything (kernel #69) and `/health` no longer carries a `mints` field at all.
+WANT_POSTED="${POSTER_VERIFY_MIN_POSTED:-${POSTER_VERIFY_MIN_MINTS:-2}}"
 WANT_LIVE="${POSTER_VERIFY_MIN_LIVE_OFFERS:-2}"
+# What `poster-inventory` was asked to pre-mint. The wallet should hold this many coins of the
+# give size, minus the ones ticks have already adopted.
+PREMINT_COUNT="${POSTER_PREMINT_COUNT:-12}"
 
 # ── how long the exact-coin probe may wait for the kernel (issue 00017) ──────
 # The poster marks an offer `live` in its journal the moment its POST is ACCEPTED, but the
@@ -100,17 +118,22 @@ WANT_LIVE="${POSTER_VERIFY_MIN_LIVE_OFFERS:-2}"
 PROBE_WAIT_S="${POSTER_PROBE_WAIT_S:-90}"
 PROBE_POLL_S="${POSTER_PROBE_POLL_S:-3}"
 
-# The take's two wallets. e2e-taker starts empty at genesis (measured), so the driver funds it
-# — NIGHT from the faucet wallet, and the demanded token from the faucet CIRCUIT, because
-# nothing on this stack holds a faucet preset until something mints one.
+# The take's two wallets. e2e-taker starts empty at genesis (measured), so it is funded twice:
+# NIGHT from the faucet wallet (inside the driver) and the DEMANDED TOKEN by `issuer-fund`
+# below — since kernel #69 nothing on this stack can mint from the taker's own wallet.
 TAKE_TAKER_SEED="${POSTER_TAKE_TAKER_SEED:-${TAKER_SEED:-0000000000000000000000000000000000000000000000000000000000000032}}"
 TAKE_FUNDER_SEED="${POSTER_TAKE_FUNDER_SEED:-${MIDNIGHT_GENESIS_SEED:-0000000000000000000000000000000000000000000000000000000000000001}}"
-# The poster's two legs as NAMES. Blank in .env means the poster's own code defaults, which
-# are WBTC and WETH — so the same blank-means-default rule applies on this side.
-GIVE_NAME="${OFFER_POSTER_GIVE_TOKEN:-}"
-[[ -n "$GIVE_NAME" ]] || GIVE_NAME="WBTC"
-WANT_NAME="${OFFER_POSTER_WANT_TOKEN:-}"
-[[ -n "$WANT_NAME" ]] || WANT_NAME="WETH"
+# The poster's two legs as ISSUER TOKEN NAMES, with compose's own defaults. They are no longer
+# faucet presets (WBTC/WETH); the ids are resolved from the issuer's registry below, exactly as
+# the poster's entrypoint resolves them from the handoff.
+GIVE_NAME="${OFFER_POSTER_GIVE_TOKEN:-TWBTC}"
+WANT_NAME="${OFFER_POSTER_WANT_TOKEN:-TWETH}"
+# How much of the want token the taker is given before the take. It must cover the offer's want
+# leg, which is QUOTED per tick and therefore not known until the offer is picked — so this is
+# deliberately generous rather than exact, and the driver fails with the shortfall and the exact
+# `issuer-fund` command if it ever is not enough. One whole TWETH against a want leg quoted from
+# 0.01 TWBTC is roughly two orders of magnitude of headroom.
+TAKE_FUND_AMOUNT="${POSTER_TAKE_FUND_AMOUNT:-1000000000000000000}"
 
 FAILURES=0
 fail() { err "$*"; FAILURES=$(( FAILURES + 1 )); }
@@ -170,39 +193,85 @@ case "${STATE:-}" in
     ;;
 esac
 if [[ "${STATE:-}" == "degraded" ]]; then
-  info "'degraded' is a 200 BY DESIGN — it usually means insufficient_dust, i.e. the wallet"
-  info "has no NIGHT. poster-provision is what funds it; check that one-shot's exit."
+  info "'degraded' is a 200 BY DESIGN. At this pin it means insufficient_inventory — the wallet"
+  info "holds no unjournaled coin worth exactly OFFER_POSTER_GIVE_AMOUNT. poster-inventory is"
+  info "what pre-mints them and poster-provision is what funds the NIGHT; check both one-shots."
 fi
 
 # ── it is actually WORKING ───────────────────────────────────────────────────
+#
+# `mints` USED TO BE THE COUNTER HERE and does not exist at this pin: the poster never mints
+# (kernel #69), and `deploy/scripts/lib/poster-health.ts` reports `inventoryAdoptions` (ticks
+# that adopted a prefunded coin) and `reoffers` (ticks that re-offered a released one) instead.
+# Their SUM is what "this loop produced an offer" means now, and asserting the sum rather than
+# either one is deliberate: a stack whose coins have all been posted and are coming back is
+# working exactly as designed, and would score zero adoptions.
 echo
-log "poster: mints and live offers (budget ${BUDGET_S}s)"
+log "poster: offers produced and live (budget ${BUDGET_S}s)"
 START=$SECONDS
 DEADLINE=$(( SECONDS + BUDGET_S ))
-MINTS=""; LIVE=""; LAST_ERROR=""
+ADOPTIONS=""; REOFFERS=""; POSTED=""; LIVE=""; LAST_ERROR=""; FREE_COINS=""
 while :; do
   HEALTH_BODY="$(curl -sS --max-time 15 "$POSTER/health" 2>/dev/null | tr -d '\n' || true)"
-  MINTS="$(json_num "$HEALTH_BODY" mints)"
+  ADOPTIONS="$(json_num "$HEALTH_BODY" inventoryAdoptions)"
+  REOFFERS="$(json_num "$HEALTH_BODY" reoffers)"
   LIVE="$(json_num "$HEALTH_BODY" liveOffers)"
+  FREE_COINS="$(json_num "$HEALTH_BODY" freeCoins)"
   STATE="$(json_str "$HEALTH_BODY" state)"
   LAST_ERROR="$(json_str "$HEALTH_BODY" lastError)"
-  if [[ -n "${MINTS:-}" && -n "${LIVE:-}" ]] \
-     && (( MINTS >= WANT_MINTS )) && (( LIVE >= WANT_LIVE )); then
+  POSTED=""
+  if [[ -n "${ADOPTIONS:-}" && -n "${REOFFERS:-}" ]]; then
+    POSTED=$(( ADOPTIONS + REOFFERS ))
+  fi
+  if [[ -n "${POSTED:-}" && -n "${LIVE:-}" ]] \
+     && (( POSTED >= WANT_POSTED )) && (( LIVE >= WANT_LIVE )); then
     break
   fi
   (( SECONDS < DEADLINE )) || break
   sleep 10
 done
 ELAPSED=$(( SECONDS - START ))
-if [[ -n "${MINTS:-}" && -n "${LIVE:-}" ]] && (( MINTS >= WANT_MINTS )) && (( LIVE >= WANT_LIVE )); then
-  ok "the poster has minted ${MINTS} coin(s) and holds ${LIVE} live offer(s) after ${ELAPSED}s"
-  info "state='${STATE:-?}'  reoffers=$(json_num "$HEALTH_BODY" reoffers)  ticks=$(json_num "$HEALTH_BODY" ticks)"
+if [[ -n "${POSTED:-}" && -n "${LIVE:-}" ]] && (( POSTED >= WANT_POSTED )) && (( LIVE >= WANT_LIVE )); then
+  ok "the poster has produced ${POSTED} offer(s) (${ADOPTIONS} adopted + ${REOFFERS} re-offered) and holds ${LIVE} live after ${ELAPSED}s"
+  info "state='${STATE:-?}'  freeCoins=${FREE_COINS:-?}  ticks=$(json_num "$HEALTH_BODY" ticks)"
 else
-  fail "after ${ELAPSED}s the poster reports mints=${MINTS:-unreadable} liveOffers=${LIVE:-unreadable}, wanted >= ${WANT_MINTS} / >= ${WANT_LIVE}"
-  info "last state '${STATE:-?}', lastError '${LAST_ERROR:-none}'"
+  fail "after ${ELAPSED}s the poster reports inventoryAdoptions=${ADOPTIONS:-unreadable} reoffers=${REOFFERS:-unreadable} liveOffers=${LIVE:-unreadable}, wanted (adoptions+reoffers) >= ${WANT_POSTED} / live >= ${WANT_LIVE}"
+  info "last state '${STATE:-?}', lastError '${LAST_ERROR:-none}', freeCoins '${FREE_COINS:-?}'"
+  if [[ "${LAST_ERROR:-}" == *insufficient_inventory* || "${STATE:-}" == "degraded" ]]; then
+    info "insufficient_inventory BEFORE the budgeted count means the PRE-MINT did not land, not"
+    info "that the book is exhausted. poster-inventory mints POSTER_PREMINT_COUNT coins of"
+    info "exactly OFFER_POSTER_GIVE_AMOUNT; the poster adopts a coin by EXACT value, so a size"
+    info "mismatch between those two variables looks precisely like this:"
+    dim  "docker compose logs poster-inventory"
+  fi
   info "the poster's own log names the cause:"
   dim  "docker compose logs --tail=120 offer-poster"
   exit 1
+fi
+
+# ── THE PRE-MINT LANDED, and in the right SHAPE ──────────────────────────────
+#
+# `freeCoins` is the number of give-colour coins the wallet could spend right now; every
+# adoption moves one out of that pool and into an offer. So the pre-mint is accounted for by
+# `freeCoins + inventoryAdoptions`, and it is checked as a FLOOR rather than an equality: a
+# released coin that has come back is spendable again and legitimately raises `freeCoins`.
+#
+# It is NOT the same claim as "the poster is posting" above. A poster given ONE coin posts it,
+# re-offers it for ever and satisfies every assertion in this section — while the book it is
+# supposed to keep supplied never grows past one offer.
+if [[ -n "${FREE_COINS:-}" && -n "${ADOPTIONS:-}" ]]; then
+  ACCOUNTED=$(( FREE_COINS + ADOPTIONS ))
+  if (( ACCOUNTED >= PREMINT_COUNT )); then
+    ok "the pre-minted inventory is accounted for: ${FREE_COINS} free + ${ADOPTIONS} adopted >= POSTER_PREMINT_COUNT ${PREMINT_COUNT}"
+  else
+    fail "only ${ACCOUNTED} coin(s) are accounted for (${FREE_COINS} free + ${ADOPTIONS} adopted),
+          but poster-inventory was asked for ${PREMINT_COUNT}. The poster adopts a coin whose
+          value EQUALS OFFER_POSTER_GIVE_AMOUNT, so the usual cause is those two variables
+          disagreeing — compose reads them from the same one, so check for an override:"
+    dim  "docker compose logs poster-inventory"
+  fi
+else
+  warn "could not read freeCoins/inventoryAdoptions off /health — skipping the inventory count"
 fi
 
 # ── the exact-coin guarantee ─────────────────────────────────────────────────
@@ -528,24 +597,29 @@ if (!r || !r.ok) { console.log("sizes=fail"); process.exit(0); }
 const j = await r.json().catch(() => null);
 if (!j) { console.log("sizes=unparseable"); process.exit(0); }
 const coins = Object.values(j.coins ?? {});
-coins.sort((a, b) => String(a.mintedAt).localeCompare(String(b.mintedAt)));
+// `adoptedAt` at this pin; `mintedAt` was its name while the poster still minted. Reading
+// whichever is present keeps this working across a re-pin in either direction.
+coins.sort((a, b) => String(a.adoptedAt ?? a.mintedAt).localeCompare(String(b.adoptedAt ?? b.mintedAt)));
 console.log("sizes=" + coins.slice(-2).map((c) => String(c.value)).join(","));
 SIZES_JS
   SIZES="$(dc exec -T offer-poster bun -e "$SIZES_PROBE_JS" 2>/dev/null | sed -n 's/^sizes=//p' | head -1 || true)"
   FIRST_SIZE="${SIZES%%,*}"
   LAST_SIZE="${SIZES##*,}"
   if [[ -z "${SIZES:-}" || "$SIZES" == "fail" || "$FIRST_SIZE" == "$SIZES" ]]; then
-    fail "could not read two mint sizes from the journal (got '${SIZES:-nothing}')"
+    fail "could not read two adopted coin sizes from the journal (got '${SIZES:-nothing}')"
   elif [[ "$FIRST_SIZE" != "$LAST_SIZE" ]]; then
-    ok "the last two mints differ in size (${FIRST_SIZE} then ${LAST_SIZE} base units)"
+    ok "the last two adopted coins differ in size (${FIRST_SIZE} then ${LAST_SIZE} base units)"
   else
-    fail "a range is configured but the last two mints are both ${FIRST_SIZE} base units"
-    info "a log-uniform draw CAN repeat, but with OFFER_POSTER_SIZE_SEED unset it is unlikely;"
-    info "check that OFFER_POSTER_GIVE_AMOUNT is blank — a fixed size wins and the poster says so."
+    fail "a range is configured but the last two adopted coins are both ${FIRST_SIZE} base units"
+    info "AT THIS PIN THE RANGE IS A FILTER, NOT A DRAW: kernel #69 replaced the log-uniform"
+    info "whole-coin draw (and deleted OFFER_POSTER_SIZE_SEED) with an inclusive base-unit"
+    info "filter over coins the wallet ALREADY HOLDS. So a spread requires a WALLET with a"
+    info "spread, and poster-inventory mints ONE exact size. Stock it yourself with several"
+    info "issuer-fund <TOKEN> <size> <poster-seed> <count> calls at different sizes."
   fi
 else
-  info "no OFFER_POSTER_GIVE_MIN/_GIVE_MAX configured — every mint is the same size, so the"
-  info "spread assertion does not apply (this is the shipped default)"
+  info "no OFFER_POSTER_GIVE_MIN/_GIVE_MAX configured — poster-inventory mints ONE exact size,"
+  info "so every offer is that size and the spread assertion does not apply (the shipped default)"
 fi
 
 # ── somebody else settles one of them ────────────────────────────────────────
@@ -555,9 +629,46 @@ if [[ "${POSTER_VERIFY_SKIP_TAKE:-false}" == "true" || "${POSTER_VERIFY_SKIP_TAK
   warn "SKIP (POSTER_VERIFY_SKIP_TAKE=${POSTER_VERIFY_SKIP_TAKE}) — the offers above were"
   info "asserted LIVE and sponsorable, but nothing proved one can actually be settled."
 else
-  info "e2e-taker (…${TAKE_TAKER_SEED: -4}) funded with NIGHT from …${TAKE_FUNDER_SEED: -4}, then"
-  info "it MINTS the demanded ${WANT_NAME} itself — nothing on this stack holds a faucet preset"
-  info "until something mints one. Two provings; this is the long one."
+  # ── the two token ids, from the issuer's registry ─────────────────────────
+  # The driver takes 64-hex ids at this pin (kernel #69 deleted the offline
+  # `expectedColour(name, contractAddress)` derivation with the contract), and the ids are
+  # per chain. `issuer_token_id` is the same host-side reader verify-kernel and verify-solver
+  # use, so all three describe the same tokens by construction.
+  TAKE_GIVE_ID="$(issuer_token_id "$GIVE_NAME" || true)"
+  TAKE_WANT_ID="$(issuer_token_id "$WANT_NAME" || true)"
+  if [[ ! "$TAKE_GIVE_ID" =~ ^[0-9a-f]{64}$ || ! "$TAKE_WANT_ID" =~ ^[0-9a-f]{64}$ ]]; then
+    fail "could not resolve the poster's legs from the issuer registry
+          (${GIVE_NAME} -> ${TAKE_GIVE_ID:-?}, ${WANT_NAME} -> ${TAKE_WANT_ID:-?}).
+          The \`poster\` profile requires \`issuer\`; ./up.sh adds it."
+    exit 1
+  fi
+
+  # ── the taker's want-side inventory, from the ISSUER ──────────────────────
+  # NEW AT THIS PIN, and not an optimisation: up to `KERNEL_REF=a608fa6…` the driver minted the
+  # demanded token itself through the kernel's faucet circuit, and kernel #69 deleted that
+  # circuit along with `deploy/scripts/lib/faucet-mint.ts`. Nothing but the issuer can produce
+  # one of these tokens now.
+  #
+  # It runs BEFORE the driver because both open a facade on the taker's seed, and one facade
+  # per seed is an SDK rule. `issuer-fund` reads the balance back and refuses to report success
+  # unless it moved by exactly this amount, so a silent short-fund is not a failure mode here.
+  info "funding e2e-taker (…${TAKE_TAKER_SEED: -4}) with ${TAKE_FUND_AMOUNT} base units of ${WANT_NAME} from the issuer"
+  FUND_OUT="$(mktemp)"
+  FUND_RC=0
+  dc run --rm issuer-fund "$WANT_NAME" "$TAKE_FUND_AMOUNT" "$TAKE_TAKER_SEED" >"$FUND_OUT" 2>&1 || FUND_RC=$?
+  FUND_RESULT="$(grep -m1 '^ISSUER_FUND_RESULT ' "$FUND_OUT" || true)"
+  if (( FUND_RC != 0 )) || [[ -z "$FUND_RESULT" ]]; then
+    sed 's/^/      /' "$FUND_OUT" >&2
+    rm -f "$FUND_OUT"
+    fail "could not fund the taker with ${WANT_NAME} — the take cannot pay for the offer.
+          The manual form is: docker compose run --rm issuer-fund ${WANT_NAME} ${TAKE_FUND_AMOUNT} <taker-seed>"
+    exit 1
+  fi
+  rm -f "$FUND_OUT"
+  ok "the taker holds ${WANT_NAME}: $(printf '%s' "$FUND_RESULT" | sed -n 's/.* balanceAfter=\([0-9]*\).*/\1/p' | head -1 || true) base units"
+
+  info "e2e-taker gets its NIGHT from …${TAKE_FUNDER_SEED: -4} inside the driver, then settles"
+  info "one poster offer on chain. Two provings; this is the long one."
   TAKE_OUT="$(mktemp)"
   TAKE_RC=0
   dc run --rm --no-deps -T \
@@ -565,6 +676,8 @@ else
     -e "ZSWAP_API=http://kernel:9999" \
     -e "TAKER_SEED=${TAKE_TAKER_SEED}" \
     -e "FUNDER_SEED=${TAKE_FUNDER_SEED}" \
+    -e "GIVE_TOKEN=${TAKE_GIVE_ID}" \
+    -e "WANT_TOKEN=${TAKE_WANT_ID}" \
     -e "GIVE_TOKEN_NAME=${GIVE_NAME}" \
     -e "WANT_TOKEN_NAME=${WANT_NAME}" \
     --entrypoint bun kernel run stack-driver/take-poster-offer.ts >"$TAKE_OUT" 2>&1 || TAKE_RC=$?
