@@ -11,22 +11,41 @@
 # compose/offerfiles.yml builds. It needs neither the relay nor the solver, which is the
 # whole reason it is its own profile rather than part of `solver` (00011 Q1).
 #
-# ─── TWO SERVICES, ONE CONCERN EACH ──────────────────────────────────────────
+# ─── THREE SERVICES, ONE CONCERN EACH ────────────────────────────────────────
 #   poster-provision  ONE-SHOT, MANDATORY: four large NIGHT UTXOs from genesis to the
 #                     poster's dedicated wallet. Idempotent through a marker on the
-#                     `poster-state` volume, and serialised against the solver profile's two
+#                     `poster-state` volume, and serialised against the other profiles'
 #                     genesis one-shots by a `flock` on the shared `genesis-lock` volume.
-#   offer-poster      THE LOOP: every POST_INTERVAL_MS it re-offers a coin that came back or
-#                     mints one faucet coin and posts ONE sponsored ZSwap offer spending
+#   poster-inventory  ONE-SHOT, MANDATORY, and NEW IN 00020 PR C: POSTER_PREMINT_COUNT coins
+#                     of EXACTLY OFFER_POSTER_GIVE_AMOUNT base units of the give token, minted
+#                     by the `issuer` profile. It runs the ISSUER IMAGE, because that is the
+#                     only image in this stack carrying the token contracts.
+#   offer-poster      THE LOOP: every POST_INTERVAL_MS it re-offers a coin that came back, or
+#                     adopts one pre-minted coin, and posts ONE sponsored ZSwap offer spending
 #                     exactly that coin. `/health` on ${POSTER_HEALTH_HOST_PORT}.
 #
+# ─── THIS PROFILE NOW REQUIRES `issuer` (00020 PR C, questions Q9.3) ─────────
+# The poster has NOT minted anything since kernel #69 deleted the faucet circuit:
+# `selectInventoryCoin()` picks one unjournaled spendable coin whose value EQUALS `GIVE_AMOUNT`
+# and reports `degraded: insufficient_inventory` when none matches. So the coins have to be
+# there first, and only the `issuer` profile can make them. `up.sh` ADDS `issuer` when this
+# profile is selected and says so in one line; `docker compose -f core -f offerfiles -f poster`
+# by hand REFUSES to render, naming `issuer-deploy`, which is the correct failure —
+# scripts/verify-compose-pins.sh asserts that refusal.
+#
 # ─── WHY IT IS OPT-IN ────────────────────────────────────────────────────────
-# It MINTS CONTINUOUSLY and needs a funded, dedicated wallet. An operator who wants only the
-# browser flow on a quiet book, or only the solver lane, should not be paying for a mint a
-# minute — so it is a profile of its own, exactly as the kernel repository ships it
-# (`docker compose --profile poster up`). `--all` includes it, and the poster's first mint
-# (wallet sync + DUST registration + ~30 s of proving) is why ./verify.sh's poster section
-# carries a budget rather than a fixed wait.
+# It holds a funded, dedicated wallet and posts an offer a minute, each one a proving
+# transaction the batcher then pays a Celestia fee for. An operator who wants only the browser
+# flow on a quiet book, or only the solver lane, should not be paying for that — so it is a
+# profile of its own, exactly as the kernel repository ships it
+# (`docker compose --profile poster up`). `--all` includes it.
+#
+# ─── AND THE BOOK IS NOW BOUNDED ─────────────────────────────────────────────
+# POSTER_PREMINT_COUNT coins go in; the poster posts them one per tick and re-offers the ones
+# that come back. Once they are all live, every tick with nothing to re-offer reports
+# `degraded: insufficient_inventory` — a 200 on /health, by design, because restarting would
+# not produce a coin. The refill command is in docs/OPERATIONS.md and the budget is in
+# docs/KNOWN-LIMITATIONS.md.
 #
 # ─── THE SEED RULE, WHICH THIS PROFILE ENFORCES ON ITSELF ────────────────────
 # `offer-poster` is a LOOP: it holds a wallet facade open for the whole life of the stack,
@@ -46,20 +65,22 @@
 # is the only thing here that needs it.
 #
 # ─── THE GENESIS-1 FACADE MUTEX (00011 Q7) ───────────────────────────────────
-# `poster-provision` drives genesis-1. So do `solver-provision` and `maker-offer`, in
-# compose/solver.yml. A `depends_on` cannot serialise across fragments — compose refuses to
-# render a dependency on a service outside the merged set, and `--with poster` WITHOUT
-# `--with solver` is supported — so all three take a `flock` on a file on the `genesis-lock`
-# volume, which BOTH fragments declare identically (compose merges duplicate declarations).
-# See take_genesis_lock() in images/offerfiles-kernel/entrypoint-common.sh.
+# `poster-provision` drives genesis-1. So do `solver-provision` and `maker-provision` in
+# compose/solver.yml and `issuer-deploy` in compose/issuer.yml. A `depends_on` cannot serialise
+# across fragments — compose refuses to render a dependency on a service outside the merged
+# set, and `--with poster` WITHOUT `--with solver` is supported — so all of them take a `flock`
+# on a file on the `genesis-lock` volume, which every one of those fragments declares
+# identically (compose merges duplicate declarations). See take_genesis_lock() in
+# images/offerfiles-kernel/entrypoint-common.sh.
 #
 # ─── NO `build:` HERE, DELIBERATELY ──────────────────────────────────────────
-# Both services run ${KERNEL_IMAGE}, the image compose/offerfiles.yml builds — the kernel
-# repository's own deployment does exactly this (every poster-side process is the kernel
-# image with a different entrypoint), and it is what gives the poster ONE commit identity
-# with the kernel it posts into. Declaring the build a second time here would put KERNEL_REF
-# in one more place for a pin to drift in, for no gain: this fragment is never loaded without
-# compose/offerfiles.yml, which builds the image before either service below can start.
+# `poster-provision` and `offer-poster` run ${KERNEL_IMAGE}, and `poster-inventory` runs
+# ${ISSUER_IMAGE}: the images compose/offerfiles.yml and compose/issuer.yml build. The kernel
+# repository's own deployment does exactly this (every poster-side process is the kernel image
+# with a different entrypoint), and it is what gives the poster ONE commit identity with the
+# kernel it posts into. Declaring either build a second time here would put a pin in one more
+# place to drift in, for no gain: this fragment is never loaded without those two, and both
+# build their image before any service below can start.
 
 services:
   # ── poster-provision ───────────────────────────────────────────────────────
@@ -69,7 +90,11 @@ services:
   # that simply never mints. See the entrypoint's header.
   poster-provision:
     image: '${KERNEL_IMAGE:-midnight-1-offers/offerfiles-kernel:local}'
-    entrypoint: ['/usr/local/bin/entrypoint-poster-provision.sh']
+    # THE GENERIC NIGHT ONE-SHOT since 00020 PR C. `entrypoint-poster-provision.sh` became
+    # `entrypoint-night-provision.sh` when the maker and the solver turned out to need exactly
+    # the same transfer: one script, three callers, one set of numbers, differing only in the
+    # M1_NIGHT_* variables below.
+    entrypoint: ['/usr/local/bin/entrypoint-night-provision.sh']
     restart: 'no'
     environment:
       # The endpoints, stated explicitly (the kernel packages default an unset
@@ -80,20 +105,32 @@ services:
       MIDNIGHT_INDEXER_HTTP: 'http://indexer:8088${INDEXER_API_PATH:-/api/v3/graphql}'
       MIDNIGHT_INDEXER_WS: 'ws://indexer:8088${INDEXER_API_PATH:-/api/v3/graphql}/ws'
       MIDNIGHT_PROOF_SERVER_URL: 'http://proof-server:6300'
-      CONTRACT_SHARE_DIR: '/srv/offerfiles-deploy'
       # It drives TWO wallets: the funder and the recipient. Both are named explicitly, and
-      # the script refuses (exit 78) if they are the same seed.
+      # night-provision.ts refuses (exit 78) if they are the same seed — funding the genesis
+      # wallet from the genesis wallet would "succeed" and leave a marker claiming a wallet was
+      # provisioned that does not exist.
+      #
+      # THE RECIPIENT IS NAMED `M1_NIGHT_RECIPIENT_SEED`, NOT `POSTER_SEED`, and that is not
+      # cosmetic: `deploy/scripts/lib/poster-config.ts` refuses to start when POSTER_SEED
+      # equals any of seven seed variables AS SEEN IN ITS OWN ENVIRONMENT, so a generic funding
+      # one-shot that reused the poster's variable name would be one collision away from
+      # tripping that check in a container that is not the poster.
       MIDNIGHT_GENESIS_SEED: '${MIDNIGHT_GENESIS_SEED:-0000000000000000000000000000000000000000000000000000000000000001}'
-      POSTER_SEED: '${OFFER_POSTER_SEED:-0000000000000000000000000000000000000000000000000000000000000041}'
+      M1_NIGHT_ROLE: 'poster'
+      M1_NIGHT_RECIPIENT_SEED: '${OFFER_POSTER_SEED:-0000000000000000000000000000000000000000000000000000000000000041}'
+      # The idempotence marker, on the volume THIS profile already wipes with `./down.sh -v`,
+      # so that "start over" stays one operation and a chain reset always re-funds.
+      M1_NIGHT_MARKER: '/var/lib/offer-poster/.night-provisioned'
       # Encrypts the container-local LevelDB private-state store. Upstream's poster block
       # omits it and relies on the SDK default; every other wallet-holding service in this
       # repository states it, so this one does too — it is not a seed and collides with
       # nothing.
       MIDNIGHT_STORAGE_PASSWORD: '${MIDNIGHT_STORAGE_PASSWORD:-YourPasswordMy1!}'
-      POSTER_PROVISION_ENABLED: '${POSTER_PROVISION_ENABLED:-true}'
+      # RENAMED with the entrypoint (00020 PR C). `POSTER_PROVISION_ENABLED` is still accepted
+      # as the fallback so an existing `.env` keeps working; `.env.example` documents the new
+      # name only.
+      M1_NIGHT_ENABLED: '${POSTER_NIGHT_ENABLED:-${POSTER_PROVISION_ENABLED:-true}}'
     volumes:
-      # Read-only: it wants the contract address for the marker, nothing else.
-      - 'offerfiles-deploy:/srv/offerfiles-deploy:ro'
       # The marker lives beside the poster's journal, so that "start over" is ONE operation:
       # `./down.sh -v` wipes the volume and the next bring-up re-funds a fresh wallet on a
       # fresh chain.
@@ -103,9 +140,70 @@ services:
       node: { condition: service_healthy }
       indexer: { condition: service_healthy }
       proof-server: { condition: service_healthy }
-      # The deploy one-shot mints FROM genesis-1, so this must not start while it is running
-      # — and its contract address is what the marker records.
-      offerfiles-deploy: { condition: service_completed_successfully }
+
+  # ── poster-inventory ───────────────────────────────────────────────────────
+  # ONE-SHOT, MANDATORY, and NEW IN 00020 PR C. It runs the ISSUER image — the only image here
+  # that carries the token contracts — and mints the poster its whole postable stock:
+  # POSTER_PREMINT_COUNT SEPARATE coins of EXACTLY the give amount.
+  #
+  # WHY N SEPARATE COINS AND NOT ONE BIG ONE. `selectInventoryCoin()` at KERNEL_REF=e3b9388…
+  # picks one unjournaled spendable coin whose `value` EQUALS `GIVE_AMOUNT` — not one worth at
+  # least that much — and every offer spends its coin WHOLE with no change output. So a single
+  # coin of N x GIVE_AMOUNT is worth exactly one offer's inventory to this poster, and
+  # `issuer-fund`'s `count` argument exists precisely for this: it asserts both the balance AND
+  # that N new coins of that exact value appeared.
+  #
+  # ORDERED AFTER poster-provision AND BEFORE offer-poster, because all three open a facade on
+  # the poster's seed and one facade per seed is an SDK rule.
+  poster-inventory:
+    image: '${ISSUER_IMAGE:-midnight-1-offers/issuer:local}'
+    entrypoint: ['/usr/local/bin/entrypoint-provision.sh']
+    restart: 'no'
+    environment:
+      # The issuer image's own endpoint names (MN_*), which are NOT the kernel image's
+      # MIDNIGHT_* ones. They repeat compose/issuer.yml's anchor because YAML anchors do not
+      # cross files; the /api/v4 indexer path is deliberate and explained there.
+      MN_NETWORK: 'undeployed'
+      MN_NODE_URL: 'http://node:9944'
+      MN_NODE_WS_URL: 'ws://node:9944'
+      MN_INDEXER_URL: 'http://indexer:8088/api/v4/graphql'
+      MN_INDEXER_WS_URL: 'ws://indexer:8088/api/v4/graphql/ws'
+      MN_PROOF_SERVER_URL: 'http://proof-server:6300'
+      MN_METADATA_OUTPUT_DIR: '/srv/issuer-registry'
+      MN_TIMEOUT_MS: '${ISSUER_MN_TIMEOUT_MS:-600000}'
+      ISSUER_SDK_LOG_LEVEL: '${ISSUER_SDK_LOG_LEVEL:-}'
+      # The issuer pays for and submits every mint; the poster's seed only receives.
+      ISSUER_SEED: '${ISSUER_SEED:-0000000000000000000000000000000000000000000000000000000000000051}'
+      ISSUER_PROVISION_ROLE: 'poster'
+      ISSUER_PROVISION_SEED: '${OFFER_POSTER_SEED:-0000000000000000000000000000000000000000000000000000000000000041}'
+      # `TOKEN:baseUnits:count`. The token may be a NAME — this is the ISSUER image, which
+      # resolves names against its own registry — and the amount MUST equal the poster's
+      # GIVE_AMOUNT exactly, which is why both read the same two variables with the same
+      # defaults. Blank POSTER_PREMINT_COUNT would be a malformed spec, so the default is
+      # inline here rather than only in .env.example.
+      ISSUER_PROVISION_SPEC: '${OFFER_POSTER_GIVE_TOKEN:-TWBTC}:${OFFER_POSTER_GIVE_AMOUNT:-1000000}:${POSTER_PREMINT_COUNT:-12}'
+      # Same volume, same reason as the NIGHT marker: one `./down.sh -v` resets everything.
+      ISSUER_PROVISION_MARKER: '/var/lib/offer-poster/.inventory-provisioned'
+    volumes:
+      - 'issuer-registry:/srv/issuer-registry:ro'
+      # The private-state store AND the `flock` that keeps one facade on the issuer's seed —
+      # the same volume `issuer-fund` mounts, for the same two reasons.
+      - 'issuer-state:/app/.local'
+      - 'poster-state:/var/lib/offer-poster'
+    tmpfs:
+      - '/run/issuer:mode=0700'
+    depends_on:
+      node: { condition: service_healthy }
+      indexer: { condition: service_healthy }
+      proof-server: { condition: service_healthy }
+      # THE CROSS-FRAGMENT DEPENDENCY THAT MAKES `issuer` MANDATORY FOR THIS PROFILE. Compose
+      # refuses to render a dependency on a service outside the merged set, so `-f core -f
+      # offerfiles -f poster` without `-f issuer` fails HERE, naming `issuer-deploy` — which is
+      # the correct, immediate failure. `up.sh` adds the profile for the operator.
+      issuer-deploy: { condition: service_completed_successfully }
+      # It drives the poster's facade, and so does the NIGHT one-shot. Sequential, never
+      # concurrent.
+      poster-provision: { condition: service_completed_successfully }
 
   # ── offer-poster ───────────────────────────────────────────────────────────
   offer-poster:
@@ -126,7 +224,6 @@ services:
       MIDNIGHT_INDEXER_HTTP: 'http://indexer:8088${INDEXER_API_PATH:-/api/v3/graphql}'
       MIDNIGHT_INDEXER_WS: 'ws://indexer:8088${INDEXER_API_PATH:-/api/v3/graphql}/ws'
       MIDNIGHT_PROOF_SERVER_URL: 'http://proof-server:6300'
-      CONTRACT_SHARE_DIR: '/srv/offerfiles-deploy'
       # The kernel it posts into and quotes against. Container port, never the host port.
       ZSWAP_API: 'http://kernel:9999'
       MIDNIGHT_STORAGE_PASSWORD: '${MIDNIGHT_STORAGE_PASSWORD:-YourPasswordMy1!}'
@@ -145,26 +242,37 @@ services:
       # down (deploy/scripts/lib/poster-config.ts). The entrypoint UNSETS the blank ones, so
       # the container's environment never claims otherwise.
       #
-      # The GIVE leg: a faucet preset NAME (WBTC, WETH, USDC — the shielded ones), never a raw
-      # colour. Names resolve OFFLINE as rawTokenType(domainSep(name), contractAddress), so
-      # they are correct on every fresh stack without a lookup — and the poster MINTS this
-      # leg, which the faucet can only do from a name.
-      GIVE_TOKEN: '${OFFER_POSTER_GIVE_TOKEN:-}'
-      # How much is minted per coin, in BASE UNITS. Every token this stack mints has 6
-      # decimals, so 1 whole coin = 1000000 base units — which is the code default when this
-      # is blank. One coin per offer, spent WHOLE: there is no change output, which is what
-      # makes each offer independently takeable.
-      GIVE_AMOUNT: '${OFFER_POSTER_GIVE_AMOUNT:-}'
-      # A RANGE instead of the fixed amount above (kernel #66): whole COINS, at most 6 decimal
-      # places, drawn LOG-UNIFORMLY per FRESH mint so the book carries a spread of sizes.
-      # BOTH ENDS OR NEITHER, and mutually exclusive with GIVE_AMOUNT (the poster exits 78
-      # naming both). GIVE_SIZE_SEED makes the sequence reproducible and is not a secret.
+      # ── THE TWO LEGS (00020 PR C) ──────────────────────────────────────────
+      # REQUIRED, not blank-by-default: `resolveLeg()` at this pin demands an explicit 64-hex
+      # token id and refuses a name outright. Those ids are per chain — each token's colour
+      # derives from the contract the ISSUER deployed it at — so they cannot be written down
+      # here, and a stack-local default would be wrong on every fresh chain.
+      #
+      # So this fragment configures NAMES and `entrypoint-offer-poster.sh` translates them
+      # through the issuer's `tokens.env` handoff (a raw 64-hex value passes through untouched).
+      # The default pair is the two the price feed actually prices, at 8 and 18 decimals — the
+      # combination that makes the decimals-aware assertions mean something.
+      GIVE_TOKEN: '${OFFER_POSTER_GIVE_TOKEN:-TWBTC}'
+      # BASE UNITS, and it MUST equal the size `poster-inventory` pre-minted: the poster adopts
+      # a coin whose value EQUALS this number, not one worth at least it. Both services read
+      # this same variable with this same default, which is what keeps them in step.
+      #
+      # 1000000 base units of TWBTC (8 decimals) is 0.01 whole coins. It is deliberately NOT
+      # one whole coin: the want leg is quoted from it, and one whole TWBTC quotes into a want
+      # leg far larger than a demo taker is funded for.
+      GIVE_AMOUNT: '${OFFER_POSTER_GIVE_AMOUNT:-1000000}'
+      # A base-unit RANGE instead of the fixed amount above. At this pin it is an inclusive
+      # FILTER over coins the wallet ALREADY HOLDS, not a draw for a mint (kernel #69 replaced
+      # the log-uniform whole-coin draw and deleted GIVE_SIZE_SEED with it). BOTH ENDS OR
+      # NEITHER, and mutually exclusive with GIVE_AMOUNT (the poster exits 78 naming both).
+      # Left blank here: `poster-inventory` mints ONE exact size, so a range would only widen
+      # what the poster will accept, never what it holds.
       GIVE_MIN: '${OFFER_POSTER_GIVE_MIN:-}'
       GIVE_MAX: '${OFFER_POSTER_GIVE_MAX:-}'
-      GIVE_SIZE_SEED: '${OFFER_POSTER_SIZE_SEED:-}'
       # The WANT leg. Must be a SHIELDED colour — a cross-layer offer (NIGHT, or an unshielded
-      # preset) is rejected by the kernel and the poster refuses to start on one.
-      WANT_TOKEN: '${OFFER_POSTER_WANT_TOKEN:-}'
+      # token) is rejected by the kernel and the poster refuses to start on one. TWETH is
+      # shielded, at 18 decimals.
+      WANT_TOKEN: '${OFFER_POSTER_WANT_TOKEN:-TWETH}'
       # Blank = the want leg is sized from GET /v1/quote every tick, which is what keeps the
       # offer SPONSORABLE (the batcher pays its Celestia fee only for an offer that lands on
       # the discount threshold). Setting it FORCES an amount and downgrades the sponsorship
@@ -179,18 +287,16 @@ services:
       # expires on the KERNEL's clock instead: min(ROOT_WINDOW_SECONDS, OFFER_TTL_SECONDS),
       # 1 h on every network here, and no client can shorten it.
       OFFER_TTL_MINUTES: '${OFFER_POSTER_TTL_MINUTES:-}'
-      COIN_VISIBLE_TIMEOUT_MS: '${OFFER_POSTER_COIN_VISIBLE_TIMEOUT_MS:-}'
+      # COIN_VISIBLE_TIMEOUT_MS was here, and is DELETED at this pin along with the mint it
+      # bounded (there is no freshly minted coin to wait for any more). GIVE_SIZE_SEED,
+      # POSTER_MIN_DUST and POSTER_DUST_WAIT_TIMEOUT_MS went the same way — `poster-config.ts`
+      # no longer reads any of the four, so passing them would put dead variables in
+      # `docker inspect` that an operator would reasonably expect to do something.
       RECONCILE_INTERVAL_MS: '${OFFER_POSTER_RECONCILE_INTERVAL_MS:-}'
       POSTER_MAX_REOFFERS_PER_TICK: '${OFFER_POSTER_MAX_REOFFERS_PER_TICK:-}'
       SHUTDOWN_GRACE_MS: '${OFFER_POSTER_SHUTDOWN_GRACE_MS:-}'
       HEALTH_STALE_TICKS: '${OFFER_POSTER_HEALTH_STALE_TICKS:-}'
-      # The floor of spendable DUST a tick requires before it will MINT (a re-offer costs
-      # none). The code default of 1 means "any dust at all", which upstream's own P5
-      # measurement left in place: DUST regenerates from the registered NIGHT backing about
-      # three orders of magnitude faster than one mint's fee.
-      POSTER_MIN_DUST: '${OFFER_POSTER_MIN_DUST:-}'
       POSTER_SYNC_TIMEOUT_MS: '${OFFER_POSTER_SYNC_TIMEOUT_MS:-}'
-      POSTER_DUST_WAIT_TIMEOUT_MS: '${OFFER_POSTER_DUST_WAIT_TIMEOUT_MS:-}'
       # POST /v1/offers retry ladder (ROOT_UNKNOWN / UTXO_NOT_LIVE only) and the liveness poll
       # that follows an accepted post.
       POSTER_POST_RETRIES: '${OFFER_POSTER_POST_RETRIES:-}'
@@ -202,9 +308,11 @@ services:
       # re-running it, so use the one-off form instead:
       #     docker compose run --rm -e DRY_RUN=true offer-poster
       DRY_RUN: '${OFFER_POSTER_DRY_RUN:-}'
-      # The journal refuses to start on a corrupt file or one written against another contract
-      # address — silently losing the coin record would defeat its purpose. A corrupt file is
-      # moved aside, never overwritten. Set true ONCE to start over.
+      # The journal refuses to start on a corrupt file, or on one written against a different
+      # NETWORK + GIVE-TOKEN pair (it was keyed by contract address up to `a608fa6…`; kernel
+      # #69 rekeyed it, which is the right key now that the contract is gone). Silently losing
+      # the coin record would defeat its purpose. A corrupt file is moved aside, never
+      # overwritten. Set true ONCE to start over.
       POSTER_JOURNAL_RESET: '${OFFER_POSTER_JOURNAL_RESET:-}'
       # FIXED, not knobs. The journal has to be on the named volume below and the healthcheck
       # and port publish are literals, so the two sides would drift apart the first time
@@ -212,7 +320,9 @@ services:
       POSTER_JOURNAL_FILE: '/var/lib/offer-poster/journal.json'
       POSTER_HEALTH_PORT: '9977'
     volumes:
-      - 'offerfiles-deploy:/srv/offerfiles-deploy:ro'
+      # THE TOKEN HANDOFF, read-only: `entrypoint-offer-poster.sh` sources it to turn
+      # GIVE_TOKEN/WANT_TOKEN from names into this chain's 64-hex ids.
+      - 'issuer-tokens:/srv/issuer-tokens:ro'
       - 'poster-state:/var/lib/offer-poster'
     ports:
       - '${BIND_ADDR:-127.0.0.1}:${POSTER_HEALTH_HOST_PORT:-19977}:9977'
@@ -236,21 +346,30 @@ services:
       start_period: 15m
     depends_on:
       kernel: { condition: service_healthy }
-      offerfiles-deploy: { condition: service_completed_successfully }
-      # Not ordering for its own sake: poster-provision drives a facade on the SAME seed this
+      # Not ordering for its own sake: BOTH one-shots drive a facade on the SAME seed this
       # service holds open for the life of the stack, and two facades on one seed against one
-      # node force each other's connection down.
+      # node force each other's connection down. `poster-inventory` also has to have finished
+      # for there to be anything to post.
       poster-provision: { condition: service_completed_successfully }
+      poster-inventory: { condition: service_completed_successfully }
 
 volumes:
   # Declared here rather than created ad hoc: only a compose-created volume carries the
   # com.docker.compose.project label that `down.sh -v` filters on, so a volume made any other
   # way survives teardown and silently feeds stale state to the next bring-up.
-  poster-state:  # the poster's JOURNAL (one entry per coin it ever minted, with that coin's
-                 # nullifier and every offer built from it) and the provisioning marker. Both
-                 # are keyed to this chain: the coins do not exist on another one, and the
-                 # journal REFUSES to open against a different contract address rather than
-                 # merge. In the wipe group with everything else.
+  poster-state:  # the poster's JOURNAL (one entry per coin it ever adopted, with that coin's
+                 # nullifier and every offer built from it) and BOTH provisioning markers. All
+                 # three are keyed to this chain: the coins do not exist on another one, and
+                 # the journal REFUSES to open against a different network + give-token pair
+                 # rather than merge. In the wipe group with everything else.
+  #
+  # AND TWO THIS FRAGMENT USES BUT DOES NOT OWN. Both are declared here IDENTICALLY to
+  # compose/issuer.yml — compose merges duplicate declarations, which is what lets a fragment
+  # mount another profile's volume without either referencing the other:
+  issuer-registry:  # `poster-inventory` reads the six colours from it. Read-only.
+  issuer-tokens:    # the `tokens.env` handoff `offer-poster` sources. Read-only.
+  issuer-state:     # the issuer's private-state store and the `flock` serialising its facade.
+                    # Read-WRITE, necessarily: `poster-inventory` opens that facade to mint.
   genesis-lock:  # the genesis-1 facade mutex (00011 Q7). Declared IDENTICALLY in
                  # compose/solver.yml — compose merges duplicate volume declarations, which is
                  # what lets two fragments share a lock without referencing each other. It
