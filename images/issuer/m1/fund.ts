@@ -197,10 +197,24 @@ function balanceOf(state: any, privacy: "shielded" | "unshielded", tokenId: stri
  * are completely different inventories and only the second one is postable.
  *
  * `availableCoins` is the same field the poster's own wallet facade reads. It is read
- * defensively (`?? []`) because a wallet state that has not produced the array yet must count
- * as zero rather than throw — the caller compares BEFORE and AFTER, so an unavailable field
- * simply makes the coin assertion vacuous instead of wrong, and the balance assertion still
- * holds. `coinsAvailable=false` is then reported in the receipt rather than hidden.
+ * defensively because a wallet state that has not produced the array yet must count as zero
+ * rather than throw — the caller compares BEFORE and AFTER, so an unavailable field simply
+ * makes the coin assertion vacuous instead of wrong, and the balance assertion still holds.
+ * `coinsAvailable=false` is then reported in the receipt rather than hidden.
+ *
+ * ── THE ENTRY IS A WRAPPER, AND THE TWO SIDES WRAP DIFFERENTLY ──────────────
+ * MEASURED on facade 4.0.1 against this stack rather than assumed, after the first version of
+ * this function read `entry.type` / `entry.value` and counted ZERO coins for a mint that had
+ * in fact landed perfectly (balance and coin count both correct on chain):
+ *
+ *   shielded    { coin: { type, nonce, value, mt_index }, commitment, nullifier }
+ *   unshielded  { utxo: { value, owner, type, intentHash, outputNo }, meta: {…} }
+ *
+ * So the token id and the amount live one level down, under a DIFFERENT key on each side, and
+ * `value` is a decimal STRING rather than a bigint. `entry.coin ?? entry.utxo ?? entry` covers
+ * both shapes and still works if a future facade flattens them; the `type`/`tokenType` and
+ * `value`/`amount` alternatives cost nothing and mean a field rename degrades to
+ * `coinsAvailable=false` rather than to a wrong count.
  */
 function coinsOf(
   state: any,
@@ -212,17 +226,26 @@ function coinsOf(
   const coins = side?.availableCoins;
   if (!Array.isArray(coins)) return { count: 0, available: false };
   let matched = 0;
-  for (const coin of coins) {
-    const type = String((coin as any)?.type ?? "").toLowerCase();
+  let shapeSeen = false;
+  for (const entry of coins) {
+    const inner = (entry as any)?.coin ?? (entry as any)?.utxo ?? entry;
+    const type = String(inner?.type ?? inner?.tokenType ?? "").toLowerCase();
+    if (!type) continue;
+    shapeSeen = true;
     if (type !== tokenId.toLowerCase()) continue;
     let amountValue: bigint;
     try {
-      amountValue = BigInt((coin as any)?.value ?? (coin as any)?.amount ?? 0);
+      amountValue = BigInt(inner?.value ?? inner?.amount ?? 0);
     } catch {
       continue;
     }
     if (amountValue === value) matched += 1;
   }
+  // An EMPTY array is a legitimate "this wallet holds nothing" and must count as available —
+  // that is the BEFORE reading of every first mint. A NON-empty array whose entries expose no
+  // recognisable token id is a shape this function does not understand, and saying so is the
+  // honest answer: the assertion then goes vacuous instead of failing a correct mint.
+  if (coins.length > 0 && !shapeSeen) return { count: 0, available: false };
   return { count: matched, available: true };
 }
 
