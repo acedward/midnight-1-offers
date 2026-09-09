@@ -316,6 +316,12 @@ end; this will make it safe. This will fix the issue for now"):
   behind an `OFFER_POSTER_REQUIRE_FED_PRICES` knob so a deliberately unpriced devnet can still
   trade. That is the one fix that also covers the by-hand case.
 
+**How the gate notices.** A poster started outside `./up.sh` leaves no `.colours-bound` receipt
+on the `poster-state` volume — `./up.sh` writes it after confirming both colours are priced and
+before starting the poster — so `./verify.sh --poster` fails naming its absence rather than
+quietly passing. That is a claim about *how* the poster was started, and it holds even on a chain
+whose colours are bound by the time verify runs.
+
 **What protects you meanwhile.** The condition is loud rather than silent, in four places: the
 poster logs `quote: give leg is priced from "demo-fallback" — not market data; register the
 colour's name` on every affected leg of every affected tick; `./verify.sh --poster`'s

@@ -543,21 +543,7 @@ if (( ! FAILED )) \
    && [[ " $PROFILES " == *" issuer "* ]] && [[ " $PROFILES " == *" offerfiles "* ]] \
    && service_present faucet && service_present kernel; then
   log "registering this stack's six issuer colours with the offer-files token registry"
-  # NO `--rm` HERE, DELIBERATELY, AND IT IS THE ONLY ONE-SHOT IN THIS FILE RUN THAT WAY (00025).
-  #
-  # Two reasons, and neither is tidiness. (1) This is the one FATAL cross-profile step, and with
-  # `--rm` its container — and therefore its LOG — is destroyed the instant it exits, so the
-  # advice printed on failure ("read its log") had nothing to read. (2) The exited container's
-  # `State.FinishedAt` is the only DAEMON-OWNED record that this step ran before the poster
-  # started; `scripts/verify-poster.sh` compares it with the poster's `State.StartedAt`, which is
-  # the structural proof of the ordering this project exists to establish, independent of any log
-  # line or journal entry.
-  #
-  # It leaves no residue: the container carries this project's compose labels, `./down.sh -v`
-  # removes it (measured: zero containers by label AND by name afterwards), and the NEXT
-  # `./up.sh`'s initial `up` scale-downs this `replicas: 0` service, taking the previous run
-  # container with it — so exactly one is kept, the newest, which is the one verify wants.
-  if ! dc run --no-deps -T issuer-registrar; then
+  if ! dc run --rm --no-deps -T issuer-registrar; then
     err "could not register the issuer colours in the kernel registry"
     info "the kernel is left holding the six canonical NAMES at the Preprod colours its own seed"
     info "shipped — colours that do not exist on this chain. Re-run it alone with:"
@@ -691,6 +677,48 @@ if (( POSTER_HELD )); then
       POSTER_COLOURS_ELAPSED=$(( SECONDS - POSTER_COLOURS_START ))
       if (( POSTER_COLOURS_OK )); then
         ok "the kernel prices BOTH of the poster's colours (non-null asset_id) — ${POSTER_COLOURS_ELAPSED}s, ${POSTER_COLOUR_TRIES} poll(s)"
+
+        # ── THE RECEIPT, WRITTEN BEFORE THE POSTER EXISTS ───────────────────
+        #
+        # `scripts/verify-poster.sh` proves the ordering by comparing this receipt's timestamp
+        # with the poster container's own `State.StartedAt` (daemon-owned). It is written HERE,
+        # in the one place that knows the colours were confirmed, and it is written ONLY on the
+        # path that actually starts the poster — so an additive `./up.sh --with poster` that
+        # leaves a running poster alone does NOT touch it, and the assertion keeps describing
+        # the run that really did start this poster.
+        #
+        # WHY A RECEIPT ON THE VOLUME AND NOT THE REGISTRAR'S OWN CONTAINER. The registrar is a
+        # `docker compose run --rm` one-shot: its container, and therefore its `FinishedAt`, is
+        # gone the instant it exits. Keeping it (dropping `--rm`) was measured and rejected —
+        # compose then calls it an ORPHAN of this `replicas: 0` service on every later
+        # `docker compose up` and `run`, printing advice ("run with --remove-orphans") which, if
+        # followed, deletes the very evidence the gate reads. A marker on the job's own volume is
+        # the idiom this repository already uses for exactly this kind of claim; see
+        # scripts/verify-oneshots.sh's header on why an effect on a volume is the assertable
+        # half of a one-shot.
+        #
+        # The poster's own image and volume, so no new service and no new mount: `poster-state`
+        # is where both provisioning markers already live, and `./down.sh -v` wipes it with the
+        # chain. The container stamps the time itself with `date -u` (GNU coreutils is in this
+        # image, and the format is the RFC3339-nano shape `docker inspect` emits).
+        #
+        # NON-FATAL. If the receipt cannot be written the poster still starts: the ordering has
+        # already been established by the poll above, and refusing to trade over an unwritable
+        # marker would be the wrong trade. `./verify.sh` reports the missing receipt itself.
+        if dc run --rm --no-deps -T --entrypoint sh offer-poster -c \
+             "printf 'POSTER_COLOURS_BOUND at=%s give=%s want=%s waited=%ss polls=%s\n' \
+                \"\$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)\" \
+                '${POSTER_GIVE_COLOUR}' '${POSTER_WANT_COLOUR}' \
+                '${POSTER_COLOURS_ELAPSED}' '${POSTER_COLOUR_TRIES}' \
+                > /var/lib/offer-poster/.colours-bound" >/dev/null 2>&1; then
+          ok "receipt written to the poster's own volume: /var/lib/offer-poster/.colours-bound"
+        else
+          warn "could not write the colours-bound receipt on the poster-state volume"
+          info "the poster is started anyway — the ordering was established by the poll above."
+          info "./verify.sh's poster section reads that receipt to prove the ordering, so it"
+          info "will report the gap rather than passing quietly."
+        fi
+
         log "starting offer-poster — the last service in this bring-up"
         # `--no-deps`: every one of its declared dependencies (kernel healthy, both one-shots
         # completed) was satisfied by the `up` above, which would not have returned otherwise.

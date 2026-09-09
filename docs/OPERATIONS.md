@@ -1095,7 +1095,7 @@ the cheapest on the book. See the organizer's `issues/00023` and its root cause 
 | 2 | the core waits (postgres → node → proof-server → indexer), then each profile's own | as before |
 | 3 | `shielded-night-token-name` — names the sNight colour (non-fatal) | `offerfiles` + `shielded-night` |
 | 4 | **`issuer-registrar`** — the six colours, their decimals and their `asset_id`s (**fatal**) | `offerfiles` + `issuer` |
-| 5 | **the poster's colours are confirmed, then `offer-poster` is started** | `poster` |
+| 5 | **the poster's colours are confirmed, a receipt is written, then `offer-poster` is started** | `poster` |
 | 6 | the intents-UI bake — labels and decimals into `index.html` (non-fatal) | `issuer` + `solver` |
 | 7 | `wait_compose_healthy offer-poster`, and every remaining profile wait | `poster` |
 
@@ -1126,12 +1126,29 @@ registrar idempotently (`already=6`), and says so:
 `demo-fallback` lines and zero `market_rate=1` quote lines in the poster's whole log; zero
 offers in its journal whose own quote snapshot names a fallback source or a market rate of
 exactly 1; the **oldest** live offer re-quoted with its exact legs still priced from market data
-and still within `POSTER_PRICE_BAND` of the kernel's own `sponsor_discount`; and `docker inspect`
-showing `offer-poster`'s `StartedAt` later than `issuer-registrar`'s `FinishedAt`. That last one
-is why `./up.sh` runs the registrar **without `--rm`** — the container, its log and its exit
-code survive the run instead of being deleted the instant it exits. `./verify.sh --solver` adds
-the other half: every published rung on the poster's pair is priced within `SOLVER_RUNG_BAND` of
-the kernel's reference, which is the symptom `issues/00023` was found by.
+and still within `POSTER_PRICE_BAND` of the kernel's own `sponsor_discount`; and the poster
+container's `StartedAt` later than the `.colours-bound` receipt described below.
+`./verify.sh --solver` adds the other half: every published rung on the poster's pair is priced
+within `SOLVER_RUNG_BAND` of the kernel's reference, which is the symptom `issues/00023` was
+found by.
+
+**The receipt, and why the ordering is provable after the fact.** Once the colours are confirmed
+and before the poster is started, step 5 writes one line onto the poster's own `poster-state`
+volume:
+
+```
+POSTER_COLOURS_BOUND at=2026-09-09T14:35:59.123456789Z give=<64 hex> want=<64 hex> waited=0s polls=1
+```
+
+`issuer-registrar` is a `docker compose run --rm` one-shot, so its own container — and its
+`FinishedAt` — is gone the instant it exits; the receipt is what survives. It is written **only**
+on the path that actually starts the poster, so an additive `./up.sh --with poster` that leaves a
+running poster alone does not touch it and the claim keeps describing the run that really did
+start this poster. `./down.sh -v` wipes it with the chain, and `./verify.sh --poster` also checks
+that the colours it names are **this** chain's, so a receipt left on a kept volume by a previous
+chain fails rather than passing. A poster started any other way (`docker compose up -d
+offer-poster` by hand) leaves no receipt at all, and the gate says so — see
+`docs/KNOWN-LIMITATIONS.md`.
 
 ### Reading it
 

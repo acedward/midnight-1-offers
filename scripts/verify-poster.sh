@@ -58,10 +58,11 @@
 #                   WHOLE log; zero offers in the journal whose own quote snapshot names a
 #                   fallback source or a market rate of exactly 1; the oldest LIVE offer
 #                   re-quoted with its exact legs still priced from market data and still within
-#                   a band of the kernel's own `sponsor_discount`; and `docker inspect` showing
-#                   the poster's `StartedAt` later than the registrar's `FinishedAt`. See that
-#                   block's own header for why every assertion above it passed on a stack whose
-#                   first two offers were mispriced by eleven orders of magnitude.
+#                   a band of the kernel's own `sponsor_discount`; and the poster container's
+#                   `StartedAt` later than the `.colours-bound` receipt `up.sh` writes on the
+#                   poster's own volume before starting it. See that block's own header for why
+#                   every assertion above it passed on a stack whose first two offers were
+#                   mispriced by eleven orders of magnitude.
 #   size range      only when a range is configured: the last two adopted coins differ in size.
 #   a real take     e2e-taker settles ONE poster offer on chain and is credited EXACTLY the
 #                   give amount, having paid EXACTLY the want amount. Offers that are listed
@@ -679,8 +680,10 @@ fi
 #   the oldest     the OLDEST live offer, re-quoted through `GET /v1/quote` with its exact legs:
 #                  both sources are market data, and its `discount` is still within a band of
 #                  the kernel's OWN `sponsor_discount`.
-#   the ordering   `docker inspect`: the poster's `StartedAt` is later than the registrar
-#                  container's `FinishedAt`. The structural claim, independent of any log.
+#   the ordering   the poster container's `StartedAt` (docker's own) is later than the
+#                  `.colours-bound` receipt `up.sh` wrote on the poster's volume once the kernel
+#                  priced both colours, and that receipt names THIS chain's two colours. The
+#                  structural claim, independent of any log or journal entry.
 #
 # ── WHAT IS ASSERTED AND WHAT IS REPORTED, and why they differ ───────────────
 # `sponsored` on a LIVE re-quote is `to_amount <= suggested_to_amount`, and `suggested` is
@@ -953,71 +956,86 @@ else
   fi
 fi
 
-# ── (c) the ORDERING, off daemon-owned state ─────────────────────────────────
+# ── (c) the ORDERING ─────────────────────────────────────────────────────────
 #
 # The structural claim, and the only one here that does not depend on the poster having logged
-# or journalled anything: the poster's container STARTED after the registrar's container
-# FINISHED.
+# or journalled anything: the poster's container STARTED after the kernel had been told its
+# colours.
 #
-# The registrar is a `docker compose run` container (`oneoff=True`), so this must NOT filter
-# `oneoff=False` the way scripts/verify-oneshots.sh does for compose-managed one-shots — and
-# `up.sh` deliberately runs it WITHOUT `--rm` so that its exit code, its log and this timestamp
-# survive the run at all.
+# TWO RECORDS, EACH OWNED BY SOMETHING OTHER THAN THIS SCRIPT.
 #
-# `docker ps -aq` lists newest first, so `head -1` is the run belonging to the most recent
-# `./up.sh`. That matters: an ADDITIVE `./up.sh --with poster` re-runs the registrar (idempotent,
-# `already=6`) while leaving an already-running poster alone, and the initial `up` of that run
-# scale-downs the previous run container away — so the only registrar container left can be
-# NEWER than the poster's start. That is not a violation of anything and it is not asserted as
-# one; it is reported, with the two timestamps, and the property for the run that DID start the
-# poster is the journal assertion above.
+#   `up.sh`'s receipt   `/var/lib/offer-poster/.colours-bound` on the `poster-state` volume,
+#                       written by a container the daemon ran, stamped by that container's own
+#                       `date -u`, in the one place that knows `GET /v1/known-tokens` answered
+#                       with a non-null `asset_id` for BOTH of the poster's colours — and
+#                       written ONLY on the path that goes on to start the poster.
+#   docker's own        the poster container's `State.StartedAt`.
+#
+# WHY NOT THE REGISTRAR'S CONTAINER, which would be one record fewer. `issuer-registrar` is a
+# `docker compose run --rm` one-shot, so its `FinishedAt` does not outlive its exit; keeping the
+# container was measured and rejected, because compose then reports it as an ORPHAN of that
+# `replicas: 0` service on every later `up` and `run` and advises `--remove-orphans`, which
+# deletes the evidence. This is the same "assert the job's effect on its own volume" idiom
+# scripts/verify-oneshots.sh argues for at length, and it has one property the container
+# comparison did not: it survives an ADDITIVE `./up.sh --with poster`, which re-runs the
+# registrar while deliberately leaving a running poster alone. The receipt is not rewritten on
+# that path, so it keeps describing the run that really did start this poster.
 POSTER_CID="$(docker ps -aq \
   --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME}" \
   --filter "label=com.docker.compose.service=offer-poster" \
   --filter "label=com.docker.compose.oneoff=False" 2>/dev/null | head -1 || true)"
-REG_CID="$(docker ps -aq \
-  --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME}" \
-  --filter "label=com.docker.compose.service=issuer-registrar" 2>/dev/null | head -1 || true)"
 POSTER_STARTED_AT="$(docker inspect -f '{{.State.StartedAt}}' "${POSTER_CID:-none}" 2>/dev/null || true)"
-REG_FINISHED_AT="$(docker inspect -f '{{.State.FinishedAt}}' "${REG_CID:-none}" 2>/dev/null || true)"
-REG_CREATED_AT="$(docker inspect -f '{{.Created}}' "${REG_CID:-none}" 2>/dev/null || true)"
-REG_STATUS="$(docker inspect -f '{{.State.Status}}' "${REG_CID:-none}" 2>/dev/null || true)"
-REG_CODE="$(docker inspect -f '{{.State.ExitCode}}' "${REG_CID:-none}" 2>/dev/null || true)"
+# Read through the service's OWN definition, so the path is the one the writer used and the
+# volume is the one the next consumer sees — the `read_from` idiom of verify-oneshots.sh.
+# `|| true`: a missing file must yield the empty string and a NAMED failure below, never a
+# `pipefail` exit from inside `$( )`.
+BOUND_RECEIPT="$(dc run --rm --no-deps -T --entrypoint cat \
+  offer-poster /var/lib/offer-poster/.colours-bound 2>/dev/null || true)"
+BOUND_AT="$(printf '%s' "$BOUND_RECEIPT" | sed -n 's/.*[[:space:]]at=\([^[:space:]]*\).*/\1/p' | head -1 || true)"
+BOUND_GIVE="$(printf '%s' "$BOUND_RECEIPT" | sed -n 's/.*[[:space:]]give=\([^[:space:]]*\).*/\1/p' | head -1 || true)"
+BOUND_WANT="$(printf '%s' "$BOUND_RECEIPT" | sed -n 's/.*[[:space:]]want=\([^[:space:]]*\).*/\1/p' | head -1 || true)"
 
 if [[ -z "${POSTER_CID:-}" || -z "${POSTER_STARTED_AT:-}" ]]; then
   fail "no offer-poster container to inspect in project '${COMPOSE_PROJECT_NAME}' — the ordering
         claim cannot be read (and this section got this far, so one exists)"
-elif [[ -z "${REG_CID:-}" ]]; then
-  fail "no issuer-registrar container in project '${COMPOSE_PROJECT_NAME}': the one-shot that binds
-        this stack's colours left no record, so the bring-up order cannot be verified. up.sh runs
-        it WITHOUT --rm exactly so that it does. A stack brought up by hand with
-        \`docker compose run --rm --no-deps issuer-registrar\` produces this."
-elif [[ "$REG_STATUS" != "exited" || "$REG_CODE" != "0" ]]; then
-  fail "the issuer-registrar container is '${REG_STATUS:-unreadable}' with exit code ${REG_CODE:-unreadable}
-        — the colours were never bound successfully, so nothing downstream can be priced."
+elif [[ -z "${BOUND_AT:-}" ]]; then
+  fail "the poster-state volume carries no /var/lib/offer-poster/.colours-bound receipt.
+        ./up.sh writes it after GET /v1/known-tokens reports a non-null asset_id for BOTH of the
+        poster's colours and BEFORE it starts the poster, so its absence means this poster was
+        started by something else — \`docker compose up -d offer-poster\` by hand, or a stack
+        brought up before this ordering existed. On a fresh chain that is the window issues/00023
+        describes. Got: '${BOUND_RECEIPT:-nothing}'"
 else
   POSTER_KEY="$(ts_key "$POSTER_STARTED_AT")"
-  REG_FIN_KEY="$(ts_key "$REG_FINISHED_AT")"
-  REG_CRE_KEY="$(ts_key "$REG_CREATED_AT")"
-  info "issuer-registrar finished ${REG_FINISHED_AT}"
-  info "offer-poster     started  ${POSTER_STARTED_AT}"
-  if [[ -z "$POSTER_KEY" || -z "$REG_FIN_KEY" ]]; then
-    fail "could not read both timestamps (poster '${POSTER_STARTED_AT}', registrar '${REG_FINISHED_AT}')"
-  elif [[ "$POSTER_KEY" > "$REG_FIN_KEY" ]]; then
-    ok "offer-poster STARTED AFTER issuer-registrar FINISHED — its first quote could only be a priced one"
-  elif [[ -n "$REG_CRE_KEY" && "$POSTER_KEY" < "$REG_CRE_KEY" ]]; then
-    info "SKIPPED — this registrar container was CREATED after the poster started, so it belongs to"
-    info "a LATER ./up.sh than the one that started the poster (an additive --with poster leaves a"
-    info "running poster alone and re-runs the registrar idempotently, and that run's initial"
-    info "\`up\` removes the previous registrar container). The ordering claim for the run that DID"
-    info "start this poster is carried by the journal assertions above — every recorded offer,"
-    info "including the oldest, was quoted from market data."
+  BOUND_KEY="$(ts_key "$BOUND_AT")"
+  info "colours bound   ${BOUND_AT}"
+  info "poster started  ${POSTER_STARTED_AT}"
+  if [[ -z "$POSTER_KEY" || -z "$BOUND_KEY" ]]; then
+    fail "could not read both timestamps (poster '${POSTER_STARTED_AT}', receipt '${BOUND_AT}')"
+  elif [[ "$POSTER_KEY" > "$BOUND_KEY" ]]; then
+    ok "offer-poster STARTED AFTER its colours were bound — its first quote could only be a priced one"
   else
-    fail "offer-poster STARTED BEFORE issuer-registrar FINISHED: ${POSTER_STARTED_AT} < ${REG_FINISHED_AT}.
-          That is the window issues/00023 describes — the kernel does not know the poster's colours
-          yet, quotes them at \$1 per BASE UNIT and still says sponsored:true. ./up.sh holds the
-          poster out of the initial \`docker compose up\` and starts it after the registrar; a
-          poster started any other way has no such guarantee."
+    fail "offer-poster STARTED BEFORE its colours were bound: ${POSTER_STARTED_AT} <= ${BOUND_AT}.
+          That is the window issues/00023 describes — the kernel does not know the poster's
+          colours yet, quotes them at \$1 per BASE UNIT and still says sponsored:true. ./up.sh
+          holds the poster out of the initial \`docker compose up\` and starts it only after the
+          registrar; a poster started any other way has no such guarantee."
+  fi
+  # A receipt from ANOTHER CHAIN would satisfy everything above. `./down.sh -v` wipes the volume
+  # with the chain, but `./down.sh` alone keeps it — and the colours change with every fresh
+  # issuer deployment, so the receipt has to name the ones this poster is actually trading.
+  BOUND_WANT_GIVE="$(issuer_token_id "$GIVE_NAME" || true)"
+  BOUND_WANT_WANT="$(issuer_token_id "$WANT_NAME" || true)"
+  if [[ -z "$BOUND_WANT_GIVE" || -z "$BOUND_WANT_WANT" ]]; then
+    warn "could not resolve ${GIVE_NAME}/${WANT_NAME} from the issuer registry, so the receipt's
+          colours cannot be cross-checked against this chain's"
+  elif [[ "$BOUND_GIVE" == "$BOUND_WANT_GIVE" && "$BOUND_WANT" == "$BOUND_WANT_WANT" ]]; then
+    ok "…and the receipt names THIS chain's colours (${BOUND_GIVE:0:12}… / ${BOUND_WANT:0:12}…), so it is not a leftover"
+  else
+    fail "the .colours-bound receipt names ${BOUND_GIVE:-nothing} / ${BOUND_WANT:-nothing}, but this
+          chain's ${GIVE_NAME}/${WANT_NAME} are ${BOUND_WANT_GIVE:0:16}… / ${BOUND_WANT_WANT:0:16}… —
+          the receipt is from a previous chain on a kept volume, so it proves nothing about this
+          poster. ./down.sh -v wipes it with the chain."
   fi
 fi
 
