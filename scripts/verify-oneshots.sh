@@ -71,13 +71,20 @@ ABSENT=""
 
 # oneshot_cid <service> — the newest container id for that compose service, or nothing.
 #
-# Newest, not first: a one-shot that was re-run by hand (`docker compose run --rm` aside, a
-# `docker compose up` after a code change recreates it) leaves more than one container with the
-# label, and the interesting one is the last to have run. `docker ps -aq` lists newest first.
+# Newest, not first: a `docker compose up` after a code change recreates a one-shot, leaving
+# more than one container with the label, and the interesting one is the last to have run.
+# `docker ps -aq` lists newest first.
+#
+# `oneoff=False` EXCLUDES `docker compose run` containers, and that matters here rather than
+# being tidiness: this script itself runs `docker compose run --rm --entrypoint cat <service>`
+# to read markers, and `verify-solver.sh` re-runs `maker-offer` the same way. Without the
+# filter, a `run` container that had not finished being removed would become "the newest
+# container for that service" and this section would assert the exit code of its own probe.
 oneshot_cid() {
   docker ps -aq \
     --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME}" \
-    --filter "label=com.docker.compose.service=$1" 2>/dev/null | head -1 || true
+    --filter "label=com.docker.compose.service=$1" \
+    --filter "label=com.docker.compose.oneoff=False" 2>/dev/null | head -1 || true
 }
 
 # assert_exited_zero <service> <what the job was>
