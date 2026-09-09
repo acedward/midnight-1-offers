@@ -736,6 +736,35 @@ exists, why every automated gate uses it, and why the browser flow is the owner'
    is pinned by SHA-256 in the Dockerfile — so a re-pin that changes the header policy fails the
    BUILD and names the config, instead of leaving nginx describing a policy upstream no longer has.
 
+## The 32 services, and the rule `./verify.sh` holds each of them to (00020 phase G)
+
+The eight fragments declare **32 services**. Enumerate them without typing a list:
+
+```bash
+docker compose -f compose/core.yml -f compose/offerfiles.yml -f compose/issuer.yml \
+  -f compose/frontend.yml -f compose/shielded-night.yml -f compose/solver.yml \
+  -f compose/poster.yml -f compose/prices.yml config --services | sort
+```
+
+| kind | count | how `./verify.sh` holds it |
+|---|---|---|
+| **long-running** (16) — `postgres` `node` `indexer` `proof-server` `celestia` `kernel` `batcher` `frontend` `faucet` `shielded-night` `relay` `solver` `solver-frontend` `intents-ui` `offer-poster` `price-feed` | 16 | an **observable behaviour**, never merely `healthy`: finality *advancing*, a blob *round trip*, a quote that is *exactly* the maker's offer, five prices at `source=feed`, a take that moves two balances by exact amounts, an INTENT *settled on chain* |
+| **one-shots** compose runs during `up` (10) — `proof-warm` `issuer-deploy` `shielded-night-deploy` `solver-inventory` `solver-provision` `maker-provision` `maker-inventory` `maker-offer` `poster-provision` `poster-inventory` | 10 | **exited 0 AND the effect is present.** The exit code comes off the container's own `State.ExitCode` (daemon-owned state, not a log line, and `State.Status` is checked too because a RUNNING container reports 0); the effect is the receipt on the volume the job was supposed to write |
+| **`replicas: 0`** (6) — `issuer-registry` `issuer-registrar` `issuer-fund` `issuer-tokens-env` `shielded-night-verify` `shielded-night-token-name` | 6 | **RUN by a gate**, not observed by one: a verify section (or `up.sh`) executes them and asserts what they produced |
+
+**Why the exit code is not bookkeeping.** Every one of the ten one-shots has a resume or join
+path — `issuer-deploy` resumes from its journal, the five provisioning one-shots join on a
+marker, `maker-offer` joins on `.posted`. A job that FAILS and is then made irrelevant by a
+stale marker, a lucky retry or a downstream default leaves a green gate over a broken step, and
+on this stack the downstream default is the poster trading a colour nobody issued.
+
+The `one-shots` section (`scripts/verify-oneshots.sh`) runs FIRST among the optional sections,
+because every profile section below it rests on a one-shot having done its job — when one fails,
+the reader should see THAT rather than the six downstream assertions it takes with it. It is
+profile-adaptive: it asserts exactly the one-shots this profile set declares, names the count it
+checked and the ones it skipped, and FAILS on a stack with no one-shot at all rather than passing
+on an empty sweep.
+
 ## Appendix — the profile descriptions that used to sit in the README's profiles table
 
 Moved here on 2026-09-07 when the README table became a per-profile service/endpoint table

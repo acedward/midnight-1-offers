@@ -206,8 +206,8 @@ fails when the block is stale.
 ## Layout
 
 ```
-compose/     core.yml, offerfiles.yml, frontend.yml, shielded-night.yml, solver.yml,
-             poster.yml, prices.yml — one fragment per profile
+compose/     core.yml, offerfiles.yml, issuer.yml, frontend.yml, shielded-night.yml,
+             solver.yml, poster.yml, prices.yml — one fragment per profile, eight of them
 images/      build contexts for the locally built images — one directory per image
 scripts/     verify-*.sh gates, pick-ports.sh, ci-check.sh, lib/ (shared bash + python)
 config/      artifact-decisions.json — the frozen pin record; readme-components.json — the
