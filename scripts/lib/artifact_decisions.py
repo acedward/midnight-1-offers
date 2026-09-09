@@ -757,23 +757,33 @@ def _fx_source_id_collides(doc):
 # stopped describing a defect — one raised KeyError, the other mutated nothing. A fixture that
 # quietly stops biting is exactly what --self-test exists to prevent, so each now sets up its
 # own precondition and is independent of how the entry happens to be pinned today.
+#
+# THE ENTRY THEY NAMED IS ALSO GONE. `compact` (0.31.0, images/zswap-da) was removed from the
+# matrix in 00020 PR D — effectstream #922 deleted the template's Compact source, so nothing in
+# this repository compiles at that version any more — and `_tc` raises StopIteration on a
+# missing id, which run_self_test does not catch. They now name `compact-shielded-night`, an
+# entry that exists; every one of them still synthesises its own precondition, so which entry
+# it is does not matter to what they prove.
+_FIXTURE_TOOLCHAIN = "compact-shielded-night"
+
+
 def _fx_unresolved_toolchain_untracked(doc):
-    tc = _tc(doc, "compact")
+    tc = _tc(doc, _FIXTURE_TOOLCHAIN)
     tc["resolved"] = False
     tc.pop("openQuestion", None)
     return doc
 
 
 def _fx_toolchain_resolved_without_pins(doc):
-    tc = _tc(doc, "compact")
+    tc = _tc(doc, _FIXTURE_TOOLCHAIN)
     tc["resolved"] = True
     tc.pop("assets", None)
     return doc
 
 
 def _fx_toolchain_darwin_asset(doc):
-    _tc(doc, "compact")["assets"]["linux/arm64"]["name"] = \
-        "compactc_v0.31.0_aarch64-darwin.zip"
+    _tc(doc, _FIXTURE_TOOLCHAIN)["assets"]["linux/arm64"]["name"] = \
+        "compactc_v0.31.1_aarch64-darwin.zip"
     return doc
 
 

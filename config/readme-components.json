@@ -45,7 +45,7 @@
     },
     {
       "component": "zswap-da SPA",
-      "source": "[`effectstream/effectstream` `templates/zswap-da`](https://github.com/effectstream/effectstream/tree/{full:FRONTEND_REF}/templates/zswap-da), `midnight-1` head — v8-native, no ledger patch; compactc 0.31.0",
+      "source": "[`effectstream/effectstream` `templates/zswap-da`](https://github.com/effectstream/effectstream/tree/{full:FRONTEND_REF}/templates/zswap-da), `midnight-1` head — v8-native, no ledger patch. Since effectstream [#922](https://github.com/effectstream/effectstream/pull/922) it COMPILES NOTHING: the template's Compact source, build script and manifest are deleted with the kernel's contract, so this image has no Compact stage and no `COMPACT_VERSION`. [#920](https://github.com/effectstream/effectstream/pull/920) replaced the in-page Faucet tab with a LINK to this stack's own `issuer` faucet site (`VITE_FAUCET_URL`) and made `VITE_MIDNIGHT_NETWORK_ID=undeployed` a required build input",
       "pin": "{commit:FRONTEND_REF@effectstream/effectstream}",
       "pinnedIn": "{files:FRONTEND_REF}"
     },

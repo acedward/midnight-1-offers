@@ -72,24 +72,30 @@ BUILD_ARG_SOURCES = {
 
 # Which Compact toolchain a service's COMPACT_VERSION build arg must equal.
 #
-# THERE ARE THREE COMPILERS IN THIS STACK AND THEY ARE NOT INTERCHANGEABLE: 0.31.0 for the
-# zswap-da template's contract, 0.31.1 for shielded-night's entirely different one, and 0.31.1
-# for the issuer's three v1 token contracts. (There were FOUR up to 00020 PR C: the kernel's
-# own 0.30.0, pinned as a Dockerfile ARG rather than a compose build arg. Kernel #69 deleted
-# the contract it compiled, so images/offerfiles-kernel has no Compact stage at all.) Each
-# side's generated bindings are version-checked against ITS OWN compact-runtime at import time,
-# so a single check against one matrix entry would either reject a correct build or — worse —
-# bless a wrong compiler.
+# THERE ARE TWO COMPILERS LEFT IN THIS STACK AND THEY ARE NOT INTERCHANGEABLE: 0.31.1 for
+# shielded-night's contract and 0.31.1 for the issuer's three v1 token contracts. There were
+# FOUR two PRs ago, and the two that went were the two ends of the SAME offer-files contract:
+# the kernel's own 0.30.0 (a Dockerfile ARG, never a compose build arg — kernel #69 deleted the
+# contract package, 00020 PR C) and the zswap-da template's 0.31.0 (effectstream #922 deleted
+# the template's copy of the source, its build script and its committed manifest, 00020 PR D).
+# NEITHER images/offerfiles-kernel NOR images/zswap-da has a Compact stage now, and the
+# `compact` entry has been removed from config/artifact-decisions.json.
 #
-# The issuer's and shielded-night's happen to be the SAME VERSION today, from the same release,
-# with the same two asset SHA-256s. They are still separate entries: they are separate build
-# inputs that can be re-pinned independently, and collapsing them would mean a shielded-night
-# re-pin silently changed what the issuer compiles with.
+# Each remaining side's generated bindings are version-checked against ITS OWN compact-runtime
+# at import time, so a single check against one matrix entry would either reject a correct
+# build or — worse — bless a wrong compiler. The issuer's and shielded-night's happen to be the
+# SAME VERSION today, from the same release, with the same two asset SHA-256s. They are still
+# separate entries: they are separate build inputs that can be re-pinned independently, and
+# collapsing them would mean a shielded-night re-pin silently changed what the issuer compiles
+# with.
 #
-# The map is by SERVICE with an explicit default, not by argument name: a new service that
-# starts passing COMPACT_VERSION is then checked against `compact` rather than silently
-# unchecked, which is the safe direction to be wrong in.
-DEFAULT_COMPACT_TOOLCHAIN = "compact"
+# THE DEFAULT IS DELIBERATELY A NAME NO MATRIX ENTRY HAS. The map is by SERVICE, and with the
+# `compact` entry gone there is no longer a sensible generic fallback — every service that
+# compiles anything is listed below. A service that starts passing COMPACT_VERSION without
+# being added here therefore FAILS with `!= matrix None (toolchain '<unmapped>')`, which names
+# the omission. Unchecked would be the unsafe direction, and silently checking a new service
+# against some other image's compiler would be worse still.
+DEFAULT_COMPACT_TOOLCHAIN = "<unmapped>"
 SERVICE_COMPACT_TOOLCHAIN = {
     "shielded-night": "compact-shielded-night",
     "shielded-night-deploy": "compact-shielded-night",
@@ -366,10 +372,11 @@ def synthetic_base(matrix: dict) -> dict:
 
     def toolchain(tid):
         # BY ID, never by position. There is more than one Compact toolchain in the matrix
-        # (the kernel compiles at 0.30.0, the frontend at 0.31.0), so `toolchains[0]` would
-        # silently build the synthetic frontend against whichever entry happens to be first —
-        # and _check_build_args, which looks up 'compact' by id, would then disagree with the
-        # very document the self-test hands it.
+        # (shielded-night and the issuer, both 0.31.1 today but independently re-pinnable), so
+        # `toolchains[0]` would silently build a synthetic service against whichever entry
+        # happens to be first — and _check_build_args, which looks up the id from
+        # SERVICE_COMPACT_TOOLCHAIN, would then disagree with the very document the self-test
+        # hands it.
         return next((t for t in matrix.get("toolchains") or [] if t.get("id") == tid), {})
 
     def port(p):
@@ -410,10 +417,14 @@ def synthetic_base(matrix: dict) -> dict:
             "frontend": {
                 "image": LOCAL_IMAGE_PREFIX + "zswap-da:local",
                 "ports": [port(10600)],
+                # NO COMPACT_VERSION: effectstream #922 deleted the template's contract
+                # lane, so this image compiles nothing (00020 PR D). It keeps its two source
+                # identities, which is what _fx_subtree_sha_drifted and the ref rules bite on,
+                # and _fx_compact_version_on_a_service_that_compiles_nothing adds the argument
+                # back to prove an unmapped service is refused rather than ignored.
                 "build": {"context": "images/zswap-da",
                           "args": {"FRONTEND_REF": _source(matrix, "zswap-da-template")["ref"],
-                                   "FRONTEND_SUBTREE_SHA": _source(matrix, "zswap-da-template")["subtreeSha"],
-                                   "COMPACT_VERSION": toolchain("compact").get("version")}},
+                                   "FRONTEND_SUBTREE_SHA": _source(matrix, "zswap-da-template")["subtreeSha"]}},
             },
             "shielded-night-deploy": {
                 "image": LOCAL_IMAGE_PREFIX + "shielded-night-deploy:local",
@@ -513,14 +524,27 @@ def _fx_warehouse_release_drifted(doc):
 
 
 def _fx_compact_version_drifted(doc):
-    doc["services"]["frontend"]["build"]["args"]["COMPACT_VERSION"] = "0.34.0"
+    # Moved off `frontend` in 00020 PR D: that service compiles nothing any more and carries
+    # no COMPACT_VERSION at all, so mutating it would have tested the UNMAPPED-service rule
+    # rather than the drift rule. shielded-night-deploy is a real carrier.
+    doc["services"]["shielded-night-deploy"]["build"]["args"]["COMPACT_VERSION"] = "0.34.0"
     return doc
 
 
-def _fx_shielded_night_compiled_with_the_frontend_toolchain(doc):
-    # The near-miss this per-service map exists for: 0.31.0 is a real, pinned toolchain in
-    # this matrix — it is simply the WRONG one for this contract, and the resulting artifacts
-    # would fail shielded-night's own byte-exact rebuild rather than anything obvious.
+def _fx_compact_version_on_a_service_that_compiles_nothing(doc):
+    # The rule the removal of `toolchains[compact]` created: a service NOT in
+    # SERVICE_COMPACT_TOOLCHAIN that starts passing a compiler version must be refused, not
+    # ignored. 0.31.1 is a real, pinned toolchain in this matrix — the point is that `frontend`
+    # has no business naming ANY compiler since effectstream #922.
+    doc["services"]["frontend"]["build"]["args"]["COMPACT_VERSION"] = "0.31.1"
+    return doc
+
+
+def _fx_shielded_night_compiled_with_the_issuers_toolchain_version(doc):
+    # The near-miss this per-service map exists for. It used to set the FRONTEND's 0.31.0 —
+    # a different, real, pinned compiler. That entry is gone (00020 PR D), so the fixture now
+    # uses a version no entry has: the resulting artifacts would fail shielded-night's own
+    # byte-exact rebuild rather than anything obvious.
     doc["services"]["shielded-night"]["build"]["args"]["COMPACT_VERSION"] = "0.31.0"
     return doc
 
@@ -601,7 +625,8 @@ SELF_TESTS = [
     ("frontend subtree SHA drifted", _fx_subtree_sha_drifted),
     ("warehouse release drifted from the matrix", _fx_warehouse_release_drifted),
     ("Compact toolchain version drifted from the matrix", _fx_compact_version_drifted),
-    ("shielded-night built with the FRONTEND's Compact toolchain", _fx_shielded_night_compiled_with_the_frontend_toolchain),
+    ("a service that compiles nothing started passing COMPACT_VERSION", _fx_compact_version_on_a_service_that_compiles_nothing),
+    ("shielded-night built with a Compact version no matrix entry has", _fx_shielded_night_compiled_with_the_issuers_toolchain_version),
     ("SHIELDED_NIGHT_REF drifted from the matrix", _fx_shielded_night_ref_drifted),
     ("PRIVATE source used as a build context path", _fx_private_source_as_a_context_path),
     ("PRIVATE source bind-mounted into a service", _fx_private_source_bind_mounted),

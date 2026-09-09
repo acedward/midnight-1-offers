@@ -154,6 +154,20 @@ FRONTEND_INDEXER_URI=http://127.0.0.1:$(( BASE + 1 ))${INDEXER_API_PATH:-/api/v3
 FRONTEND_INDEXER_WS_URI=ws://127.0.0.1:$(( BASE + 1 ))${INDEXER_API_PATH:-/api/v3/graphql}/ws
 FRONTEND_PROOF_SERVER_URI=http://127.0.0.1:$(( BASE + 2 ))
 
+# AND ONE THAT IS NOT RUNTIME (00020 PR D, Q4). effectstream #920 added VITE_FAUCET_URL, which
+# the template reads from import.meta.env at BUILD time and exposes through no window.*
+# override at all — so unlike the six above it cannot go into /config.js and is BAKED INTO THE
+# IMAGE. That is affordable because the image is built per stack anyway (FRONTEND_IMAGE above
+# carries this run's tag), and it is CHECKED: scripts/verify-frontend.sh asserts the served
+# bundle carries exactly this string, so a frontend image built for a different port block
+# fails the gate instead of sending a person to a dead port. Change the block, rebuild:
+# ./up.sh --build ...
+#
+# It must be the FAUCET_HOST_PORT above (this stack's own issuer faucet site), not the public
+# mint-test-tokens site the template defaults to. The ?network=undeployed matches what up.sh
+# prints; the template overwrites that parameter from the network id the image was built with.
+FRONTEND_FAUCET_URL=http://127.0.0.1:$(( BASE + 13 ))/?network=undeployed
+
 INDEXER_SECRET=303132333435363738393031323334353637383930313233343536373839303132
 
 NODE_WAIT_TIMEOUT=${NODE_WAIT_TIMEOUT:-180}

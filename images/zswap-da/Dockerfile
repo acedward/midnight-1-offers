@@ -7,17 +7,22 @@
 # GitHub + npm network access. See PROVENANCE.md.
 #
 # NO LEDGER PATCH, unlike the 2.x sibling. At this ref the template is already v8-native
-# (ledger-v8 8.1.0 / midnight-js 4.1.1 / compact-js 2.5.1 / compact-runtime 0.16.0), which is
-# the line the 1.x kernel runs, so `ledger-v9.patch` and its whole stage do not exist here.
-# That is ASSERTED in stage 0 rather than assumed — if the frozen ref ever moved, the build
-# fails there instead of shipping a silently mismatched bundle.
+# (ledger-v8 8.1.0 / midnight-js 4.1.1), which is the line the 1.x kernel runs, so
+# `ledger-v9.patch` and its whole stage do not exist here. That is ASSERTED in stage 0 rather
+# than assumed — if the frozen ref ever moved, the build fails there instead of shipping a
+# silently mismatched bundle.
 #
-# THE CONTRACT IS COMPILED HERE from the template's tracked Compact source, with compactc
-# 0.31.0 — the version the template's own build script pins and its committed manifest.json
-# verifies byte-for-byte. The kernel image compiles the SAME source with 0.30.0 for its own
-# runtime; two toolchains, one deliberate split, both recorded in
-# config/artifact-decisions.json. The generated artifacts are build-only: the runtime image
-# receives only dist/.
+# NOTHING IS COMPILED HERE ANY MORE (00020 PR D, FRONTEND_REF=400880ce…). Up to `58ab921…`
+# this image had a `compact` stage that compiled the template's own copy of the offer-files
+# contract with compactc 0.31.0 and verified all 16 outputs against a committed
+# src/contract/manifest.json. effectstream #922 — the frontend half of kernel #69 — DELETED
+# that whole lane: src/contract/, scripts/build-contract.ts, the prebuild hook, the manifest,
+# the Faucet screen, useContract/useMintReconciler, contractWallet/mintQueue, and the
+# compact-js / compact-runtime / midnight-js-{contracts,fetch-zk-config,proof,indexer,
+# private-state} dependencies. So the stage, the COMPACT_VERSION arg and the
+# `toolchains[compact]` matrix entry are all gone with it, and stage 0 asserts their ABSENCE —
+# a ref that moved BACKWARDS onto the contract line fails the build rather than producing a
+# bundle that hunts for ZK assets the kernel no longer serves.
 #
 # RUNTIME CONFIG: src/config.ts resolves the API/batcher endpoints as
 # window.API_BASE ?? VITE_API_BASE ?? http://<hostname>:9999 (and :3334), and
@@ -25,6 +30,24 @@
 # PROOF_SERVER}_URI overrides on top of GET /v1/midnight/config. entrypoint.sh writes all six into /config.js from the
 # container environment; each is skipped when empty, which leaves the template's
 # hostname-relative defaults in charge (correct only on the default port block).
+#
+# BUILD-TIME CONFIG, and why two values cannot be runtime (00020 Q4). #920 added two knobs that
+# src/config.ts reads from `import.meta.env` and exposes through NO `window.*` override:
+#
+#   VITE_MIDNIGHT_NETWORK_ID  the network id the page formats addresses with, parses offers
+#                             with, hands `initialApi.connect()` (Lace) and passes to the
+#                             built-in JS wallet's connectFromSeed(). Its default FLIPPED to
+#                             `preprod` in #920, so an image that sets none is wrong for this
+#                             stack in five places at once.
+#   VITE_FAUCET_URL           the base URL of the external test-token service the SPA's Faucet
+#                             LINK opens (the in-page Faucet TAB is gone). The `?network=` on
+#                             that link is appended by the template from the network id above —
+#                             see faucetUrl.ts — so the network id is the mechanism and the URL
+#                             is only the host and port.
+#
+# Both are therefore build inputs, and this image is built per stack anyway
+# (FRONTEND_IMAGE carries the run's tag). They are declared in the BUILD stage, after
+# `bun install`, so a new port block re-runs `vite build` and nothing else.
 
 # ── base images: index digests, not tags ─────────────────────────────────────
 # All three are good official multiarch indexes (linux/amd64 + linux/arm64), so nothing here
@@ -46,11 +69,10 @@ ARG FRONTEND_REPO=https://github.com/effectstream/effectstream.git
 # ledger-v8 / @effectstream 0.1xx (Q14). Since effectstream#912 the branch also carries the
 # browser-network change this image used to apply as a patch, so the tree is built UNMODIFIED:
 # no ledger patch, no dependency patch, no URI patch.
-ARG FRONTEND_REF=58ab921be5513b77937a37be86bf724a41888302
-ARG FRONTEND_SUBTREE_SHA=3ca1d56ffc29f03c73cf43432bdfeeaf3ab43c6b
-ARG COMPACT_VERSION=0.31.0
+ARG FRONTEND_REF=400880ceb6814738d1ae193dae18ad5128922edc
+ARG FRONTEND_SUBTREE_SHA=a750cccd653f33306d3ff7249fe8d5853fbfafa6
 
-# ── stage 0: the exact upstream subtree, plus the one adaptation patch ───────
+# ── stage 0: the exact upstream subtree, unmodified ─────────────────────────
 FROM ${DEBIAN_BASE} AS source
 
 RUN apt-get update \
@@ -98,9 +120,47 @@ RUN set -eux; \
     if grep -q 'ledger-v9' package.json; then \
       echo "FAIL: the template now depends on ledger-v9; this repository targets the 1.x/v8 line" >&2; exit 1; \
     fi; \
-    grep -q '"@midnight-ntwrk/compact-runtime": "0.16.0"' package.json; \
     test -f LICENSE-APACHE; \
     test -f LICENSE-MIT
+
+# THE CONTRACT LANE MUST BE ABSENT — asserted, not assumed (00020 PR D).
+#
+# `"@midnight-ntwrk/compact-runtime": "0.16.0"` used to be asserted one block up, beside the
+# ledger pin. effectstream #922 REMOVED that dependency along with compact-js and the five
+# midnight-js contract/proof/indexer/private-state packages, so keeping the old grep would have
+# failed this build on a correct tree. Asserting the absence instead is the same guard pointed
+# the other way, and it is the one that matters now: a ref moved BACKWARDS onto the contract
+# line would otherwise build a bundle whose Faucet screen fetches proving keys from
+# `GET /keys/*` — routes kernel #69 deleted, which `scripts/verify-frontend.sh` asserts answer
+# 404. The failure would then surface in a browser, on a click, with no message.
+RUN set -eux; \
+    cd /src; \
+    for gone in src/contract scripts/build-contract.ts src/screens/Faucet.tsx \
+                src/hooks/useContract.ts src/services/contractWallet.ts \
+                src/services/mintQueue.ts; do \
+      if [ -e "${gone}" ]; then \
+        echo "FAIL: ${gone} exists. effectstream #922 deleted the template's contract lane; a" >&2; \
+        echo "      tree that still has it is BEFORE that merge, and this image has no Compact" >&2; \
+        echo "      stage to compile it with. Check FRONTEND_REF (expected 400880ce… or later)." >&2; \
+        exit 1; \
+      fi; \
+    done; \
+    if grep -q '"prebuild"' package.json; then \
+      echo "FAIL: package.json still has a prebuild hook (the contract compile)" >&2; exit 1; \
+    fi; \
+    if grep -q 'compact-runtime\|compact-js' package.json; then \
+      echo "FAIL: package.json still depends on the Compact toolchain packages" >&2; exit 1; \
+    fi
+
+# THE TWO BUILD-TIME KNOBS #920 ADDED must exist in the tree we are about to build, or the
+# values passed below are silently ignored and the SPA runs on `preprod` against an
+# `undeployed` chain. Both markers are read out of src/config.ts, which is where the template
+# resolves them; faucetUrl.ts is where the `?network=` is appended.
+RUN set -eux; \
+    cd /src; \
+    grep -q 'VITE_MIDNIGHT_NETWORK_ID' src/config.ts; \
+    grep -q 'VITE_FAUCET_URL' src/config.ts; \
+    grep -q "searchParams.set('network'" src/faucetUrl.ts
 
 # ── the OTHER half of "v8-native", which package.json alone does not show ────
 #
@@ -148,95 +208,128 @@ RUN set -eux; \
 ARG FRONTEND_SUBTREE_SHA
 RUN printf '%s' "${FRONTEND_SUBTREE_SHA}" > /.zswap-da-subtree
 
-# ── stage 1: compile the matching Compact bindings and keys ──────────────────
-# Fetched as a release asset and SHA-256 verified, rather than run through the `compact`
-# version manager whose resolution is an unpinnable network lookup. `compactc <in> <out>` is
-# exactly what `compact compile +V <in> <out>` dispatches to.
-FROM ${DEBIAN_BASE} AS compact
-
-ARG COMPACT_VERSION
-ARG TARGETARCH
-ARG COMPACT_REPO=midnightntwrk/compact
-# SHA-256 of each release asset, from the GitHub release API's own `digest` field
-# (2026-09-01). These, not the URL, are the compiler's identity: a release asset can be
-# re-uploaded under the same name. midnightntwrk/compact and LFDT-Minokawa/compact publish
-# byte-identical assets for this tag (verified — same sha256, same sizes); the former is used
-# because it is where the toolchain manager itself is published and where the kernel image
-# already pins.
-ARG COMPACT_SHA256_AMD64=ddbb4bb227c6a9c67098e65663648d8647097404ae094fdc0abe660839ea3ee8
-ARG COMPACT_SHA256_ARM64=9ead84322fb0c64aac6f94f12cd01eb011c1f3d0321d9fabc6a52b419c3dd6c6
-
-RUN apt-get update \
- && apt-get install -y --no-install-recommends curl ca-certificates unzip \
- && rm -rf /var/lib/apt/lists/*
-
-RUN set -eux; \
-    case "${TARGETARCH}" in \
-      amd64) triple="x86_64-unknown-linux-musl";  want_sha="${COMPACT_SHA256_AMD64}" ;; \
-      arm64) triple="aarch64-unknown-linux-musl"; want_sha="${COMPACT_SHA256_ARM64}" ;; \
-      *) echo "FAIL: unsupported TARGETARCH='${TARGETARCH}' (need amd64 or arm64)" >&2; exit 1 ;; \
-    esac; \
-    asset="compactc_v${COMPACT_VERSION}_${triple}.zip"; \
-    # The same release ships aarch64-darwin and x86_64-darwin zips. A darwin asset in a Linux
-    # build stage is exactly what the matrix's forbiddenAssetSubstrings list exists to
-    # prevent; assert it cannot happen here either.
-    case "${asset}" in \
-      *darwin*|*macos*|*windows*) echo "FAIL: '${asset}' is not a Linux asset" >&2; exit 1 ;; \
-    esac; \
-    url="https://github.com/${COMPACT_REPO}/releases/download/compactc-v${COMPACT_VERSION}/${asset}"; \
-    echo "fetching ${url}"; \
-    curl --proto '=https' --tlsv1.2 -fLsS --retry 3 --retry-delay 2 -o /tmp/compactc.zip "${url}"; \
-    echo "${want_sha}  /tmp/compactc.zip" | sha256sum -c -; \
-    mkdir -p /opt/compactc; \
-    unzip -q /tmp/compactc.zip -d /opt/compactc; \
-    rm -f /tmp/compactc.zip; \
-    chmod +x /opt/compactc/*; \
-    # The zkir backend ships beside compactc and is invoked as a sibling from `dirname $0`.
-    # An asset without it compiles nothing and fails much later, as a missing executable.
-    test -x /opt/compactc/zkir || { echo "FAIL: the asset lacks the default zkir backend" >&2; exit 1; }; \
-    # The pin says 0.31.0; make the BINARY say so too. A renamed or re-uploaded asset would
-    # otherwise be caught by nothing until a verifier key was rejected at runtime.
-    ver="$(/opt/compactc/compactc --version 2>&1 || true)"; \
-    echo "compactc reports: ${ver}"; \
-    case "${ver}" in \
-      *"${COMPACT_VERSION}"*) : ;; \
-      *) echo "FAIL: compactc does not report version ${COMPACT_VERSION}: ${ver}" >&2; exit 1 ;; \
-    esac
-
-# Only the contract source, so an edit anywhere else in the template does not invalidate this
-# layer. HOME and XDG_CACHE_HOME are redirected because the default HOME is /root and a cache
-# written there would be baked into a layer nothing reads. (Unlike the 2.x sibling's contract,
-# this one needs no universal-SRS download: three circuits, measured at ~9 s total.)
-COPY --from=source /src/src/contract/offer-files.compact /contract/offer-files.compact
-RUN set -eux; \
-    HOME=/tmp XDG_CACHE_HOME=/tmp/zk-cache \
-      /opt/compactc/compactc /contract/offer-files.compact /contract/managed/; \
-    test -d /contract/managed/contract; \
-    test -d /contract/managed/keys; \
-    test -d /contract/managed/zkir
-
-# ── stage 2: verify the pinned manifest, then build ──────────────────────────
+# ── stage 1: build the SPA ───────────────────────────────────────────────────
+#
+# There is no longer a stage between `source` and this one. Up to `58ab921…` a `compact` stage
+# fetched compactc 0.31.0 as a SHA-256-verified release asset, compiled
+# src/contract/offer-files.compact, and handed the 16 generated files to the build, which
+# verified them against the template's committed manifest before bundling. effectstream #922
+# deleted the source, the manifest and the build script, so the stage compiled nothing and the
+# `--verify-only` run had no manifest to read. Both are gone, and with them the COMPACT_VERSION
+# build arg and the `compact` entry in config/artifact-decisions.json — this image no longer
+# has a Compact toolchain of any kind.
 FROM ${BUN_BASE} AS build
 
 WORKDIR /src
 COPY --from=source /src /src
-COPY --from=compact /contract/managed /src/src/contract/managed
 
-# Frozen: the lockfile at the pinned commit IS the tested dependency set. `--frozen-lockfile`
-# turns "a transitive dependency published a new version" from a silent difference into a
-# build failure.
-RUN bun install --frozen-lockfile
+# THE LOCKFILE AT THE PINNED COMMIT IS THE TESTED DEPENDENCY SET, and this step is what makes
+# that true. It used to be a plain `bun install --frozen-lockfile`.
+#
+# AT `400880ce…` THAT COMMAND FAILS — on a correct tree, measured before this was written:
+#
+#     error: lockfile had changes, but lockfile is frozen
+#
+# effectstream #922 removed seven dependencies from package.json and from bun.lock's
+# `workspaces` block, but left ONE resolved entry behind in the lockfile's `packages` map:
+# `@midnight-ntwrk/midnight-js-fetch-zk-config-provider@4.1.1`, which nothing depends on any
+# more. (The other six are still reachable transitively through
+# `@effectstream/midnight-contracts` and `midnight-js-protocol`, so they are correct where
+# they are.) `bun install` prunes that orphan, which is a change, which `--frozen-lockfile`
+# refuses. The drift is upstream lockfile hygiene, not a version move: measured with
+# `bun install --lockfile-only` on the extracted tree, the ENTIRE diff is the removal of that
+# one entry and the blank line after it — 683 packages, no addition, no version change.
+#
+# So the guard is not dropped, it is made EXACT: install unfrozen, then require that the
+# resolution ADDED nothing and CHANGED nothing, and that every line it removed is that one
+# orphan. That is strictly stronger than `--frozen-lockfile` (which only says "no diff"), it
+# still fails on a transitive publish, and it keeps working if upstream regenerates the
+# lockfile — an EMPTY diff satisfies it too.
+#
+# DECLARED BEFORE THE TWO VITE ARGS ON PURPOSE: the faucet URL changes with every generated
+# port block, and an ARG consumed above this line would invalidate the install layer and turn a
+# port change into a full dependency re-resolution.
+RUN set -eux; \
+    cp bun.lock /bun.lock.pinned; \
+    bun install; \
+    diff -u /bun.lock.pinned bun.lock > /bun.lock.diff || true; \
+    added="$(grep -E '^\+' /bun.lock.diff | grep -v '^\+\+\+' || true)"; \
+    if [ -n "${added}" ]; then \
+      echo "FAIL: bun install ADDED or CHANGED lockfile entries; the pinned resolution is not" >&2; \
+      echo "      what this tree installs. Re-pin deliberately or fix the lockfile upstream." >&2; \
+      echo "${added}" >&2; \
+      exit 1; \
+    fi; \
+    removed="$(grep -E '^-' /bun.lock.diff | grep -v '^---' | grep -v '^-[[:space:]]*$' || true)"; \
+    unexpected="$(printf '%s\n' "${removed}" | grep -v 'midnight-js-fetch-zk-config-provider' | grep . || true)"; \
+    if [ -n "${unexpected}" ]; then \
+      echo "FAIL: bun install pruned lockfile entries other than the known upstream orphan:" >&2; \
+      echo "${unexpected}" >&2; \
+      exit 1; \
+    fi; \
+    echo "OK: the resolved set matches the pinned lockfile$( [ -n "${removed}" ] && printf '%s' " (minus the one orphan #922 left behind)" )"; \
+    rm -f /bun.lock.pinned /bun.lock.diff
 
-# The template does not track generated managed/ output, so verify Docker's freshly compiled
-# artifacts against the trusted checked-in manifest — 16 files plus the source hash — BEFORE
-# anything is bundled. `compact compile` is deterministic, so this is an exact check, not a
-# heuristic: a mismatch means the source was edited or the compiler version differs. Routine
-# builds must never self-bless compiler output via --update-manifest.
-RUN bun run scripts/build-contract.ts --verify-only
+# ── the two build-time values, and why they are checked here (00020 Q4) ──────
+#
+# Vite inlines `import.meta.env.VITE_*` as string literals at build time, taking them from
+# process.env as well as from .env files, so an ENV in this stage is all it takes. What it does
+# NOT do is complain about a missing one: an unset VITE_MIDNIGHT_NETWORK_ID silently selects
+# `preprod` (the template's default since #920) and an unset VITE_FAUCET_URL silently selects
+# the PUBLIC mint-test-tokens site. Both wrong answers look exactly like a working build, which
+# is why they are asserted rather than defaulted-and-hoped.
+#
+# FRONTEND_NETWORK_ID is not meaningfully variable — this repository is a local `undeployed`
+# devnet — so compose passes the literal and the check below refuses anything else. If a
+# future stack ever needs another network, that is a deliberate edit here, not an env typo.
+ARG FRONTEND_NETWORK_ID=undeployed
+# The default is the DEFAULT PORT BLOCK's faucet, matching FAUCET_HOST_PORT=10500 in
+# .env.example and `: "${FAUCET_HOST_PORT:=10500}"` in scripts/lib/common.sh. Every generated
+# stack overrides it (scripts/pick-ports.sh emits FRONTEND_FAUCET_URL), and
+# scripts/verify-frontend.sh asserts the SERVED bundle carries exactly the value this stack's
+# env file names — so an image built for a different port block fails the gate instead of
+# sending a person to a dead port.
+#
+# The `?network=undeployed` in it is DOCUMENTATION, not mechanism: src/faucetUrl.ts does
+# `url.searchParams.set('network', <the network id>)`, so this parameter is overwritten with
+# the value of FRONTEND_NETWORK_ID whatever it says here. It is carried anyway so that the
+# baked string is byte-identical to the URL `up.sh` prints and docs/OPERATIONS.md documents.
+ARG FRONTEND_FAUCET_URL=http://127.0.0.1:10500/?network=undeployed
 
-# `build` = `tsc -b && vite build`; its `prebuild` hook re-runs the same manifest verification
-# (and skips the compile, because managed/ is already present).
+RUN set -eux; \
+    case "${FRONTEND_NETWORK_ID}" in \
+      undeployed) : ;; \
+      *) echo "FAIL: FRONTEND_NETWORK_ID must be 'undeployed' for this stack, got '${FRONTEND_NETWORK_ID}'" >&2; exit 1 ;; \
+    esac; \
+    case "${FRONTEND_FAUCET_URL}" in \
+      http://*|https://*) : ;; \
+      "") echo "FAIL: FRONTEND_FAUCET_URL is empty; the SPA would link to the PUBLIC faucet" >&2; exit 1 ;; \
+      *) echo "FAIL: FRONTEND_FAUCET_URL must be an absolute http(s) URL, got '${FRONTEND_FAUCET_URL}'" >&2; exit 1 ;; \
+    esac; \
+    echo "building with VITE_MIDNIGHT_NETWORK_ID=${FRONTEND_NETWORK_ID} VITE_FAUCET_URL=${FRONTEND_FAUCET_URL}"
+
+ENV VITE_MIDNIGHT_NETWORK_ID="${FRONTEND_NETWORK_ID}"
+ENV VITE_FAUCET_URL="${FRONTEND_FAUCET_URL}"
+
+# `build` = `tsc -b && vite build`. The `prebuild` hook that used to run the contract compile
+# was deleted by #922, and stage 0 asserts it is gone.
 RUN bun run build
+
+# BOTH VALUES MUST BE IN THE EMITTED BUNDLE, not merely in this stage's environment. Vite only
+# inlines what it recognises: a renamed variable, a changed envPrefix or a template that stopped
+# reading the knob would leave the defaults in place, and the page would quietly run on preprod
+# and link to the public faucet. The faucet URL is a unique, stack-specific literal, so it is
+# matched exactly; the network id is matched as `"undeployed".trim()`, the shape config.ts's
+# `(import.meta.env.VITE_MIDNIGHT_NETWORK_ID)?.trim()` compiles to once the literal is inlined.
+#
+# FRONTEND_FAUCET_URL is NOT re-declared here: an ARG stays in scope to the end of its stage,
+# and a bare `ARG FRONTEND_FAUCET_URL` would reset it to the EMPTY string whenever the build
+# does not pass one — and `grep -F ""` matches every file, which is a check that always passes.
+RUN set -eux; \
+    grep -rqF -- "${FRONTEND_FAUCET_URL}" /src/dist/assets \
+      || { echo "FAIL: VITE_FAUCET_URL '${FRONTEND_FAUCET_URL}' is not in the built bundle" >&2; exit 1; }; \
+    grep -rqF -- '"undeployed".trim()' /src/dist/assets \
+      || { echo "FAIL: VITE_MIDNIGHT_NETWORK_ID was not inlined as 'undeployed' in the bundle" >&2; exit 1; }
 
 # THE FIX MUST SURVIVE INTO THE BUNDLE, not merely into the source tree. Two markers, one
 # per half of upstream's browser-network change (effectstream#912), greped out of the emitted assets: `([A-Z])` is the
@@ -247,7 +340,7 @@ RUN set -eux; \
     grep -rqF '([A-Z])' /src/dist/assets || { echo "FAIL: the URI-override lane is not in the bundle" >&2; exit 1; }; \
     grep -rqF '[^/:]+'  /src/dist/assets || { echo "FAIL: the hostname rewrite is not in the bundle" >&2; exit 1; }
 
-# ── stage 3: nginx serving dist/ on :10600 ───────────────────────────────────
+# ── stage 2: nginx serving dist/ on :10600 ───────────────────────────────────
 FROM ${NGINX_BASE}
 
 COPY --from=build  /src/dist /usr/share/nginx/html

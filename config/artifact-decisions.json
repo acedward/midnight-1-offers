@@ -1,6 +1,6 @@
 {
   "schemaVersion": "artifact-decision-matrix-v2",
-  "pinsDigest": "f6ae20d832031a9c1e0bbdc692731e974d1c2e75401f3261725b5916ad433b09",
+  "pinsDigest": "551fa6f9e52bcebf917851679686c068cae38ceb0e99c4522e8c7e191efd1154",
   "frozenOn": "2026-09-01",
   "note": "Frozen artifact-selection contract for every external dependency of this Midnight 1.x demo. Each field was re-derived from a live source on the freeze date. scripts/verify-artifact-decisions.sh enforces it offline. Do not edit a digest, SHA or hash to make a build pass: re-verify against the source first, then regenerate pinsDigest with --update-pins so the change is visible in review. Schema v2 differs from the 2.x sibling's v1 by adding `sources` (git-pinned source builds) and `toolchains`, and by replacing the warehouse proof-data generation with a pre-warm strategy.",
   "selectionOrder": [
@@ -380,30 +380,32 @@
       "role": "the zswap-da trading SPA, built from a frozen upstream template subtree",
       "acquisition": "anonymous-git-fetch",
       "repository": "https://github.com/effectstream/effectstream.git",
-      "ref": "58ab921be5513b77937a37be86bf724a41888302",
+      "ref": "400880ceb6814738d1ae193dae18ad5128922edc",
       "subtree": "templates/zswap-da",
-      "subtreeSha": "3ca1d56ffc29f03c73cf43432bdfeeaf3ab43c6b",
+      "subtreeSha": "a750cccd653f33306d3ff7249fe8d5853fbfafa6",
       "envVar": "FRONTEND_REF",
-      "verifiedOn": "2026-09-03",
-      "reason": "The head of effectstream's `midnight-1` branch — the line the owner maintains for midnight-node 1.x / ledger-v8 / @effectstream 0.1xx (Q14, user decision 2026-09-01). At this ref the template is still v8-native in BOTH lanes: contract (ledger-v8 8.1.0, midnight-js 4.1.1, compact-js 2.5.1) and wallet (@effectstream/{midnight-contracts,wallets} 0.104.0, whose closure carries no ledger-v9), and it still carries the browser-network URI fix at api.getMidnightConfig (effectstream#912) — so this repository applies NO patch at all, exactly as before. RE-PINNED IN 00011 PR A to the branch head after effectstream#918 (\"amounts are whole coins — token decimals from the registry\"), which is the UI HALF of kernel PR #63 and MUST move together with KERNEL_REF: the SPA now reads each token's decimals off GET /v1/known-tokens, scales displayed and submitted amounts by 10^decimals, registers minted colours with an explicit decimals, and mints 1 000 WHOLE COINS (parseWholeCoins('1000', 6) = 1_000_000_000 base units) where it used to mint 1 000 base units. #918's two commits touch only src/ and README.md — no package.json, no bun.lock, no .compact source, no build script, no vite config — so every assertion this image makes was re-checked against the new subtree BEFORE building and holds verbatim, and the compactc 0.31.0 toolchain and the committed contract manifest are unaffected. The subtree SHA is recorded separately and verified during the build, because the commit alone does not prove which bytes of it were extracted.",
+      "verifiedOn": "2026-09-08",
+      "reason": "The head of effectstream's `midnight-1` branch — the line the owner maintains for midnight-node 1.x / ledger-v8 / @effectstream 0.1xx (Q14, user decision 2026-09-01). At this ref the template is still v8-native in BOTH lanes: contract (ledger-v8 8.1.0, midnight-js 4.1.1, compact-js 2.5.1) and wallet (@effectstream/{midnight-contracts,wallets} 0.104.0, whose closure carries no ledger-v9), and it still carries the browser-network URI fix at api.getMidnightConfig (effectstream#912) — so this repository applies NO patch at all, exactly as before. RE-PINNED IN 00011 PR A to the branch head after effectstream#918 (\"amounts are whole coins — token decimals from the registry\"), which is the UI HALF of kernel PR #63 and MUST move together with KERNEL_REF: the SPA now reads each token's decimals off GET /v1/known-tokens, scales displayed and submitted amounts by 10^decimals, registers minted colours with an explicit decimals, and mints 1 000 WHOLE COINS (parseWholeCoins('1000', 6) = 1_000_000_000 base units) where it used to mint 1 000 base units. #918's two commits touch only src/ and README.md — no package.json, no bun.lock, no .compact source, no build script, no vite config — so every assertion this image makes was re-checked against the new subtree BEFORE building and holds verbatim, and the compactc 0.31.0 toolchain and the committed contract manifest are unaffected. The subtree SHA is recorded separately and verified during the build, because the commit alone does not prove which bytes of it were extracted. RE-PINNED AGAIN IN 00020 PR D to the `midnight-1` head after effectstream #920 and #922 (two first-parent merges past 58ab921, five commits; the branch head was re-checked on 2026-09-08 and had not moved past 400880ce). THIS IS THE FRONTEND HALF OF KERNEL #69 AND IT MOVES WITH KERNEL_REF. #922 deletes the template's Compact contract lane outright — `git ls-tree -r 400880ce -- templates/zswap-da/src/contract` and `… -- templates/zswap-da/scripts` are BOTH EMPTY — taking src/contract/offer-files.compact, its committed manifest.json, scripts/build-contract.ts, the build:contract/verify:contract/predev/prebuild npm scripts, src/screens/Faucet.tsx, hooks/useContract.ts, hooks/useMintReconciler.ts, services/contractWallet.ts, services/mintQueue.ts, api.registerKnownToken, vite's zk-artifact-404 plugin and the @midnight-ntwrk/{compact-js,compact-runtime} + five midnight-js contract-lane dependencies with it. So images/zswap-da has NO Compact stage, NO COMPACT_VERSION build arg and NO toolchains[] entry of its own any more — the `compact` entry (0.31.0) was REMOVED from this matrix by this pin, exactly as its own $comment predicted, leaving two Compact toolchains in the repository (shielded-night 0.31.1 and issuer 0.31.1). The image now asserts the ABSENCE of those paths, so a ref moved backwards onto the contract line fails the build instead of shipping a bundle whose Faucet screen fetches proving keys from GET /keys/*, routes kernel #69 deleted. #920 replaces the in-page Faucet TAB with a wallet-independent LINK (src/ui/FaucetLink.tsx, src/faucetUrl.ts) and adds VITE_FAUCET_URL and VITE_MIDNIGHT_NETWORK_ID; NEITHER has a window.* runtime override in src/config.ts, so both are BUILD inputs of this image (00020 Q4: FRONTEND_FAUCET_URL and the literal FRONTEND_NETWORK_ID=undeployed in compose/frontend.yml). #920 also FLIPPED VITE_MIDNIGHT_NETWORK_ID's default from `undeployed` to `preprod`, and useWallet.ts / state/wallet.ts now read the wallet-handshake network from that same constant, so an image that sets none would format addresses, parse offers, call initialApi.connect() and build the in-page JS wallet on preprod against this undeployed chain. FOUR of this image's existing assertions were re-measured at the new pin before anything was built: ledger-v8 8.1.0 present and ledger-v9 absent from BOTH package.json and bun.lock, @effectstream/{midnight-contracts,wallets} 0.104.0 with no 0.200.x, the #912 markers `pageHost` and 'proofServerUri' still in src/services/api.ts, and both LICENSE files — all hold. ONE DOES NOT and was removed with the stage it belonged to: `\"@midnight-ntwrk/compact-runtime\": \"0.16.0\"` is no longer a dependency at this ref. ONE UPSTREAM WART, measured rather than worked around: bun.lock at this ref still carries one ORPHANED resolved entry, @midnight-ntwrk/midnight-js-fetch-zk-config-provider@4.1.1, which #922 removed from package.json and which nothing depends on any more — so `bun install --frozen-lockfile` refuses a correct tree with \"lockfile had changes, but lockfile is frozen\". Measured with `bun install --lockfile-only` on the extracted tree, the ENTIRE drift is the removal of that one entry (683 packages, no addition, no version change). The image therefore installs unfrozen and asserts the resolution added nothing, changed nothing and removed only that orphan — strictly stronger than the frozen flag, and satisfied by an EMPTY diff if upstream regenerates the lockfile.",
       "provenance": {
         "branch": "midnight-1",
         "supersededRefs": [
           "9474871185fd1b2704a9487718eee9d88c4f8edc",
           "332503c8f9216143a8c805f2a0acbcfd39e5a21d",
           "8d21ebe12c3e9b03da629b3eb486c381c33505a0",
-          "f20a38cfccd4f2dec5c886e5c8bb321712d37924"
+          "f20a38cfccd4f2dec5c886e5c8bb321712d37924",
+          "58ab921be5513b77937a37be86bf724a41888302"
         ],
         "supersededSubtreeShas": [
           "af6023edf0d79269457adfaf17d09c9ebd301698",
           "1f63d7eedc9a8aff729b7fe026486cb89cb618de",
           "b22cf08d7d7e9f9b9e794a085c3e50fe342dde4d",
-          "99b871f7aac2e8dc2b3a2172990f1a82bca13360"
+          "99b871f7aac2e8dc2b3a2172990f1a82bca13360",
+          "3ca1d56ffc29f03c73cf43432bdfeeaf3ab43c6b"
         ],
         "upstreamedFix": "effectstream/effectstream#912 — browser-network URIs (api.getMidnightConfig), merged 2026-09-02, the last patch this image carried",
         "forkPoint": "b267fa2e795fcd1bd8e295d4d9b8eb65814b11ee",
         "identityProof": "Subtree b22cf08d = af6023ed (9474871, byte-identical to the frozen ref 332503c8 plus the retired effectstream-1x-line.patch: package.json blob 822bd218…, bun.lock blob 1099e6f6…) + effectstream#912, which changes only src/services/api.ts by the same +32 lines the retired browser-network-urls.patch applied. Verified 2026-09-01/02.",
-        "repinnedFor": "effectstream#918 (00011 PR A, 2026-09-03) — feat(zswap-da): amounts are whole coins, token decimals from the registry (the UI half of kernel PR #63). Previously effectstream#916 (phase G) — port(zswap-da): reference rate, offset and sponsorship threshold"
+        "repinnedFor": "effectstream#920 + #922 (00020 PR D, 2026-09-08) — THE FRONTEND HALF OF KERNEL #69. #922 removes the template's Compact contract lane entirely (src/contract/ with its .compact source and committed manifest.json, scripts/build-contract.ts, the prebuild hook, src/screens/Faucet.tsx, useContract/useMintReconciler, contractWallet/mintQueue, api.registerKnownToken, vite's zk-artifact-404 plugin, and the compact-js / compact-runtime / five midnight-js contract-lane dependencies), so images/zswap-da has no Compact stage, no COMPACT_VERSION build arg and no toolchains[compact] entry any more — the image asserts those paths are ABSENT instead. #920 replaces the in-page Faucet TAB with a LINK to an external test-token service and adds two build-time knobs, VITE_FAUCET_URL and VITE_MIDNIGHT_NETWORK_ID, neither of which has a window.* runtime override; #920 also FLIPPED VITE_MIDNIGHT_NETWORK_ID's default from undeployed to preprod, so this image must now set it explicitly or the SPA formats addresses, parses offers and connects wallets on the wrong network. Previously effectstream#918 (00011 PR A, 2026-09-03) — feat(zswap-da): amounts are whole coins, token decimals from the registry (the UI half of kernel PR #63); before that effectstream#916 (phase G) — port(zswap-da): reference rate, offset and sponsorship threshold"
       },
       "$comment": "Upstream templates/** on main is FROZEN by effectstream 00016 FR-10; the midnight-1 branch is the 1.x line's own. Nothing in this repository pushes to either — the pin is read-only."
     },
@@ -517,63 +519,6 @@
     }
   ],
   "toolchains": [
-    {
-      "id": "compact",
-      "version": "0.31.0",
-      "decision": "official-upstream-direct",
-      "resolved": true,
-      "requiredBy": "images/zswap-da — the frozen template's scripts/build-contract.ts pins COMPILER_VERSION 0.31.0 and its committed src/contract/manifest.json verifies all 16 outputs plus the source hash byte-for-byte",
-      "repository": "midnightntwrk/compact",
-      "releaseTag": "compactc-v0.31.0",
-      "releaseId": 315357301,
-      "reason": "RESOLVED AT P3/T3.3 (Q9). This is not a version this repository chose: the frozen template DICTATES it. scripts/build-contract.ts pins COMPILER_VERSION = \"0.31.0\" and src/contract/manifest.json records the sha256 of the contract source (6fde5f8e2cfc5d5559f1468f3997f72810aec3093c6a87a54036b9175dadd3f0 — byte-identical to kernel main's copy) and of all 16 generated files; `compact compile` is deterministic, so any other compiler fails that manifest. The compiler is also the right partner for the template's runtime pins: compact-runtime 0.16.0 / compact-js 2.5.1 / midnight-js 4.1.1, which the Midnight Preview matrix pairs with the Compact 0.31.x toolchain. Q9's original option table was enumerated against LFDT-Minokawa/compact and assumed a 0.30.0 pin was needed; both premises were wrong — see `compact-kernel` for the other half of the split. The asset is fetched and sha256-verified in the image rather than through the `compact` version manager, whose resolution is an unpinnable network lookup.",
-      "assets": {
-        "linux/amd64": {
-          "name": "compactc_v0.31.0_x86_64-unknown-linux-musl.zip",
-          "assetId": 408401778,
-          "outerSize": 27444303,
-          "outerSha256": "ddbb4bb227c6a9c67098e65663648d8647097404ae094fdc0abe660839ea3ee8"
-        },
-        "linux/arm64": {
-          "name": "compactc_v0.31.0_aarch64-unknown-linux-musl.zip",
-          "assetId": 408401776,
-          "outerSize": 26746686,
-          "outerSha256": "9ead84322fb0c64aac6f94f12cd01eb011c1f3d0321d9fabc6a52b419c3dd6c6"
-        }
-      },
-      "verifiedOn": "2026-09-01",
-      "$comment": [
-        "THIS ENTRY IS THE FRONTEND'S, AND SINCE 00020 PR C IT IS THE ONLY SIDE LEFT (0.31.0,",
-        "images/zswap-da). It used to be one half of a deliberate split whose other half was",
-        "called `compact-kernel` in this comment — a name that never existed as a matrix id (the",
-        "kernel's 0.30.0 was a Dockerfile ARG in images/offerfiles-kernel with no entry here).",
-        "AT KERNEL_REF=e3b9388… THAT OTHER HALF IS GONE ENTIRELY: kernel #69 deleted",
-        "packages/contracts-midnight/contract-offer-files, so images/offerfiles-kernel has no",
-        "Compact stage, no COMPACT_VERSION ARG and nothing to compile.",
-        "",
-        "THE RESIDUAL RISK THAT SPLIT CARRIED IS THEREFORE RESOLVED, and not in the direction the",
-        "old paragraph expected. It said: the contract is DEPLOYED by the kernel from a 0.30.0",
-        "compile while the browser proves against ZK assets the kernel serves from that same",
-        "compile (GET /keys/*, /zkir/*), so the browser's 0.31.0 bindings drive 0.30.0 artifacts.",
-        "At this pin THERE IS NO CONTRACT AND THERE ARE NO SUCH ROUTES — packages/node/zk-assets.ts",
-        "is deleted and `registerZkAssetRoutes(server)` is gone from packages/node/api.ts, so",
-        "GET /keys/* and GET /zkir/* answer 404. The zswap-da image pinned at FRONTEND_REF=58ab921…",
-        "still compiles that contract into its own bundle and its faucet tab still calls it, which",
-        "is why the SPA's faucet is EXPECTED DEAD until 00020 PR D re-pins the template past",
-        "effectstream #922 (which removes the template's Compact source, and with it this entry).",
-        "",
-        "midnightntwrk/compact (repo id 967499978) and LFDT-Minokawa/compact (id 1115336329) both",
-        "publish this tag, and for compactc-v0.31.0 the assets are BYTE-IDENTICAL: same sha256 and",
-        "same sizes on both Linux triples (LFDT asset ids 408401806 / 408401804, verified",
-        "2026-09-01). midnightntwrk is recorded because it is where the `compact` toolchain manager",
-        "itself is published — so it is what `compact update <v>` resolves against — and because",
-        "the kernel image already pins there; one fewer distinct upstream in the stack.",
-        "",
-        "The same release also ships aarch64-darwin and x86_64-darwin zips. Those must never enter",
-        "a Linux build stage, which is why forbiddenAssetSubstrings is applied to toolchain assets",
-        "and asserted again in the Dockerfile."
-      ]
-    },
     {
       "id": "compact-shielded-night",
       "version": "0.31.1",

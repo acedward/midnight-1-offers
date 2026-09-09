@@ -215,18 +215,22 @@ load_env() {
       warn "${retired} is RETIRED and IGNORED — the solver IS the kernel commit; set KERNEL_REF instead"
     fi
   done
-  # There are THREE Compact toolchains here since 00020 PR C (zswap-da 0.31.0, shielded-night
-  # 0.31.1, issuer 0.31.1), so one variable could never have configured them. THE KERNEL'S
-  # 0.30.0 IS GONE: kernel #69 deleted the contract `images/offerfiles-kernel` used to compile,
-  # so that image has no Compact stage, no `COMPACT_VERSION` ARG and no compiler of any
-  # version. Each of the three left is pinned where it is enforced — a literal in
-  # compose/frontend.yml, one in compose/shielded-night.yml and one in compose/issuer.yml, each
-  # of which scripts/verify-compose-pins.sh binds to its OWN matrix entry — and none of them
-  # reads the environment. The issuer's and shielded-night's are the same compiler VERSION and
-  # therefore the same release asset and the same two SHA-256s, but they are separate matrix
-  # entries because they are separate build inputs that can be re-pinned independently.
+  # There are TWO Compact toolchains left (shielded-night 0.31.1, issuer 0.31.1), so one
+  # variable could never have configured them. There were FOUR a project ago, and both of the
+  # departed ones compiled the SAME offer-files contract from opposite ends: the KERNEL's
+  # 0.30.0 went with kernel #69, which deleted the contract package (00020 PR C), and the
+  # ZSWAP-DA TEMPLATE's 0.31.0 went with effectstream #922, which deleted the template's copy
+  # of the source, its build script and its committed manifest (00020 PR D). Neither image has
+  # a Compact stage, a `COMPACT_VERSION` ARG or a compiler of any version now.
+  #
+  # Each of the two left is pinned where it is enforced — a literal in
+  # compose/shielded-night.yml and one in compose/issuer.yml, each of which
+  # scripts/verify-compose-pins.sh binds to its OWN matrix entry — and neither reads the
+  # environment. They are the same compiler VERSION and therefore the same release asset and
+  # the same two SHA-256s, but they are separate matrix entries because they are separate
+  # build inputs that can be re-pinned independently.
   if [[ -n "${COMPACT_VERSION-}" ]]; then
-    warn "COMPACT_VERSION is IGNORED — zswap-da 0.31.0, shielded-night 0.31.1, issuer 0.31.1, all pinned in-build (the kernel image compiles nothing since kernel #69)"
+    warn "COMPACT_VERSION is IGNORED — shielded-night 0.31.1 and issuer 0.31.1 are pinned in-build; neither the kernel image (kernel #69) nor zswap-da (effectstream #922) compiles anything"
   fi
 
   # ── external runtime images: repository + IMMUTABLE DIGEST, never a tag ─────
@@ -270,7 +274,7 @@ load_env() {
   : "${KERNEL_REPO:=https://github.com/effectstream/zswap-offerfiles-kernel.git}"
   : "${KERNEL_REF:=e3b9388d11dfe1a6c5554a4c8699250fe595e4ce}"
   : "${FRONTEND_REPO:=https://github.com/effectstream/effectstream.git}"
-  : "${FRONTEND_REF:=58ab921be5513b77937a37be86bf724a41888302}"
+  : "${FRONTEND_REF:=400880ceb6814738d1ae193dae18ad5128922edc}"
   # The Shielded NIGHT dApp. A first-party public repository already on this stack's 1.x line
   # (ledger-v8 8.1.0 / midnight-js 4.1.1 / compact-runtime 0.16.0), so nothing here is
   # patched — see config/artifact-decisions.json -> sources[shielded-night].
@@ -512,6 +516,21 @@ load_env() {
   FAUCET_URL="http://${HOST_ADDR}:${FAUCET_HOST_PORT}"
   export NODE_RPC_URL INDEXER_GQL_URL KERNEL_URL BATCHER_URL RELAY_URL \
          SOLVER_FRONTEND_URL SHIELDED_NIGHT_URL POSTER_URL FAUCET_URL
+
+  # WHAT THE zswap-da SPA'S FAUCET LINK IS BUILT WITH (00020 PR D, Q4).
+  #
+  # Defaulted HERE rather than beside the other host ports because it is derived from
+  # FAUCET_URL, which is only computed once HOST_ADDR is known. It is a BUILD arg for
+  # compose/frontend.yml — effectstream #920's VITE_FAUCET_URL has no `window.*` runtime
+  # override, unlike the six endpoint URLs images/zswap-da/entrypoint.sh writes into
+  # /config.js — so exporting it is what makes `./up.sh --build` bake the right one when no
+  # generated .env is present. scripts/pick-ports.sh emits it explicitly for every generated
+  # stack, and that value wins because load_env keeps the FIRST setting of a variable.
+  #
+  # `?network=undeployed` matches what up.sh prints and what src/faucetUrl.ts would write
+  # anyway; see .env.example.
+  : "${FRONTEND_FAUCET_URL:=${FAUCET_URL}/?network=undeployed}"
+  export FRONTEND_FAUCET_URL
 }
 
 # ── the PRIVATE relay source (spec FR-11, plan Q4) ───────────────────────────
