@@ -295,7 +295,7 @@ load_env() {
   # The relay/intents-UI pin. There is deliberately no *_REPO for it: the source is private
   # and is never fetched by this repository. RELAY_SOURCE_DIR names the operator's own
   # clone, and assert_relay_source() below verifies that clone is at exactly this commit.
-  : "${RELAY_REF:=061f4d3258e25b9f3a451b4b4358ed232349d96b}"
+  : "${RELAY_REF:=b32e0b100a5715d1fbf89c155afe6c2236d3b013}"
   : "${RELAY_SOURCE_DIR:=}"
 
   # ── warehouse-backed binaries (Celestia) ───────────────────────────────────

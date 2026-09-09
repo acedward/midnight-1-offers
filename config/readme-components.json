@@ -1,10 +1,22 @@
 {
   "$comment": "Rows of the README's 'Where every component comes from' table. Prose is written here; every pin is a placeholder that scripts/render-readme-pins.py fills from compose/, images/, .env.example and config/artifact-decisions.json — see that script's docstring for the placeholder list. Run `scripts/render-readme-pins.py --write` after editing; ci-check.sh fails when README.md is stale.",
   "columns": [
-    { "key": "component", "title": "Component" },
-    { "key": "source", "title": "Source" },
-    { "key": "pin", "title": "Pin" },
-    { "key": "pinnedIn", "title": "Pinned in" }
+    {
+      "key": "component",
+      "title": "Component"
+    },
+    {
+      "key": "source",
+      "title": "Source"
+    },
+    {
+      "key": "pin",
+      "title": "Pin"
+    },
+    {
+      "key": "pinnedIn",
+      "title": "Pinned in"
+    }
   ],
   "rows": [
     {
@@ -63,7 +75,7 @@
     },
     {
       "component": "Midnight Intents relay + intents UI",
-      "source": "`shieldedtech/midnight-intents-swaps` — **PRIVATE**; you supply the clone via `RELAY_SOURCE_DIR`, `up.sh` verifies it sits at the pin with a clean tree before any build",
+      "source": "`shieldedtech/midnight-intents-swaps` — **PRIVATE**; you supply the clone via `RELAY_SOURCE_DIR`, `up.sh` verifies it sits at the pin with a clean tree before any build. Since 00020 PR F the UI labels each token and scales its amounts from `TOKEN_<NAME>` + `METADATA_TOKEN_<NAME>_LABEL/_DECIMALS` baked at build time, which `scripts/issuer-token-names.sh` fills in from the issuer registry",
       "pin": "{ref:RELAY_REF} (`RELAY_REF`, verified before build)",
       "pinnedIn": "{files:RELAY_REF} · `images/relay/` · `images/intents-ui/`"
     }

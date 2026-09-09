@@ -1383,7 +1383,7 @@ mirrored here. Instead:
 
   ```sh
   git clone git@github.com:shieldedtech/midnight-intents-swaps.git ./local/intents-swaps
-  git -C ./local/intents-swaps checkout 061f4d3258e25b9f3a451b4b4358ed232349d96b
+  git -C ./local/intents-swaps checkout b32e0b100a5715d1fbf89c155afe6c2236d3b013
   echo 'RELAY_SOURCE_DIR=./local/intents-swaps/phase1-native-swaps' >> .env
   ```
 

@@ -195,7 +195,7 @@ services:
     build:
       context: '../images/relay'
       args:
-        RELAY_REF: '${RELAY_REF:-061f4d3258e25b9f3a451b4b4358ed232349d96b}'
+        RELAY_REF: '${RELAY_REF:-b32e0b100a5715d1fbf89c155afe6c2236d3b013}'
       additional_contexts:
         # YOUR clone, from YOUR environment. The default below is a deliberately non-existent
         # path: it keeps `docker compose config` renderable on a clean checkout (the offline
@@ -744,7 +744,7 @@ services:
     build:
       context: '../images/intents-ui'
       args:
-        RELAY_REF: '${RELAY_REF:-061f4d3258e25b9f3a451b4b4358ed232349d96b}'
+        RELAY_REF: '${RELAY_REF:-b32e0b100a5715d1fbf89c155afe6c2236d3b013}'
         # Friendly names for the UI, baked at build time (see .env.example). Empty by default:
         # colours are per chain, so a committed value would name the wrong tokens.
         UI_TOKEN_NAMES: '${INTENTS_UI_TOKEN_NAMES:-}'

@@ -1,6 +1,6 @@
 {
   "schemaVersion": "artifact-decision-matrix-v2",
-  "pinsDigest": "419a00795ea511bbbd4258d01d94223eb160cbfd683a83bf7a3981e1ec093d2c",
+  "pinsDigest": "ac7c53970c874c36edda6a3e1e2bba09af1e1be004aa0f05d357b2b577e79995",
   "frozenOn": "2026-09-01",
   "note": "Frozen artifact-selection contract for every external dependency of this Midnight 1.x demo. Each field was re-derived from a live source on the freeze date. scripts/verify-artifact-decisions.sh enforces it offline. Do not edit a digest, SHA or hash to make a build pass: re-verify against the source first, then regenerate pinsDigest with --update-pins so the change is visible in review. Schema v2 differs from the 2.x sibling's v1 by adding `sources` (git-pinned source builds) and `toolchains`, and by replacing the warehouse proof-data generation with a pre-warm strategy.",
   "selectionOrder": [
@@ -546,20 +546,25 @@
       "acquisition": "operator-local-clone",
       "privateRepository": "shieldedtech/midnight-intents-swaps",
       "subtree": "phase1-native-swaps",
-      "ref": "061f4d3258e25b9f3a451b4b4358ed232349d96b",
+      "ref": "b32e0b100a5715d1fbf89c155afe6c2236d3b013",
+      "supersededRefs": [
+        "061f4d3258e25b9f3a451b4b4358ed232349d96b"
+      ],
       "envVar": "RELAY_REF",
       "sourceDirEnv": "RELAY_SOURCE_DIR",
       "leakPolicy": "no-bytes-committed",
       "verifiedOn": null,
-      "reason": "The audited pin the PR #52 solver was proven against end to end. Recorded as an IDENTITY ONLY. The repository is private and this public repository carries none of its content, fetches it from nowhere, and deliberately has no repository URL here — an operator supplies their own clone through RELAY_SOURCE_DIR and up.sh verifies it sits at this exact commit with a clean tree before any build. verifiedOn is null on purpose: this executor made no attempt to read the private remote, so claiming a verification date would be a fabrication.",
+      "reason": "The head of the private repository's own default branch, re-measured 2026-09-09 and adopted in 00020 PR F. Recorded as an IDENTITY ONLY. The repository is private and this public repository carries none of its content, fetches it from nowhere, and deliberately has no repository URL here — an operator supplies their own clone through RELAY_SOURCE_DIR and up.sh verifies it sits at this exact commit with a clean tree before any build. verifiedOn is null on purpose: no executor here has ever read the private remote, so a verification date would be a fabrication. What moved between the previous pin and this one, in this repository's own words rather than upstream's: fastify onto the 5.12 line across the workspace with its lockfile regenerated (so both transcribed images run npm ci against a new lockfile, exercised from clean in the PR F gate); the browser app's token naming replaced by a parser that reads TOKEN_<NAME> plus an optional METADATA_TOKEN_<NAME>_LABEL and METADATA_TOKEN_<NAME>_DECIMALS out of the config block baked into index.html, and amounts rendered scaled by those decimals — which is why images/intents-ui/Dockerfile's naming knob now carries a label and a decimals field per token and scripts/issuer-token-names.sh fills them from the issuer registry; and two changes to upstream's OWN deployment files (a WebSocket route in its edge template in front of the relay's solver socket, and two token env passthroughs in its compose) that are n/a here because this stack publishes that port directly, connects its solver inside the compose network, ships its own nginx for the UI and renders its own compose. No relay wire change: the HTTP routes, the solver WebSocket and its bearer handshake are the same shape, which is what the gate's settlement driver and scripts/verify-solver.sh assert.",
       "$comment": [
         "Every rule this pin implies is enforced mechanically, not by convention:",
         "  * .gitignore ignores local/, the conventional place for the operator's clone;",
         "  * scripts/verify-no-private-source.sh fails on any committed byte of that source;",
-        "  * scripts/lib/common.sh assert_relay_source() verifies the clone before a build;",
+        "  * scripts/lib/common.sh assert_relay_source() verifies the clone before a build —",
+        "    and it keys on the COMMIT, never on a branch name, which is what kept it working",
+        "    when the branch the previous pin lived on was deleted upstream;",
         "  * images built from it are never pushed to any registry.",
-        "Bumping this pin requires re-running the P5 end-to-end driver — the solver pin above",
-        "was proven against THIS relay commit and no other."
+        "Bumping this pin requires re-running the settlement driver end to end: the kernel/solver",
+        "pin above was proven against a SPECIFIC relay commit and no other. 00020 PR F did that."
       ]
     }
   ],
