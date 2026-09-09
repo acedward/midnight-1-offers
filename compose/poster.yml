@@ -64,6 +64,36 @@
 # MIDNIGHT_GENESIS_SEED, which this service therefore does not carry either — `poster-provision`
 # is the only thing here that needs it.
 #
+# ─── `offer-poster` IS STARTED LAST, BY up.sh, AND NOT BY THIS FILE (00025) ──
+# Nothing below expresses it, because compose CANNOT express it — and this note is here so the
+# absence does not read as an oversight.
+#
+# The poster's first act on every tick is `GET /v1/quote` against the kernel, and the kernel
+# can only price a colour it has been TOLD about: pricing resolves colour -> decimals +
+# `asset_id` -> `asset_prices.price_usd / 10^decimals`. Until then `GET /v1/quote` returns a
+# FABRICATED $1 per BASE UNIT (`source: "demo-fallback"`, `market_rate: 1`) and — worse — still
+# answers `sponsored: true`, because that flag is computed arithmetically from the fabricated
+# prices rather than by the batcher's own sponsorship gate, which would say `unpriced`.
+#
+# The service that tells the kernel is `issuer-registrar` in compose/issuer.yml, and it is
+# `deploy: { replicas: 0 }`: it is cross-profile (`issuer` must work with nothing but core) and
+# compose rejects a `depends_on` — even `required: false` — on a service the selected fragments
+# do not define. So it is run explicitly by `up.sh`, which is the only place that knows whether
+# there is a kernel at all. A `depends_on: issuer-registrar` here is therefore not merely
+# unavailable, it is unrenderable.
+#
+# WHAT THAT COST BEFORE 00025 (organizer issues/00023, root cause issues/00024): the
+# `depends_on` below is satisfied ~2 minutes before the registrar runs, so the poster spent
+# those two minutes posting REAL, SETTLEABLE offers mispriced by ELEVEN ORDERS OF MAGNITUDE
+# (1000000 base units of TWBTC — 0.01 coin, ~$790 — offered for 975000 base units of TWETH, i.e.
+# 0.000000000000975 coins), and the solver's ladder derivation PREFERRED them because they were
+# by far the cheapest fill on the book. `up.sh` therefore holds this service out of the initial
+# `docker compose up` (`--scale offer-poster=0`) and starts it only once the kernel prices both
+# of its colours; `scripts/verify-poster.sh` asserts the ordering off `docker inspect`
+# timestamps and asserts that the OLDEST live offer was fed-priced.
+#
+# The two one-shots above are NOT held back. They mint and fund; they never quote.
+#
 # ─── THE GENESIS-1 FACADE MUTEX (00011 Q7) ───────────────────────────────────
 # `poster-provision` drives genesis-1. So do `solver-provision` and `maker-provision` in
 # compose/solver.yml and `issuer-deploy` in compose/issuer.yml. A `depends_on` cannot serialise
@@ -344,6 +374,12 @@ services:
       # and binding happens after wallet sync, DUST registration, the dust wait and the
       # contract join. Fifteen minutes covers a cold indexer sync with room to spare.
       start_period: 15m
+    # THESE THREE CONDITIONS ARE NECESSARY AND NOT SUFFICIENT — see "`offer-poster` IS STARTED
+    # LAST" in this file's header. They are satisfied minutes before `issuer-registrar` has
+    # given the kernel this stack's colours, and a poster that quotes an unbound colour is told
+    # a fabricated price and told it is sponsored. `up.sh` supplies the missing ordering; this
+    # block still has to be right, because `up.sh` starts the poster with `--no-deps` and these
+    # are what made the wait it skips unnecessary.
     depends_on:
       kernel: { condition: service_healthy }
       # Not ordering for its own sake: BOTH one-shots drive a facade on the SAME seed this
