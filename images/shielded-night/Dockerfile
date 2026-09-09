@@ -514,16 +514,30 @@ RUN set -eux; \
       n="$(ls -1 "${d}"/keys/*.verifier | wc -l)"; \
       test "${n}" -eq 11 || { echo "FAIL: dist serves ${n} verifier keys under contract/${profile}, expected 11" >&2; ls -1 "${d}/keys" >&2; exit 1; }; \
     done; \
-    # THE ONE THE PAGE FETCHES must be the v1 contract this stage compiled, byte for byte — not
+    # THE ONE THE PAGE FETCHES must be the v1 contract THIS STAGE COMPILED, byte for byte — not
     # the v2 tree copied into the wrong destination, which would pass every count above.
     cmp /src/src/managed/keys/convertToShielded.verifier \
         /src/frontend/dist/contract/v1/shielded-night/keys/convertToShielded.verifier \
       || { echo "FAIL: dist/contract/v1 does not carry the v1 verifier keys this build compiled" >&2; exit 1; }; \
-    if cmp -s /src/frontend/dist/contract/v1/shielded-night/keys/convertToShielded.verifier \
-              /src/frontend/dist/contract/v2/shielded-night/keys/convertToShielded.verifier; then \
-      echo "FAIL: dist/contract/v1 and dist/contract/v2 carry the SAME verifier key; one copy target is pointing at the wrong managed tree" >&2; exit 1; \
+    cmp /src/src/managed/contract/index.js \
+        /src/frontend/dist/contract/v1/shielded-night/contract/index.js \
+      || { echo "FAIL: dist/contract/v1 does not carry the v1 contract module this build compiled" >&2; exit 1; }; \
+    # AND THE TWO TREES MUST BE DIFFERENT TREES, discriminated on the contract MODULE rather than
+    # on a key. MEASURED at 2bb32838a, and it is not what one would guess: EVERY ONE of the 11
+    # verifier keys, the provers and the bzkir are BYTE-IDENTICAL between src/managed (compactc
+    # 0.31.1) and contracts/v2/managed (0.34.0) — the two contracts compile to the same constraint
+    # system, and ZK keys depend on that and the SRS, not on the emitted bindings. A key
+    # comparison here therefore FAILS A CORRECT TREE, which is the one thing an assertion must
+    # never do. `contract/index.js` genuinely differs (124 373 vs 128 904 bytes), as do
+    # `contract/index.d.ts` and `compiler/contract-info.json`, and v2 additionally ships a
+    # `compiler/contract-manifest.json` that 0.31.1 does not emit at all.
+    if cmp -s /src/frontend/dist/contract/v1/shielded-night/contract/index.js \
+              /src/frontend/dist/contract/v2/shielded-night/contract/index.js; then \
+      echo "FAIL: dist/contract/v1 and dist/contract/v2 carry the SAME contract module; one vite copy target is pointing at the wrong managed tree" >&2; exit 1; \
     fi; \
-    echo "OK: contract/v1 (this build's 11 circuits), contract/v2 (the 2.x tree, served but unreachable on undeployed) and the legacy contract/compiled are all in dist"
+    test -f /src/frontend/dist/contract/v2/shielded-night/compiler/contract-manifest.json \
+      || { echo "FAIL: dist/contract/v2 has no compiler/contract-manifest.json — that file is emitted by compactc 0.34.0 and is what identifies this as the 2.x managed tree" >&2; exit 1; }; \
+    echo "OK: contract/v1 (this build's own 11 circuits and its contract module), contract/v2 (the 2.x tree, served but unreachable on undeployed) and the legacy contract/compiled are all in dist"
 
 # ── runtime target 1: the deploy one-shot and the verify driver ──────────────
 # The bun runtime with the pinned tree and its ROOT node_modules only. No frontend, no

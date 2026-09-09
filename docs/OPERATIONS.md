@@ -1,7 +1,8 @@
 # Operations
 
 > **Scope.** This file documents the **`issuer`** profile (the stack's own token source), the
-> **`solver`** profile's monitor and status listener, the **`shielded-night`** profile, the
+> **`solver`** profile's monitor and status listener, the **`shielded-night`** profile and its
+> re-pins, the
 > `core` profile's own re-pins (the node image), the **`frontend`** profile's re-pins (the one
 > place where a value is baked into an image rather than written at container start), and the
 > `offerfiles`-profile notes that each kernel re-pin makes unavoidable for anyone running an
@@ -10,9 +11,9 @@
 
 ## Re-pin to kernel `main` @ `e3b9388` (00020 PR C) — **BREAKING. `./down.sh -v` is the upgrade path**
 
-**Read this one first.** It is the only BREAKING re-pin in project 00020 and it changes where
-this stack's tokens come from. (The newest re-pin is the frontend's, in the section immediately
-below; it is not breaking, and it finishes the story this one starts.)
+**Read this one first if you are upgrading an existing stack.** It is the only BREAKING re-pin in
+project 00020 and it changes where this stack's tokens come from. (The NEWEST re-pin is the
+shielded-night dApp's, two sections below; the frontend's is between them. Neither is breaking.)
 
 ```sh
 git pull
@@ -83,10 +84,68 @@ the six issued tokens through a connected wallet in exactly the same way. See th
 and `docs/KNOWN-LIMITATIONS.md`. Nothing automated ever depended on the in-page mint:
 `issuer-fund` is the headless path and the browser mint was always an owner hand test.
 
+## Re-pin the Shielded NIGHT dApp to `main` @ `2bb32838a` (00020 PR E) — **not breaking; one image**
+
+**The newest re-pin — read this one first.** Nothing outside `images/shielded-night` changes: no
+chain state, no database, no volume, no wire format, no other image. The contract itself is
+byte-identical to the previous pin, so an existing stack's deployed sNight contract, its derived
+colour and every sNight coin already minted stay exactly as they are.
+
+```sh
+git pull
+./up.sh --build --with offerfiles --with issuer --with shielded-night
+```
+
+`--build` is not optional: the page, its two new protocol trees and the served proving-asset
+layout all come out of the image.
+
+### What the three upstream PRs change for this stack
+
+| PR | what it does | what it means here |
+|---|---|---|
+| [#13](https://github.com/effectstream/shielded-night/pull/13) | **multinetwork.** Stagenet joins Preview and Preprod; every network gains a `protocolFamily`; the browser adapters move into isolated `frontend/protocols/{shared,v1,v2}` trees; and a complete Midnight-2.x contract lands at `contracts/v2` (compactc 0.34.0) | **`undeployed` is `midnight-1.x`**, so this stack's page still runs the v1/ledger-v8 adapter — now by upstream's own table rather than because there was only one. The SPA build needs **four** dependency installs (two `npm ci` in a new node stage, because `oven/bun:1.4.0` has no npm). The 2.x lane is served and unreachable here — see `docs/KNOWN-LIMITATIONS.md` |
+| [#14](https://github.com/effectstream/shielded-night/pull/14) | **proving-asset URLs are resolved against the page origin** — the #13 adapters passed a relative path into an SDK that validates it with a bare `new URL()`, so *Connect wallet* threw `Failed to construct 'URL': Invalid URL` | **the served path moved**: the page now fetches `/contract/v1/shielded-night/…` instead of `/contract/compiled/…`. `nginx.conf`, the image's `dist` assertions, the web healthcheck and `scripts/verify-shielded-night.sh` follow it; the pre-#14 path is still emitted and served |
+| [#15](https://github.com/effectstream/shielded-night/pull/15) | **reverse conversion takes any sNight amount the wallet holds** (it previously needed a retained coin of the exact size) | a page-side improvement with **no stack-side change at all**: the contract, `src/managed/`, `test/support/` and both round-trip test names are byte-identical, and the verify driver's `unwrap` already discovered its coins |
+
+### The one thing to know if you have a browser tab open
+
+A tab loaded from the OLD image keeps asking for `/contract/compiled/shielded-night/…`, and this
+image still serves that tree — upstream keeps emitting it for exactly this reason. So a rolling
+`./up.sh --build` does not break an open page; it will pick up the new path on reload.
+
+### Where the proving assets live now, and how to check by hand
+
+```sh
+PORT=$(grep '^SHIELDED_NIGHT_HOST_PORT=' .env | cut -d= -f2)
+
+# the live path (what the page fetches since #14)
+curl -sI "http://127.0.0.1:${PORT}/contract/v1/shielded-night/keys/convertToShielded.verifier"
+
+# a MISS must be a real 404, never the app shell — this is what nginx.conf's ZK lane is for
+curl -s -o /dev/null -w '%{http_code}\n' \
+  "http://127.0.0.1:${PORT}/contract/v1/shielded-night/keys/noSuchCircuit.prover"
+```
+
+`./verify.sh`'s `shielded-night` section does all 33 fetches on `contract/v1`, one artifact each
+from `contract/compiled` and `contract/v2`, and the 404 negative control on all three. It also
+reads the strings `midnight-1.x` and `Local (undeployed)` out of the **served** javascript, so a
+container serving a stale bundle fails the gate rather than surprising someone in a browser.
+
+### A measurement worth knowing before you compare artifacts by hand
+
+At this pin every one of the 11 verifier keys, every prover key and every `bzkir` is
+**byte-identical between the v1 and v2 managed trees**, even though they were built by different
+compilers (0.31.1 and 0.34.0) from different sources. The two contracts compile to the same
+constraint system, and ZK keys depend on that and the SRS rather than on the emitted bindings.
+What actually differs is `contract/index.js` (124 373 vs 128 904 bytes), `contract/index.d.ts`,
+`compiler/contract-info.json`, and the `compiler/contract-manifest.json` that only 0.34.0 emits.
+So `cmp` on a key tells you nothing about which tree you are looking at; `cmp` on the contract
+module does, and that is what the image asserts.
+
 ## Re-pin the SPA to `midnight-1` @ `400880ce` (00020 PR D) — **not breaking; a frontend image only**
 
-The newest re-pin, and the other half of kernel #69. Nothing outside `images/zswap-da` changes:
-no chain state, no database, no volume, no other image.
+The other half of kernel #69 (the newest re-pin is the shielded-night one, immediately above).
+Nothing outside `images/zswap-da` changes: no chain state, no database, no volume, no other image.
 
 ```sh
 git pull
@@ -1198,11 +1257,15 @@ volume's `contract.json` and fails if they have drifted apart.
 
 The section asserts, in order: the page serves HTML; `/config.js` is 200, carries **exactly**
 the deployed address and is loaded before the module bundle; all 11 circuits' prover, verifier
-and bzkir artifacts answer with non-empty bytes while a non-existent circuit answers 404; the
-deployed contract's on-chain verifier keys are byte-identical to the served ones (upstream's
-own `verify-deployment.ts`, run inside the compose network); and a funded driver wallet
-completes both NIGHT ⇄ sNight round trips — atomic and two-step — with exact balance
-assertions.
+and bzkir artifacts answer with non-empty bytes from `contract/v1/shielded-night` — the path
+upstream #14 made the page resolve against its own origin — while a non-existent circuit answers
+404 there **and** under `contract/compiled` and `contract/v2`, with one artifact fetched from
+each of those two secondary trees; the SERVED javascript carries `midnight-1.x` and
+`Local (undeployed)`, so this container is serving a bundle that can still select this stack's
+own network on the v1 adapter; the deployed contract's on-chain verifier keys are byte-identical
+to the served ones (upstream's own `verify-deployment.ts`, run inside the compose network); and a
+funded driver wallet completes both NIGHT ⇄ sNight round trips — atomic and two-step — with exact
+balance assertions.
 
 The last two run in a container from the same image the contract was deployed from:
 

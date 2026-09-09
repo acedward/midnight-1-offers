@@ -444,6 +444,56 @@ live market price to a literal would be a gate that fails every morning.
 
 ## `shielded-night`
 
+### The page offers three networks this stack cannot serve, and one of them is a different protocol
+
+`SHIELDED_NIGHT_REF=2bb32838a…` (00020 PR E) builds upstream's own multinetwork page, whose
+network menu carries **Preview**, **Preprod**, **Stagenet** and **Local (undeployed)**. Only the
+last has anything to do with this stack: it is the only one `/config.js` injects an address for,
+and the only one whose contract this stack deploys. The other three talk to public networks
+through your wallet, and since upstream
+[#13](https://github.com/effectstream/shielded-night/pull/13) an unset address is presented as
+*unavailable* rather than hidden, so they stay visible even where they cannot work.
+
+**Stagenet is the one worth naming**, because it is not merely a different chain — it is a
+different protocol family. `frontend/src/lib/networks.ts` marks it `midnight-2.x`, so selecting
+it makes the page load `frontend/protocols/v2/src/adapter`, which runs on `@midnightntwrk/ledger-v9`
+and `compact-runtime 0.19.0` against the Midnight-2.x contract at `contracts/v2`. **Nothing in
+this repository is on that line**: the core is node 1.0.1 / indexer 4.3.3 / proof-server 8.1.0,
+i.e. ledger-v8, and the 2.x stack lives in the sibling `midnight-2-offers`. Upstream's committed
+`frontend/.env` carries a real Stagenet address, so the menu entry is live — against upstream's
+own deployment, not one of ours.
+
+**This image adds a network; it does not remove one.** Removing the three public entries would
+mean patching upstream, and this image patches nothing at all (see
+`images/shielded-night/PROVENANCE.md`). What is asserted instead is the one thing this stack's
+correctness depends on: that `undeployed` is still `midnight-1.x`, checked in the pinned source
+at build time and again in the SERVED javascript by `scripts/verify-shielded-night.sh`.
+
+### The v2 proving-asset tree is served but never locally verified
+
+`frontend/vite.config.ts` copies BOTH managed trees into `dist` unconditionally, so this image
+serves `/contract/v2/shielded-night/` alongside the `/contract/v1/shielded-night/` the page
+actually fetches. The v1 tree is recompiled in the image with compactc 0.31.1 and required to be
+**byte-identical** to the committed artifacts — the dApp's verifiability claim. **The v2 tree is
+not**: it would need a second Compact toolchain (0.34.0) pinned by release-asset SHA-256, to prove
+artifacts for a protocol family nothing on `undeployed` can select, in a repository that just went
+from four Compact compilers to two. Its byte-exactness is upstream's own
+`reproducible-build-v2` CI job. Recorded with the option table as question Q11 of project 00020.
+
+The bytes are still immutable: the `source` stage fetches the whole tree at a 40-hex commit and
+nothing in the build writes under `contracts/`. What the build asserts locally is that the tree
+was EMITTED with its 11 keys and that it is a DIFFERENT tree from v1 — because a vite copy target
+silently dropped or misdirected by a re-pin is the failure that can actually happen here.
+
+> **And a trap for anyone checking that by hand.** At this pin every one of the 11 verifier keys,
+> every prover key and every `bzkir` is **byte-identical between the v1 and v2 trees**, despite
+> different sources and different compilers: the two contracts compile to the same constraint
+> system, and ZK keys depend on that and the SRS rather than on the emitted bindings. `cmp` on a
+> key therefore proves nothing about which tree you are looking at. `contract/index.js` differs
+> (124 373 vs 128 904 bytes), and only 0.34.0 emits `compiler/contract-manifest.json`. The
+> image's assertion was written on a key first, and it **failed a correct tree** — that is how
+> this was found.
+
 ### The browser flow needs the DEFAULT port block
 
 Lace resolves the `undeployed` network to fixed endpoints — `127.0.0.1:9944` (node),

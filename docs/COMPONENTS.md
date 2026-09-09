@@ -424,7 +424,7 @@ address, it would turn every sNight coin already minted into a different, unspen
 | service | image target | what it does |
 |---|---|---|
 | `shielded-night-deploy` | `deploy` (bun) | ONE-SHOT. Deploys the contract once per stack with the `genesis-2` wallet and publishes `contract.json` atomically to the `shielded-night-deploy` volume. `restart: "no"`. Finds an existing `contract.json` → JOINs and exits 0 without deploying. |
-| `shielded-night` | `web` (nginx) | Serves the built SPA on container `:10900` plus the compiled contract artifacts under `/contract/compiled/shielded-night/`. Its entrypoint waits for `contract.json` and writes `/config.js`. |
+| `shielded-night` | `web` (nginx) | Serves the built SPA on container `:10900` plus the compiled contract artifacts the page fetches — under **`/contract/v1/shielded-night/`** since upstream #14, with `/contract/v2/` and the pre-#14 `/contract/compiled/` served alongside. Its entrypoint waits for `contract.json` and writes `/config.js`. |
 | `shielded-night-verify` | `deploy` (bun) | Never started by `up.sh` (`deploy: { replicas: 0 }`). `./verify.sh` invokes it with `docker compose run --rm` for the on-chain-key check and the round trips. |
 | `shielded-night-token-name` | `deploy` (bun + `psql`) | Never started by `up.sh` implicitly (`deploy: { replicas: 0 }`); `up.sh` runs it explicitly when the `offerfiles` profile is up too. Patches the kernel's seeded `SNIGHT` row with this stack's colour, then registers it — see "sNight on the offer book" above. Exits 0 with one line when there is no kernel on the network. |
 
@@ -473,13 +473,27 @@ hand test with Lace on the default port block. See `docs/KNOWN-LIMITATIONS.md`.
 
 ### The ZK artifact lane
 
-`vite.config.ts` copies the compiled `src/managed/` into
-`dist/contract/compiled/shielded-night/`, and midnight-js's `FetchZkConfigProvider` fetches
-`keys/<circuit>.prover`, `keys/<circuit>.verifier` and `zkir/<circuit>.bzkir` from there at
-proving time. The provider checks only `response.ok`, so `nginx.conf` serves that prefix with
-`try_files $uri =404`: a missing artifact must be a 404, never a 200 of the app shell, or the
-prover would be handed an HTML document as a proving key. `./verify.sh` fetches all 33 files
-and additionally asserts that a circuit name that does not exist answers 404.
+`vite.config.ts` copies the compiled managed trees into `dist`, and midnight-js's
+`FetchZkConfigProvider` fetches `keys/<circuit>.prover`, `keys/<circuit>.verifier` and
+`zkir/<circuit>.bzkir` from there at proving time. The provider checks only `response.ok`, so
+`nginx.conf` serves those paths with `try_files $uri =404`: a missing artifact must be a 404,
+never a 200 of the app shell, or the prover would be handed an HTML document as a proving key.
+`./verify.sh` fetches all 33 files of the live tree and additionally asserts that a circuit name
+that does not exist answers 404.
+
+**Since upstream [#14](https://github.com/effectstream/shielded-night/pull/14) there are THREE
+such trees, and the live one moved.** The adapter no longer hands the provider a relative path;
+`frontend/protocols/shared/asset-url.ts` resolves `<page origin>` + the vite base +
+`contract/<profile>/shielded-night`, and `undeployed` is the `midnight-1.x` profile — so this
+stack's page fetches **`/contract/v1/shielded-night/`**. vite also emits `contract/v2` (the
+Midnight-2.x tree, which nothing here can select) and keeps `contract/compiled` (the pre-#14
+path, for clients left open across a rollout). `nginx.conf` covers all three with one regex
+location, `./verify.sh` runs the 404 negative control on each, and it fetches one artifact from
+each of the two secondary trees to prove they are bytes rather than the app shell.
+
+(#14 exists because the multinetwork adapters passed `'./contract/v1/shielded-night'` straight
+into an SDK that validates its base with a bare `new URL(baseURL)`: the deployed site answered
+*Connect wallet* with `Failed to construct 'URL': Invalid URL` before doing any network work.)
 
 ### Provenance
 
