@@ -227,6 +227,18 @@ batcher pays its Celestia fee.
 All three open a facade on the poster's seed, so compose orders them one after another:
 `poster-provision` → `poster-inventory` → `offer-poster`.
 
+**And `up.sh` adds one more link that compose cannot express (00025).** `offer-poster` is held
+out of the initial `docker compose up` (`--scale offer-poster=0`, conditionally — a poster that
+is already running is left alone) and started only after the `issuer-registrar` one-shot has
+bound this stack's colours and `GET /v1/known-tokens` reports a non-null `asset_id` for both of
+the poster's legs. Until then the kernel prices an unknown colour at a fabricated **$1 per BASE
+UNIT** and still answers `sponsored: true`, so the poster's first ticks posted real, settleable
+offers eleven orders of magnitude out (`issues/00023`, root cause `issues/00024`). The
+dependency cannot live in `compose/poster.yml`: `issuer-registrar` is `deploy: { replicas: 0 }`
+and cross-profile, and compose refuses to render a `depends_on` on a service the selected
+fragments do not define. See `docs/OPERATIONS.md`, "The poster is the LAST service `./up.sh`
+starts".
+
 ### The exact-coin guarantee
 
 The wallet SDK's default coin selector is smallest-first and cannot be told which coin to
@@ -645,7 +657,7 @@ the amount.
 |---|---|---|
 | `issuer-deploy` | `runtime` | **ONE-SHOT, MANDATORY.** Funds the dedicated `issuer` wallet with four large NIGHT UTXOs from `genesis-1` under the shared `genesis-lock`, registers that NIGHT for DUST, waits for the DUST to arrive, then runs the pinned repository's **own** v1 deploy: six contracts deployed, each verified on chain, and `metadata.undeployed.json` published atomically onto the `issuer-registry` volume. |
 | `faucet` | `faucet` (nginx) | Serves the repository's built static site on container `:10500` (`${FAUCET_HOST_PORT}`) plus that registry and the v1 proving artifacts. **The human lane.** |
-| `issuer-registrar` | `runtime` | **NEVER STARTED BY `up.sh` IMPLICITLY** (`deploy: { replicas: 0 }`). Teaches the kernel the six colours: `UPDATE known_tokens … WHERE upper(name) = …` then `POST /v1/known-tokens`, per token. Run when the `offerfiles` profile is up too. |
+| `issuer-registrar` | `runtime` | **NEVER STARTED BY `up.sh` IMPLICITLY** (`deploy: { replicas: 0 }`). Teaches the kernel the six colours: `UPDATE known_tokens … WHERE upper(name) = …` then `POST /v1/known-tokens`, per token. Run when the `offerfiles` profile is up too — and it is the ONE one-shot `up.sh` runs **without `--rm`** (00025), because it is the only fatal cross-profile step and its container is the sole daemon-owned record that it ran BEFORE `offer-poster` started; `scripts/verify-poster.sh` compares its `State.FinishedAt` with the poster's `State.StartedAt`. |
 | `issuer-fund` | `runtime` | **NEVER STARTED AT ALL.** `docker compose run --rm issuer-fund <TOKEN> <base-units> <recipient-seed>` — the headless exact mint. |
 | `issuer-registry` | `runtime` | **NEVER STARTED AT ALL.** Validates and dumps the registry. `docker compose run --rm --no-deps issuer-registry`. |
 

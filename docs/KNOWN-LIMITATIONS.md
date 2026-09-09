@@ -285,6 +285,54 @@ it up".
 
 ## `poster`
 
+### A POSTER STARTED BY HAND ON A FRESH CHAIN CAN STILL POST A MISPRICED OFFER (00025)
+
+`./up.sh` closes this for the path it controls: `offer-poster` is held out of the initial
+`docker compose up` and started only after `issuer-registrar` has bound this stack's colours and
+`GET /v1/known-tokens` shows a non-null `asset_id` for both of the poster's legs (see
+`docs/OPERATIONS.md`, "The poster is the LAST service `./up.sh` starts"). **Nothing enforces that
+outside `./up.sh`.**
+
+These start a poster that `./up.sh` is not ordering, and on a chain whose colours are not yet
+bound each of them can post an offer priced from the kernel's fabricated **$1 per BASE UNIT**
+demo answer (`market_rate: 1`) which the same quote still reports as `sponsored: true`:
+
+```sh
+docker compose up -d offer-poster              # bypasses up.sh entirely
+docker compose start offer-poster              # ditto
+./down.sh && ./up.sh                           # SAFE — the ordering is up.sh's
+docker compose restart offer-poster            # SAFE on a bound chain: nothing to re-bind
+```
+
+**Why it is not closed here.** The real fix is upstream and there are two of them, both recorded
+and both out of scope by the owner's decision of 2026-09-09 ("start this poster service at the
+end; this will make it safe. This will fix the issue for now"):
+
+* `issues/00024` **K1** — the kernel's `GET /v1/quote` must not fabricate a price at all. With
+  any leg unknown or `fallback` it should answer `sponsored: false`, `source: "unpriced"`,
+  `market_rate: null` (or the `422 UNPRICED_TOKEN` its own batcher already uses), which is what
+  the route's own comment asks for.
+* `issues/00023` **option A** — the poster refuses to post while either leg is `demo-fallback`,
+  behind an `OFFER_POSTER_REQUIRE_FED_PRICES` knob so a deliberately unpriced devnet can still
+  trade. That is the one fix that also covers the by-hand case.
+
+**What protects you meanwhile.** The condition is loud rather than silent, in four places: the
+poster logs `quote: give leg is priced from "demo-fallback" — not market data; register the
+colour's name` on every affected leg of every affected tick; `./verify.sh --poster`'s
+`first offer priced` block fails on a single such line in the whole log, on a single journal
+offer recorded at `market_rate 1`, and on an oldest live offer whose implied rate is outside the
+sponsorship band; `./verify.sh --solver` fails on any published ladder rung on the poster's pair
+priced outside `SOLVER_RUNG_BAND` of the kernel's reference; and the monitor's market header
+renders it honestly (`MID VS REFERENCE −100.0%`), which is how `issues/00023` was found.
+
+**And the batcher could refuse them outright.** `BATCHER_SPONSOR_POLICY=enforce` with
+`BATCHER_SPONSOR_UNPRICED=reject` makes the batcher answer `422 UNPRICED_TOKEN` for exactly this
+class of offer — its sponsorship gate is honest where the quote route is not. The shipped
+defaults are `warn`/`allow`, which is upstream's rollout choice so that devnets with legitimately
+unpriced colours keep trading; on a stack where every tradeable colour is priced, flipping them
+is a reasonable local hardening. It is a deployment decision, so it is documented rather than
+changed.
+
 ### THE BOOK IS BOUNDED BY PRE-MINTED INVENTORY (00020 PR C)
 
 The poster does not mint. Kernel #69 deleted the faucet circuit, and `selectInventoryCoin()`

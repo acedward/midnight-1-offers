@@ -1051,6 +1051,88 @@ dust wait and ~30 s of proving all happen before anything reaches the book — w
 container healthcheck has a 15-minute `start_period` and why `POSTER_VERIFY_BUDGET_S` defaults
 to 420. The pre-mint is ahead of all of it: ~5 minutes at the default count.
 
+### The poster is the LAST service `./up.sh` starts, and that is not a detail (00025)
+
+`./up.sh` brings every selected profile up in ONE `docker compose up -d` — with **one
+exception**, and `offer-poster` is it. The poster is held out of that `up` with
+`--scale offer-poster=0` and started later, after `issuer-registrar` has bound this stack's
+colours in the kernel's token registry. **Its pre-mint one-shots are not held back**: they mint
+and fund, they never quote.
+
+**Why.** The poster's first act on every tick is `GET /v1/quote`, and the kernel can only price
+a colour it has been told about — pricing resolves colour → `decimals` + `asset_id` →
+`asset_prices.price_usd / 10^decimals`. For a colour it has never seen it answers a
+**fabricated $1 per BASE UNIT** (`source: "demo-fallback"`, `market_rate: 1`) and, worse, still
+reports **`sponsored: true`**, because that flag is computed arithmetically from the fabricated
+prices instead of by the batcher's own sponsorship gate, which would say `unpriced`.
+
+The service that tells the kernel is `issuer-registrar`, and it cannot be a compose dependency:
+it is `deploy: { replicas: 0 }` and cross-profile (`issuer` has to work with nothing but
+`core`), and compose rejects a `depends_on` — even `required: false` — naming a service the
+selected fragments do not define. So it is run explicitly by `./up.sh`, which is the only place
+that knows whether there is a kernel at all. Before 00025 that left a **~2-minute window** in
+which the poster was ticking against a kernel that did not know its colours. Measured on the
+00020 phase-G gate:
+
+```
+04:57:50.969Z  offer-poster container started
+04:57:53.741Z  [offer-poster] quote: give leg is priced from "demo-fallback" — not market data
+04:57:53.773Z  tick=1 phase=quote give=1000000 want=975000 sponsored=true market_rate=1
+04:58:05.178Z  tick=1 phase=post  offerId=ef4f9ff4334f… result=accepted
+04:59:53.884Z  tick=3 phase=quote give=1000000 want=307632984238905018 market_rate=315521009475.8
+```
+
+Tick 3 is the right number. Ticks 1 and 2 offered 0.01 TWBTC (~$790) for
+**0.000000000000975 TWETH** — eleven orders of magnitude out — as real, settleable offers, and
+the solver's ladder derivation **preferred** them, because a fill at 10^-11 of the reference is
+the cheapest on the book. See the organizer's `issues/00023` and its root cause `issues/00024`.
+
+**The order `./up.sh` now takes**, with the poster's place in it:
+
+| # | step | when |
+|---|---|---|
+| 1 | `docker compose up -d --remove-orphans` **`--scale offer-poster=0`** | always; the flag only when `poster` is selected and no poster is already running |
+| 2 | the core waits (postgres → node → proof-server → indexer), then each profile's own | as before |
+| 3 | `shielded-night-token-name` — names the sNight colour (non-fatal) | `offerfiles` + `shielded-night` |
+| 4 | **`issuer-registrar`** — the six colours, their decimals and their `asset_id`s (**fatal**) | `offerfiles` + `issuer` |
+| 5 | **the poster's colours are confirmed, then `offer-poster` is started** | `poster` |
+| 6 | the intents-UI bake — labels and decimals into `index.html` (non-fatal) | `issuer` + `solver` |
+| 7 | `wait_compose_healthy offer-poster`, and every remaining profile wait | `poster` |
+
+Step 5 does not trust the registrar's exit code alone. It resolves the poster's two legs through
+`issuer-registry` — this repository's one validating registry reader — and then polls
+`GET /v1/known-tokens` until **both** colours carry a **non-null `asset_id`**, bounded by
+`POSTER_COLOURS_WAIT_S` (180 s, polled every `POSTER_COLOURS_POLL_S` = 5 s). On a healthy stack
+that is ONE poll. Starting the poster is step 5 and waiting for it healthy is step 7 on purpose:
+the poster's startup is minutes long, so it runs concurrently with everything after it and the
+ordering costs the bring-up nothing but that poll.
+
+**Three ways this fails, and all three leave the poster NOT started** with `./up.sh` exiting
+non-zero and naming `issues/00023`/`issues/00024`: the registrar exited non-zero; the poster's
+legs could not be resolved to colours on this chain; the colours never gained an `asset_id`
+inside the budget. There is no fallback to a mispriced poster.
+
+**Re-runs are idempotent.** `--scale offer-poster=0` is passed **only** when no `offer-poster`
+container is running for this project, because scaling a running service to 0 stops and removes
+it. So an additive `./up.sh --with poster` on a live stack leaves the poster alone, re-runs the
+registrar idempotently (`already=6`), and says so:
+
+```
+    poster   offer-poster is ALREADY RUNNING — left alone (its colours were bound on
+             the run that started it; nothing to re-order)
+```
+
+**What `./verify.sh --poster` asserts about it** (the `first offer priced` block): zero
+`demo-fallback` lines and zero `market_rate=1` quote lines in the poster's whole log; zero
+offers in its journal whose own quote snapshot names a fallback source or a market rate of
+exactly 1; the **oldest** live offer re-quoted with its exact legs still priced from market data
+and still within `POSTER_PRICE_BAND` of the kernel's own `sponsor_discount`; and `docker inspect`
+showing `offer-poster`'s `StartedAt` later than `issuer-registrar`'s `FinishedAt`. That last one
+is why `./up.sh` runs the registrar **without `--rm`** — the container, its log and its exit
+code survive the run instead of being deleted the instant it exits. `./verify.sh --solver` adds
+the other half: every published rung on the poster's pair is priced within `SOLVER_RUNG_BAND` of
+the kernel's reference, which is the symptom `issues/00023` was found by.
+
 ### Reading it
 
 Everything the poster exposes is read-only and needs no bearer (`${POSTER_HEALTH_HOST_PORT}`,
