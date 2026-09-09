@@ -949,12 +949,26 @@ if service_present intents-ui; then
   if service_present faucet; then
     UI_DEC_BAD=""
     UI_DEC_OK=0
+    # ONE registry read, held in a variable, and every field parsed OFF THE LINE — not
+    # `issuer_token_field` per name.
+    #
+    # THIS IS NOT AN OPTIMISATION, IT IS THE FIX FOR A REAL BUG THIS GATE FOUND. Each
+    # `issuer_token_field` call is a command substitution, i.e. a SUBSHELL, so
+    # `issuer_registry_lines`'s process-lifetime cache never survives it and every call
+    # re-runs `docker compose run --rm --no-deps -T issuer-registry`. That container
+    # INHERITS AND CONSUMES STDIN — which, inside a `while IFS= read -r` loop fed by a
+    # heredoc, is the loop's own input. On the phase-G gate that swallowed five of the six
+    # lines: the section reported `(0/6 correct): TWBTC(no-TOKEN-key)` and named one token
+    # where six were wrong. The same shape would have made a PASSING run vacuous.
+    UI_REG_LINES="$(issuer_registry_lines || true)"
     while IFS= read -r line; do
       [[ -n "$line" ]] || continue
-      UI_NAME="$(printf '%s' "$line" | awk '{print $2}')"
-      [[ -n "$UI_NAME" ]] || continue
-      UI_WANT_DEC="$(issuer_token_field "$UI_NAME" decimals || true)"
-      UI_WANT_ID="$(issuer_token_id "$UI_NAME" || true)"
+      UI_NAME="${line#ISSUER_TOKEN }"
+      UI_NAME="${UI_NAME%% *}"
+      [[ -n "$UI_NAME" && "$UI_NAME" != "$line" ]] || continue
+      # `[[:space:]]` and not `\s`: BSD sed (what macOS ships) does not know the GNU escape.
+      UI_WANT_DEC="$(printf '%s' "$line" | sed -n 's/.*[[:space:]]decimals=\([^[:space:]]*\).*/\1/p' | head -1 || true)"
+      UI_WANT_ID="$(printf '%s' "$line" | sed -n 's/.*[[:space:]]id=\([^[:space:]]*\).*/\1/p' | head -1 || true)"
       if [[ -z "$UI_WANT_DEC" || -z "$UI_WANT_ID" ]]; then
         UI_DEC_BAD="${UI_DEC_BAD} ${UI_NAME}(not-in-registry)"
         continue
@@ -976,7 +990,7 @@ if service_present intents-ui; then
         UI_DEC_BAD="${UI_DEC_BAD} ${UI_NAME}(served '${UI_GOT_DEC:-absent}', registry ${UI_WANT_DEC})"
       fi
     done <<EOF
-$(issuer_registry_lines)
+${UI_REG_LINES}
 EOF
     if [[ -z "$UI_DEC_BAD" ]] && (( UI_DEC_OK == 6 )); then
       ok "the served config carries all six colours with the registry's OWN decimals — including TWBTC 8 and TWETH 18"

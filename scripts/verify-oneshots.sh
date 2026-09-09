@@ -193,21 +193,38 @@ if [[ -n "$(oneshot_cid issuer-deploy)" ]]; then
     # And the projection AGREES with the one registry reader in the image. A handoff that is
     # internally consistent but names a different chain's colours is the failure mode that
     # matters, and it is invisible without this cross-check.
+    #
+    # ONE registry read, held in a variable, and the colour parsed OFF THE LINE — never
+    # `issuer_token_id` per name inside the loop. That form is a command substitution, i.e. a
+    # SUBSHELL, so `issuer_registry_lines`'s process-lifetime cache never survives it and every
+    # call re-runs `docker compose run --rm --no-deps -T issuer-registry` — a container that
+    # INHERITS AND CONSUMES STDIN, which inside a heredoc-fed `while read` loop is the loop's
+    # own input. Measured on the phase-G gate in the sibling assertion in verify-solver.sh: it
+    # swallowed five of six lines. Here it would have been worse than a wrong message — the
+    # loop would have compared ONE token and then reported "every colour agrees", i.e. a
+    # VACUOUS PASS. Counted explicitly below for the same reason.
     TE_MISMATCH=""
+    TE_CHECKED=0
+    TE_REG_LINES="$(issuer_registry_lines || true)"
     while IFS= read -r line; do
       [[ -n "$line" ]] || continue
-      TE_NAME="$(printf '%s' "$line" | awk '{print $2}')"
-      [[ -n "$TE_NAME" ]] || continue
-      TE_WANT="$(issuer_token_id "$TE_NAME")"
+      TE_NAME="${line#ISSUER_TOKEN }"
+      TE_NAME="${TE_NAME%% *}"
+      [[ -n "$TE_NAME" && "$TE_NAME" != "$line" ]] || continue
+      TE_CHECKED=$(( TE_CHECKED + 1 ))
+      # `[[:space:]]` and not `\s`: BSD sed (what macOS ships) does not know the GNU escape.
+      TE_WANT="$(printf '%s' "$line" | sed -n 's/.*[[:space:]]id=\([^[:space:]]*\).*/\1/p' | head -1 || true)"
       TE_GOT="$(printf '%s\n' "$TOKENS_ENV" | sed -n "s/^ISSUER_TOKEN_ID_${TE_NAME}=//p" | head -1 || true)"
       if [[ -z "$TE_WANT" || "$TE_GOT" != "$TE_WANT" ]]; then
         TE_MISMATCH="${TE_MISMATCH} ${TE_NAME}"
       fi
     done <<EOF
-$(issuer_registry_lines)
+${TE_REG_LINES}
 EOF
-    if [[ -z "$TE_MISMATCH" ]]; then
-      ok "every tokens.env colour equals the registry's own colour for that name"
+    if (( TE_CHECKED != 6 )); then
+      fail "the registry reader produced ${TE_CHECKED} ISSUER_TOKEN line(s), not 6 — the cross-check would be vacuous"
+    elif [[ -z "$TE_MISMATCH" ]]; then
+      ok "all ${TE_CHECKED} tokens.env colours equal the registry's own colour for that name"
     else
       fail "tokens.env disagrees with the registry for:${TE_MISMATCH}"
     fi
