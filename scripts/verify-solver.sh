@@ -42,7 +42,18 @@
 #   intents UI        the page is served AND the same token set is reachable through its own
 #                     /api/v1 edge. That second half is the browser-network property: a
 #                     browser can only reach the relay through this proxy, so if it works
-#                     from the host it works from the page.
+#                     from the host it works from the page. Since 00020 phase G it also
+#                     asserts the SERVED config's `METADATA_TOKEN_<NAME>_DECIMALS` equals the
+#                     ISSUER REGISTRY's own decimals for all six colours — the relay answers
+#                     in base units and the page divides by that number, so an absent value
+#                     silently renders TWETH twelve orders of magnitude wrong — and, when the
+#                     `poster` profile is up, quotes the 8-decimal/18-decimal TWBTC -> TWETH
+#                     pair through the UI's own edge.
+#   settlement        THE CANONICAL 18-ASSERTION DRIVER (deploy/scripts/e2e.ts, case A), run
+#                     LAST because it consumes the offer it fills. Default ON,
+#                     SOLVER_VERIFY_SETTLEMENT=false to skip. See the block at the end of this
+#                     file for why it moved into the gate in phase G and for the two
+#                     measurements it depends on (E2E_SKIP_PROVISION and the projection wait).
 #   status listener   the solver's read-only /status/* on :9100, from INSIDE the compose
 #                     network: 200 with the bearer, 401 without it. It is deliberately not
 #                     published to the host, so `docker compose exec` is the only way to
@@ -67,11 +78,10 @@
 #
 # WHAT IT DELIBERATELY DOES NOT PROVE. The UI's swap flow needs a Midnight WALLET EXTENSION
 # to sign an intent (`window.midnight`, the dapp-connector API), which no script on this host
-# can provide. The quote half of that flow is asserted above; the take half is a manual step,
-# and the scripted settlement proof is the P5 driver, not this script.
-#
-# ALSO NOT HERE: settlement itself. A take CONSUMES the offer it fills, so a script that
-# settled would make its own next run fail with an empty book.
+# can provide. The quote half of that flow is asserted above and the settlement half is
+# asserted by the driver at the end of this file — but through the driver's own wallet, not
+# through the page. A human clicking Swap with a wallet extension is still the one claim only a
+# human can make, and it is recorded as an owner hand test.
 #
 # ── LIVING BESIDE THE `poster` PROFILE (00011 FR-014) ───────────────────────
 # The `poster` profile keeps a spread of its own offers on the same kernel book. Nothing this
@@ -765,6 +775,7 @@ const snap = solver.snapshot ?? null;
 const relay = snap ? sec(snap.relay) : null;
 const ladder = snap ? sec(snap.ladder) : null;
 const listener = snap ? sec(snap.listener) : null;
+const backend = snap ? sec(snap.backend) : null;
 const tokens = sec(s.relay ? s.relay.tokens : null);
 const book = sec(s.kernel ? s.kernel.book : null);
 console.log([
@@ -775,6 +786,11 @@ console.log([
   "solverTransport=" + (solver.transport ?? "none"),
   "solverContractVersion=" + (solver.contractVersion ?? "?"),
   "relayConnected=" + (relay && relay.stats ? relay.stats.connected === true : false),
+  // The kernel-projection currentness the solver itself reports. Read here because it is the
+  // gate the settlement block below waits on: a job dispatched while this is false is refused
+  // TERMINALLY with `exact_files_unavailable` (organizer issues/00022).
+  "backendCurrent=" + (backend ? backend.isCurrent === true : "?"),
+  "backendReason=" + (backend && backend.currentness ? (backend.currentness.reason ?? backend.currentness.kind) : "?"),
   "ladderState=" + (ladder ? ladder.state : "?"),
   "ladderPairs=" + (ladder && ladder.last ? ladder.last.pairs : 0),
   "ladderRungs=" + (ladder && ladder.last ? ladder.last.rungs : 0),
@@ -918,6 +934,112 @@ if service_present intents-ui; then
     fail "the served page names the compose-internal host 'relay' — a browser cannot resolve it"
   else
     ok "the served page names no compose-internal hostname"
+  fi
+
+  # ── THE DECIMALS THE PAGE RENDERS AMOUNTS WITH (00020 phase G) ─────────────
+  #
+  # The relay answers in BASE UNITS and the page divides by
+  # `METADATA_TOKEN_<NAME>_DECIMALS` (relay pin b32e0b100). Absent, that metadata defaults to
+  # SIX — which is wrong for TWBTC/UTWBTC (8) and wrong by TWELVE ORDERS OF MAGNITUDE for
+  # TWETH (18), and wrong SILENTLY: the page renders a number, just not this one. Phase F
+  # asserted the 6-decimal pair end to end in a browser and could only assert 8 and 18 in the
+  # served config, because the only pair on the book in that profile set was the maker's
+  # 6-decimal one. Here it is asserted from the shipped bytes for every issued token, with the
+  # value taken from the REGISTRY rather than from a literal.
+  if service_present faucet; then
+    UI_DEC_BAD=""
+    UI_DEC_OK=0
+    while IFS= read -r line; do
+      [[ -n "$line" ]] || continue
+      UI_NAME="$(printf '%s' "$line" | awk '{print $2}')"
+      [[ -n "$UI_NAME" ]] || continue
+      UI_WANT_DEC="$(issuer_token_field "$UI_NAME" decimals || true)"
+      UI_WANT_ID="$(issuer_token_id "$UI_NAME" || true)"
+      if [[ -z "$UI_WANT_DEC" || -z "$UI_WANT_ID" ]]; then
+        UI_DEC_BAD="${UI_DEC_BAD} ${UI_NAME}(not-in-registry)"
+        continue
+      fi
+      # Exact strings, both keys, out of the SERVED page — not out of the build log.
+      if [[ "$PAGE" != *"\"TOKEN_${UI_NAME}\""* && "$PAGE" != *"TOKEN_${UI_NAME}=${UI_WANT_ID}"* ]]; then
+        UI_DEC_BAD="${UI_DEC_BAD} ${UI_NAME}(no-TOKEN-key)"
+        continue
+      fi
+      # EXTRACTED, not matched against a literal: the injected block quotes its values today
+      # and a future relay pin could emit them as numbers, and this assertion is about the
+      # VALUE being the registry's, not about JSON quoting. `|| true` on the extraction.
+      UI_GOT_DEC="$(printf '%s' "$PAGE" \
+        | sed -n "s/.*METADATA_TOKEN_${UI_NAME}_DECIMALS\"[[:space:]]*:[[:space:]]*\"\{0,1\}\([0-9]\{1,\}\).*/\1/p" \
+        | head -1 || true)"
+      if [[ "$UI_GOT_DEC" == "$UI_WANT_DEC" ]]; then
+        UI_DEC_OK=$(( UI_DEC_OK + 1 ))
+      else
+        UI_DEC_BAD="${UI_DEC_BAD} ${UI_NAME}(served '${UI_GOT_DEC:-absent}', registry ${UI_WANT_DEC})"
+      fi
+    done <<EOF
+$(issuer_registry_lines)
+EOF
+    if [[ -z "$UI_DEC_BAD" ]] && (( UI_DEC_OK == 6 )); then
+      ok "the served config carries all six colours with the registry's OWN decimals — including TWBTC 8 and TWETH 18"
+    else
+      fail "the served config's token metadata is wrong or missing (${UI_DEC_OK}/6 correct):${UI_DEC_BAD}
+            regenerate the knob and rebuild: ./scripts/issuer-token-names.sh >> .env && ./up.sh --build"
+    fi
+  fi
+
+  # ── THE 8-/18-DECIMAL PAIR, QUOTED THROUGH THE UI'S OWN EDGE ───────────────
+  #
+  # Only meaningful with the `poster` profile up: the poster is what puts TWBTC -> TWETH on
+  # the book, and the UI only offers colours the relay advertises. This is the assertion phase
+  # F could not make and named as phase G's, and it is the whole reason the two profiles are
+  # exercised together in the `--all` gate.
+  if service_present offer-poster && service_present faucet; then
+    UI_BTC="$(issuer_token_id TWBTC || true)"
+    UI_ETH="$(issuer_token_id TWETH || true)"
+    if [[ -z "$UI_BTC" || -z "$UI_ETH" ]]; then
+      fail "the issuer registry has no TWBTC/TWETH colour, so the poster's pair cannot be checked"
+    else
+      UI_TOKENS_NOW="$(curl -fsS --max-time 10 "$UI/api/v1/tokens" 2>/dev/null || true)"
+      if [[ "$UI_TOKENS_NOW" == *"$UI_BTC"* && "$UI_TOKENS_NOW" == *"$UI_ETH"* ]]; then
+        ok "the relay advertises the poster's 8-decimal TWBTC and 18-decimal TWETH, and the UI's edge lists both"
+      else
+        fail "the UI's /api/v1/tokens does not list TWBTC (${UI_BTC:0:16}…) and TWETH (${UI_ETH:0:16}…) — the poster's pair is not on the published ladder"
+      fi
+      # And a real quote on that pair, through the same proxy a browser uses. The poster's
+      # offers are the rungs, so the amount is its own give size; the assertion is that the
+      # answer is a POSITIVE integer of base units, not a particular number — the poster's
+      # want leg is priced from live USD feeds and moves between runs.
+      UI_Q_FILE="$(mktemp)"
+      UI_Q_CODE="$(curl -sS --max-time 20 -o "$UI_Q_FILE" -w '%{http_code}' \
+        -X POST -H 'content-type: application/json' \
+        -d "{\"tokenIn\":\"${UI_BTC}\",\"tokenOut\":\"${UI_ETH}\",\"amountIn\":\"${OFFER_POSTER_GIVE_AMOUNT:-1000000}\"}" \
+        "$UI/api/v1/quote" 2>/dev/null || true)"
+      UI_Q_BODY="$(tr -d '\n' < "$UI_Q_FILE" 2>/dev/null || true)"
+      rm -f "$UI_Q_FILE"
+      UI_Q_OUT="$(printf '%s' "$UI_Q_BODY" | sed -n 's/.*"amountOut"[[:space:]]*:[[:space:]]*"\{0,1\}\([0-9]\{1,\}\).*/\1/p' | head -1 || true)"
+      if [[ "$UI_Q_CODE" == "200" && -n "$UI_Q_OUT" ]] && [[ "$UI_Q_OUT" != "0" ]]; then
+        ok "POST /api/v1/quote through the UI's edge quotes ${OFFER_POSTER_GIVE_AMOUNT:-1000000} TWBTC (8 dec) -> ${UI_Q_OUT} TWETH (18 dec) base units"
+      elif [[ "$UI_Q_CODE" == "503" ]]; then
+        # The documented fail-closed ladder withdrawal, ~10-20 s windows. Retried once rather
+        # than accepted, because "the relay was between publications" and "the pair is not
+        # quotable" must not read the same.
+        sleep 20
+        UI_Q_FILE="$(mktemp)"
+        UI_Q_CODE="$(curl -sS --max-time 20 -o "$UI_Q_FILE" -w '%{http_code}' \
+          -X POST -H 'content-type: application/json' \
+          -d "{\"tokenIn\":\"${UI_BTC}\",\"tokenOut\":\"${UI_ETH}\",\"amountIn\":\"${OFFER_POSTER_GIVE_AMOUNT:-1000000}\"}" \
+          "$UI/api/v1/quote" 2>/dev/null || true)"
+        UI_Q_BODY="$(tr -d '\n' < "$UI_Q_FILE" 2>/dev/null || true)"
+        rm -f "$UI_Q_FILE"
+        UI_Q_OUT="$(printf '%s' "$UI_Q_BODY" | sed -n 's/.*"amountOut"[[:space:]]*:[[:space:]]*"\{0,1\}\([0-9]\{1,\}\).*/\1/p' | head -1 || true)"
+        if [[ "$UI_Q_CODE" == "200" && -n "$UI_Q_OUT" && "$UI_Q_OUT" != "0" ]]; then
+          ok "POST /api/v1/quote quotes TWBTC (8 dec) -> ${UI_Q_OUT} TWETH (18 dec) after one fail-closed 503 window"
+        else
+          fail "the UI's edge could not quote TWBTC -> TWETH twice, 20 s apart: ${UI_Q_CODE} ${UI_Q_BODY:0:200}"
+        fi
+      else
+        fail "the UI's edge answered ${UI_Q_CODE:-nothing} for TWBTC -> TWETH: ${UI_Q_BODY:0:200}"
+      fi
+    fi
   fi
 fi
 
@@ -1092,6 +1214,157 @@ if service_present solver; then
         fail "the solver did not return to 'healthy' within 600 s of being started"
       fi
     fi
+  fi
+fi
+
+# ── SETTLEMENT: THE CANONICAL DRIVER, INSIDE THE GATE (00020 phase G) ────────
+#
+# Everything above proves the relay QUOTES. This proves the stack SETTLES: an intent pushed
+# through the relay to the connected solver, merged and submitted on chain, with the taker's
+# two balances asserted TO THE UNIT and the maker's offer consumed.
+#
+# WHY IT IS HERE NOW, when this file's header spent four phases saying it was not. Two reasons
+# used to keep it out and both are gone:
+#
+#   1. "A take CONSUMES the offer it fills, so a script that settled would make its own next
+#      run fail with an empty book." Since 00011 B.5b an empty book is not a skip: the section
+#      RE-SEEDS through the `maker-offer` one-shot (MAKER_OFFER_RESEED=true) and proceeds on
+#      the fresh offer. So a settled take costs the next run one re-seed, not its assertions.
+#   2. It was a documented one-off (00020 Q12.3) run by hand in phases B..F. The owner's
+#      phase-G mandate is that the e2e itself touches every service, and SETTLEMENT is the one
+#      claim about `solver` + `relay` + `kernel` + the taker's wallet that no verify section
+#      made. A capability proven only by a human at a terminal is not covered.
+#
+# It runs LAST, after the health sampling, so nothing above can be affected by the offer it
+# consumes.
+#
+#   SOLVER_VERIFY_SETTLEMENT=false   skip it (the section then says so, loudly, and the
+#                                    settlement claim is simply not made — never counted as
+#                                    passed)
+#   SOLVER_SETTLEMENT_CASES=A        which of the driver's cases to run. A is the
+#                                    exact-advertised settlement; B/C/D are boundary and
+#                                    refusal cases this section already covers from the relay
+#                                    side, and each extra case costs a mint and a proof.
+#
+# THE DRIVER IS THE KERNEL TREE'S OWN `deploy/scripts/e2e.ts`, present in the image and
+# asserted by images/offerfiles-kernel/Dockerfile's path list. It is run as a one-off on the
+# `solver` service so it inherits exactly the env and the two volumes it needs (ZSWAP_API,
+# RELAY_HTTP_URL, SOLVER_JOURNAL_PATH, the `solver-config` receipt and the `solver-journal`
+# sqlite). m1 declares no `e2e` service and adds none (Q9.5).
+if [[ "${SOLVER_VERIFY_SETTLEMENT:-true}" != "true" ]]; then
+  echo
+  log "solver: settlement"
+  warn "SOLVER_VERIFY_SETTLEMENT is not true — the settlement claim is NOT made by this run"
+  info "the relay's quote and refusal assertions above still hold; settlement does not"
+elif ! service_present faucet; then
+  echo
+  log "solver: settlement"
+  warn "the issuer profile is not up, so the taker cannot be funded and settlement is not asserted"
+  info "bring it up with: ./up.sh --with offerfiles --with issuer --with solver"
+elif [[ "$SEEDED" != "yes" ]]; then
+  echo
+  log "solver: settlement"
+  warn "the seeding one-shots were skipped, so there is no maker offer to settle against"
+else
+  echo
+  log "solver: settlement (the canonical 18-assertion driver, through the relay)"
+
+  # ── 1. WAIT FOR THE KERNEL'S PROJECTION, THEN DRIVE ──────────────────────
+  #
+  # A job dispatched while the kernel's backend projection is mid-sync is refused
+  # TERMINALLY: the solver asks `POST /v1/offers/files`, the kernel answers 503, and the
+  # solver turns that into `exact_files_unavailable` with no retry (organizer issues/00022,
+  # measured in phase F after exactly this sequence of health sampling and minting). The
+  # operator-side rule recorded with that issue is "poll `backend.isCurrent`, then drive",
+  # and this is that rule in the harness rather than in a human's head.
+  SETTLE_SYNC_BUDGET_S="${SOLVER_SETTLEMENT_SYNC_BUDGET_S:-240}"
+  SETTLE_SYNC_WAITED=0
+  SETTLE_FIELDS=""
+  if service_present solver-frontend; then
+    while :; do
+      SETTLE_FIELDS="$(monitor_fields || true)"
+      [[ "$SETTLE_FIELDS" == *"backendCurrent=true"* && "$SETTLE_FIELDS" == *"relayConnected=true"* ]] && break
+      (( SETTLE_SYNC_WAITED < SETTLE_SYNC_BUDGET_S )) || break
+      sleep 5
+      SETTLE_SYNC_WAITED=$(( SETTLE_SYNC_WAITED + 5 ))
+    done
+    if [[ "$SETTLE_FIELDS" == *"backendCurrent=true"* ]]; then
+      ok "the solver's kernel projection is CURRENT after ${SETTLE_SYNC_WAITED}s (budget ${SETTLE_SYNC_BUDGET_S}s) — safe to dispatch an intent"
+    else
+      # NOT a failure of its own: the driver is still run, and its own error message is the
+      # honest report if the projection never caught up. Failing here would hide that.
+      warn "the projection is still not current after ${SETTLE_SYNC_WAITED}s ($(printf '%s' "$SETTLE_FIELDS" | grep -m1 backendReason= || true)) — driving anyway; a terminal exact_files_unavailable below is issues/00022, not a settlement defect"
+    fi
+  else
+    info "no monitor in this profile set, so the projection cannot be polled — driving directly"
+  fi
+
+  # ── 2. FUND THE TAKER, FROM THE ISSUER ───────────────────────────────────
+  #
+  # `E2E_SKIP_PROVISION=true` and the issuer funds the taker instead, and that is the CORRECT
+  # setting on this stack rather than a shortcut (phase F measured it): the driver's own
+  # `fundTakerNight` transfers unshielded NIGHT out of its MAKER_SEED wallet, and every one of
+  # the maker's NIGHT UTXOs is REGISTERED FOR DUST GENERATION — that is how it pays for its
+  # own offer's proving fees — and a registered UTXO is not available as ordinary transfer
+  # input. Upstream's deployment runs this driver against a genesis wallet with unregistered
+  # NIGHT to spare; this stack gives every role a dedicated wallet with exactly what it needs.
+  #
+  # TWICE the offer's want amount: the driver needs OFFER_WANT per case plus headroom, and
+  # `issuer-fund` is exact and idempotent per receipt.
+  # The two seeds, from the SAME knobs compose gives the one-shots — `MAKER_OFFER_SEED` is the
+  # wallet that OWNS the live offer (compose/solver.yml passes it to `maker-offer` as
+  # MAKER_SEED) and it must be passed explicitly: the `solver` service carries SOLVER_SEED, so
+  # the driver's own fallback chain would land on GENESIS-1 and drive the wrong wallet.
+  SETTLE_MAKER_SEED="${MAKER_OFFER_SEED:-${MAKER_SEED:-0000000000000000000000000000000000000000000000000000000000000031}}"
+  SETTLE_TAKER_SEED="${TAKER_SEED:-0000000000000000000000000000000000000000000000000000000000000032}"
+  SETTLE_FUND=$(( WANT_AMOUNT * 2 ))
+  SETTLE_FUND_OUT="$(mktemp)"
+  SETTLE_FUND_RC=0
+  dc run --rm -T issuer-fund "$WANT_NAME" "$SETTLE_FUND" "$SETTLE_TAKER_SEED" \
+    >"$SETTLE_FUND_OUT" 2>&1 || SETTLE_FUND_RC=$?
+  SETTLE_FUND_RESULT="$(grep -m1 '^ISSUER_FUND_RESULT ' "$SETTLE_FUND_OUT" || true)"
+  if (( SETTLE_FUND_RC == 0 )) && [[ -n "$SETTLE_FUND_RESULT" ]]; then
+    ok "the taker was funded with ${SETTLE_FUND} base units of ${WANT_NAME} by the issuer"
+    info "  ${SETTLE_FUND_RESULT}"
+  else
+    fail "issuer-fund could not credit the taker with ${WANT_NAME} (exit ${SETTLE_FUND_RC}) — settlement cannot be asserted"
+    sed 's/^/      /' "$SETTLE_FUND_OUT" | tail -20 >&2 || true
+  fi
+  rm -f "$SETTLE_FUND_OUT"
+
+  # ── 3. RUN THE DRIVER ────────────────────────────────────────────────────
+  if [[ -n "$SETTLE_FUND_RESULT" ]]; then
+    SETTLE_LOG="$(mktemp)"
+    SETTLE_RC=0
+    # `--no-deps`: the stack is already up and this must not restart anything.
+    # `E2E_REQUIRE_UNFUNDED_SOLVER` is deliberately UNSET — this stack's solver IS funded
+    # (`solver-inventory` mints both legs), so the capital-free premise is not this claim.
+    dc run --rm --no-deps -T \
+      -e "E2E_CASES=${SOLVER_SETTLEMENT_CASES:-A}" \
+      -e "E2E_SKIP_PROVISION=true" \
+      -e "E2E_TOKEN_OUT=${GIVE_TOKEN}" \
+      -e "E2E_TOKEN_IN=${WANT_TOKEN}" \
+      -e "E2E_OFFER_GIVE_AMOUNT=${GIVE_AMOUNT}" \
+      -e "E2E_OFFER_WANT_AMOUNT=${WANT_AMOUNT}" \
+      -e "MAKER_SEED=${SETTLE_MAKER_SEED}" \
+      -e "TAKER_SEED=${SETTLE_TAKER_SEED}" \
+      --entrypoint bun solver run deploy/scripts/e2e.ts >"$SETTLE_LOG" 2>&1 || SETTLE_RC=$?
+    # `|| true` on every count, and each was exercised on an empty file first.
+    SETTLE_PASS="$(grep -c '^PASS ' "$SETTLE_LOG" || true)"
+    SETTLE_FAIL="$(grep -c '^FAIL ' "$SETTLE_LOG" || true)"
+    SETTLE_TX="$(grep -oE 'txId 0x[0-9a-f]+' "$SETTLE_LOG" | head -1 || true)"
+    if (( SETTLE_RC == 0 )) && grep -q 'ALL ASSERTIONS PASSED' "$SETTLE_LOG"; then
+      ok "the canonical settlement driver passed: ${SETTLE_PASS:-0} PASS / ${SETTLE_FAIL:-0} FAIL${SETTLE_TX:+ (}${SETTLE_TX}${SETTLE_TX:+)}"
+      # The assertions themselves, so the gate's own output carries the claim rather than
+      # pointing at a log the reader does not have.
+      grep '^PASS ' "$SETTLE_LOG" | sed 's/^/      /' || true
+    else
+      fail "the canonical settlement driver FAILED (exit ${SETTLE_RC}, ${SETTLE_PASS:-0} PASS / ${SETTLE_FAIL:-0} FAIL)"
+      grep -E '^(FAIL|PASS) ' "$SETTLE_LOG" | sed 's/^/      /' >&2 || true
+      tail -40 "$SETTLE_LOG" | sed 's/^/      /' >&2 || true
+      info "the offer this consumes is re-seeded automatically on the next run of this section"
+    fi
+    rm -f "$SETTLE_LOG"
   fi
 fi
 

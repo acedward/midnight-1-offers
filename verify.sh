@@ -5,6 +5,12 @@
 # Sections, in dependency order:
 #   core        node RPC + finality advancing, indexer GraphQL on BOTH served paths tracking
 #               the chain, proof-server accepting connections, postgres healthy
+#   one-shots   every service that RUNS ONCE AND EXITS exited 0 and left its receipt on its own
+#               volume — the provisioning lane (NIGHT from genesis, the issuer's inventory
+#               mints), the deploys, the proof-data pre-warm and the tokens.env handoff. Sixteen
+#               of this stack's 32 services are one-shots and ten of them used to be asserted
+#               only indirectly; see the header of scripts/verify-oneshots.sh for why an
+#               indirect assertion is not a coverage claim.
 #   celestia    the offerfiles profile's DA devnet: producing blocks, blob round trip
 #   kernel      /v1/health/sync current, the book endpoints, batcher health
 #   frontend    the zswap-da SPA serves its assets and a browser-reachable /config.js
@@ -46,6 +52,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$REPO_ROOT/scripts/lib/common.sh"
 
 CORE_ONLY=0
+ONESHOTS_MODE=auto
 CELESTIA_MODE=auto
 KERNEL_MODE=auto
 FRONTEND_MODE=auto
@@ -62,6 +69,8 @@ Usage: ./verify.sh [options]
 Options:
   --core-only    only the node/indexer/proof-server/postgres checks; skip every optional
                  profile section
+  --one-shots    require the one-shots section (fail if no one-shot container exists)
+  --no-one-shots skip the one-shots section
   --celestia     require the celestia section (fail if the profile is not up)
   --no-celestia  skip the celestia section even if the profile is up
   --kernel       require the kernel section (fail if the service is not up)
@@ -89,7 +98,9 @@ EOF
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --core-only)   CORE_ONLY=1; CELESTIA_MODE=off; KERNEL_MODE=off; FRONTEND_MODE=off; SHIELDED_NIGHT_MODE=off; SOLVER_MODE=off; POSTER_MODE=off; PRICES_MODE=off; ISSUER_MODE=off; shift ;;
+    --core-only)   CORE_ONLY=1; ONESHOTS_MODE=off; CELESTIA_MODE=off; KERNEL_MODE=off; FRONTEND_MODE=off; SHIELDED_NIGHT_MODE=off; SOLVER_MODE=off; POSTER_MODE=off; PRICES_MODE=off; ISSUER_MODE=off; shift ;;
+    --one-shots)    ONESHOTS_MODE=on;  shift ;;
+    --no-one-shots) ONESHOTS_MODE=off; shift ;;
     --celestia)    CELESTIA_MODE=on;  shift ;;
     --no-celestia) CELESTIA_MODE=off; shift ;;
     --kernel)      KERNEL_MODE=on;    shift ;;
@@ -324,6 +335,19 @@ if service_present indexer; then
   else
     FAILURES=$(( FAILURES + 1 ))
   fi
+fi
+
+# ── the one-shots, before any profile section ────────────────────────────────
+#
+# FIRST among the optional sections, and the order is the point: every profile section below
+# rests on a one-shot having done its job (the poster on its pre-minted coins, the solver on
+# its ladder receipt, the page on its deployed contract). When one of them failed, the reader
+# should see THAT rather than the six downstream assertions it takes with it.
+#
+# The sentinel is `node`, i.e. "is there a stack at all": the section is profile-adaptive
+# internally and asserts exactly the one-shots this profile set actually declares.
+if (( ! CORE_ONLY )); then
+  run_section one-shots node "$ONESHOTS_MODE" scripts/verify-oneshots.sh "./up.sh"
 fi
 
 # ── optional profiles ────────────────────────────────────────────────────────

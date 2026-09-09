@@ -133,12 +133,40 @@ if [[ -z "$HEALTH" ]]; then
 fi
 ok "GET /v1/health answers: ${HEALTH}"
 
-# `synced` is the boolean form of the sync status. Asserted rather than reported: an
+# ── THE BRING-UP → VERIFY SYNC RACE, AND THE BOUNDED WAIT THAT ABSORBS IT ────
+#
+# `synced` is the boolean form of the sync status, and it is ASSERTED rather than reported: an
 # unsynchronised kernel answers every read with a stale or empty book and no error.
+#
+# But it is not asserted on the FIRST answer. `up.sh` waits for the kernel's healthcheck,
+# which goes green while the backend PROJECTION is still catching up — and `./verify.sh`
+# started immediately afterwards has read `"synced":false` in three separate phases of project
+# 00020 (and the same lag turns a solver job into a terminal `exact_files_unavailable` through
+# a 503 on `POST /v1/offers/files`, which is organizer `issues/00022`). Re-running the whole
+# gate "because it was too early" is not a fix; a NAMED, BUDGETED wait is.
+#
+# The budget is deliberately generous (KERNEL_SYNC_WAIT_S, default 180 s) and the cost on a
+# stack that is already current is ZERO extra polls — the loop tests before it sleeps. Every
+# poll is a fresh daemon-served answer, never a cached one, and the failure message says how
+# long it waited so a genuine stall reads as a stall rather than as a flake.
+KERNEL_SYNC_WAIT_S="${KERNEL_SYNC_WAIT_S:-180}"
+SYNC_WAITED=0
+SYNC_POLLS=1
+while [[ "$HEALTH" != *'"synced":true'* ]] && (( SYNC_WAITED < KERNEL_SYNC_WAIT_S )); do
+  sleep 3
+  SYNC_WAITED=$(( SYNC_WAITED + 3 ))
+  SYNC_POLLS=$(( SYNC_POLLS + 1 ))
+  HEALTH="$(curl -fsS --max-time 10 "$API/v1/health" 2>/dev/null || true)"
+done
 if [[ "$HEALTH" == *'"synced":true'* ]]; then
-  ok "the kernel reports itself SYNCED"
+  if (( SYNC_WAITED > 0 )); then
+    ok "the kernel reports itself SYNCED after a ${SYNC_WAITED}s wait (${SYNC_POLLS} polls, budget ${KERNEL_SYNC_WAIT_S}s)"
+    info "that wait IS the documented bring-up→verify race; it was absorbed, not re-run around"
+  else
+    ok "the kernel reports itself SYNCED (first poll, no wait needed)"
+  fi
 else
-  fail "the kernel is not synced: ${HEALTH}"
+  fail "the kernel is still not synced after ${SYNC_WAITED}s (budget ${KERNEL_SYNC_WAIT_S}s): ${HEALTH:-no answer}"
 fi
 
 SYNC="$(curl -fsS --max-time 10 "$API/v1/health/sync" 2>/dev/null || true)"
@@ -305,6 +333,53 @@ else
     fail "/v1/known-tokens lists only ${MATCHED}/6 issued colours; missing:${MISSING}
           (issuer-registrar registers these — check that one-shot's log; up.sh treats its
           failure as fatal, so a miss here means it was never run against this kernel)"
+  fi
+fi
+
+# ── THE SAME ROWS, READ OUT OF POSTGRES DIRECTLY (00020 phase G) ─────────────
+#
+# Everything above reads the kernel's HTTP projection of `known_tokens`. This reads the table
+# itself, as the kernel's own role, and that is a different claim: `verify.sh`'s core section
+# proves postgres is healthy, answers `select 1` and carries `pg_ivm`, but nothing proved the
+# database is the STORE this stack's registry actually lives in. A kernel serving a cached or
+# in-memory projection over an empty table would satisfy every assertion above.
+#
+# The exact set expected on a full stack: the two seeded rows the kernel ships (NIGHT and
+# SNIGHT), plus the six the registrar wrote. WBTC/WETH are `verify-kernel.sh`'s own faucet
+# presets and are counted but not required, so the assertion is on the eight NAMES rather than
+# on the row count.
+if service_present postgres; then
+  echo
+  log "kernel: the known_tokens rows in Postgres itself"
+  # `|| true` on the capture and `2>/dev/null` on the exec: an unreadable table must yield the
+  # empty string and a NAMED failure below, never a pipefail exit from inside `$( )` (00011 C.8).
+  PG_NAMES="$(dc exec -T postgres psql -U "$OFFERFILES_PG_USER" -d "$OFFERFILES_PG_DB" \
+                -tAc 'select upper(name) from known_tokens order by id' 2>/dev/null \
+              | tr -d '\r' || true)"
+  PG_ROWS="$(printf '%s\n' "$PG_NAMES" | grep -c '[A-Z]' || true)"
+  if [[ -z "${PG_NAMES//[[:space:]]/}" ]]; then
+    fail "select from known_tokens returned nothing — the kernel's registry is not in this database"
+  else
+    ok "known_tokens holds ${PG_ROWS} row(s) in '${OFFERFILES_PG_DB}': $(printf '%s' "$PG_NAMES" | tr '\n' ' ')"
+    PG_WANT="NIGHT SNIGHT"
+    if service_present faucet; then
+      PG_WANT="${PG_WANT} ${ISSUER_TOKEN_NAMES}"
+    else
+      info "the issuer profile is not up, so only the kernel's own seeded names are required here"
+    fi
+    PG_MISSING=""
+    for NAME in $PG_WANT; do
+      case "$(printf '%s\n' "$PG_NAMES" | grep -cx "$NAME" || true)" in
+        1) ;;
+        0) PG_MISSING="${PG_MISSING} ${NAME}(absent)" ;;
+        *) PG_MISSING="${PG_MISSING} ${NAME}(duplicated)" ;;
+      esac
+    done
+    if [[ -z "$PG_MISSING" ]]; then
+      ok "every name this stack needs is in the table EXACTLY once: ${PG_WANT}"
+    else
+      fail "known_tokens is wrong about:${PG_MISSING} (rows present: $(printf '%s' "$PG_NAMES" | tr '\n' ' '))"
+    fi
   fi
 fi
 
