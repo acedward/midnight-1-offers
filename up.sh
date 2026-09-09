@@ -296,8 +296,75 @@ if [[ -z "${RENDERED_SERVICES//[[:space:]]/}" ]]; then
 fi
 
 FAILED=0
+
+# ── THE OFFER POSTER IS THE LAST THING THIS SCRIPT STARTS (00025) ────────────
+#
+# THE DEFECT THIS CLOSES (organizer issues/00023, root cause issues/00024). One
+# `docker compose up -d` starts `offer-poster` the moment its own `depends_on` is satisfied —
+# kernel healthy, `poster-provision` and `poster-inventory` complete. `issuer-registrar`, the
+# `deploy: { replicas: 0 }` one-shot that binds each of this stack's colours to its name, its
+# decimals AND ITS `asset_id`, is run BY HAND further down this file, after the faucet is
+# healthy. On this host that left a ~2-MINUTE WINDOW in which the poster was ticking against a
+# kernel that did not know its colours, and the kernel's `GET /v1/quote` answers an unknown
+# colour with a FABRICATED price of $1 per BASE UNIT (`source: "demo-fallback"`,
+# `market_rate: 1`) — and still reports `sponsored: true`, because that flag is computed
+# arithmetically from the fabricated prices rather than by the batcher's own gate.
+#
+# The poster believed it and posted. Measured on the 00020 phase-G gate: ticks 1 and 2 offered
+# 1000000 base units of TWBTC (8 dec, ~$790) for 975000 base units of TWETH (18 dec,
+# ~$0.000000002) — ELEVEN ORDERS OF MAGNITUDE off — and tick 3, after the registrar had run,
+# asked 307632984238905018 for the same give leg. Those offers are real and settleable, and the
+# solver's ladder derivation PREFERS them because they are by far the cheapest fill available:
+# the whole published TWETH → TWBTC ladder was one rung, and that rung was tick 2.
+#
+# THE FIX IS ORDERING, and it lives here because it cannot live in compose. `depends_on` cannot
+# name `issuer-registrar`: it is `replicas: 0` and cross-profile, and compose refuses a
+# dependency — even `required: false` — on a service the selected fragments do not define. The
+# information "is there an issuer, and has its registrar run?" exists in THIS FILE and nowhere
+# else, exactly as it does for the three cross-profile steps further down.
+#
+# THE MECHANISM IS `--scale offer-poster=0`, MEASURED (not assumed) on docker compose v5.1.4:
+#   * the service is still DECLARED and still RENDERS — `docker compose config` and
+#     scripts/verify-compose-pins.sh see an ordinary service, and no fragment changes;
+#   * `--remove-orphans` keeps working, and every other profile comes up as before;
+#   * the poster's own one-shots STILL RUN EARLY and are still waited for: they only mint and
+#     fund, they never quote. A pre-mint that FAILS still fails this `up` (measured: exit 1),
+#     so the poster step below is never reached on a broken provisioning lane.
+#
+# AND IT IS CONDITIONAL, which is the part that is easy to get wrong: scaling a service to 0
+# while its container is RUNNING stops and REMOVES it (measured). Passing the flag
+# unconditionally would therefore bounce a healthy poster on every additive `./up.sh --with
+# poster` — the opposite of the idempotence this has to preserve. So the flag is passed only
+# when no `offer-poster` container is running for this project, and the other case is said out
+# loud rather than silently skipped.
+POSTER_HELD=0
+UP_ARGS=()
+if [[ " $PROFILES " == *" poster "* ]]; then
+  # Only if the service really is in the rendered set. `--scale` on a name compose does not
+  # know is a hard error, and RENDERED_SERVICES is the authority that was just computed above.
+  case $'\n'"$RENDERED_SERVICES"$'\n' in
+    *$'\n'offer-poster$'\n'*)
+      if service_running offer-poster; then
+        info "poster   offer-poster is ALREADY RUNNING — left alone (its colours were bound on"
+        info "         the run that started it; nothing to re-order)"
+      else
+        POSTER_HELD=1
+        UP_ARGS=(--scale offer-poster=0)
+      fi
+      ;;
+  esac
+fi
+
 log "starting containers"
-if ! dc up -d --remove-orphans; then
+if (( POSTER_HELD )); then
+  info "poster   offer-poster is held back from this \`up\` (--scale offer-poster=0) and started"
+  info "         LAST, after issuer-registrar has bound this stack's colours — so its FIRST"
+  info "         quote is a fed price. Its pre-mint one-shots still run now. See issues/00023."
+fi
+# ${arr[@]+"${arr[@]}"}, not "${arr[@]}": UP_ARGS is EMPTY on every bring-up without the poster
+# and macOS bash 3.2 turns "${arr[@]}" on an empty array into an `unbound variable` error under
+# `set -u` (the same rule as `env_args` in dc()).
+if ! dc up -d --remove-orphans ${UP_ARGS[@]+"${UP_ARGS[@]}"}; then
   FAILED=1
   echo
   err "docker compose up failed. Container state and last 40 log lines follow:"
@@ -418,7 +485,12 @@ if (( ! FAILED )) && [[ " $PROFILES " == *" issuer "* ]] && service_present fauc
     fi
   fi
 fi
-# ── the TWO cross-profile steps in this stack, and they live here on purpose ──
+# ── the CROSS-PROFILE steps in this stack, and they live here on purpose ─────
+# Four of them now, in this order: the sNight colour's name, the issuer's six colours, THE
+# POSTER'S START (00025 — it must follow the registrar, see its own block), and the intents
+# UI's labels and decimals. Every one of them is a fact that only THIS FILE knows, because it
+# is the only place that knows which profiles were selected.
+#
 # When BOTH `offerfiles` and `shielded-night` are up, the kernel's dev token registry is told
 # what the sNight colour is called. It cannot be a compose dependency in either direction:
 # `shielded-night` must work with nothing but core (spec FR-002), and compose rejects a
@@ -476,7 +548,160 @@ if (( ! FAILED )) \
     info "the kernel is left holding the six canonical NAMES at the Preprod colours its own seed"
     info "shipped — colours that do not exist on this chain. Re-run it alone with:"
     info "  docker compose run --rm --no-deps issuer-registrar"
+    # SAID HERE TOO, because this is where the operator is looking. The poster step below is
+    # guarded on FAILED and will name issues/00023 itself, but the causal link — "this is why
+    # nothing is posting" — belongs beside the cause.
+    (( POSTER_HELD )) && info "  offer-poster will NOT be started: on an unbound registry its first quote is fabricated (issues/00023)"
     FAILED=1
+  fi
+fi
+# ── THE POSTER IS STARTED HERE, AND NOWHERE EARLIER (00025) ──────────────────
+#
+# Why it is held back at all is argued at the `--scale offer-poster=0` block above
+# (issues/00023 and its root cause issues/00024). This is the other half: the poster is started
+# here, and only after the registrar's effect has been CONFIRMED — not merely after its exit
+# code.
+#
+# IMMEDIATELY AFTER THE REGISTRAR, and not at the bottom of the file, on purpose. The poster's
+# own startup is minutes (wallet sync, DUST registration, the dust wait, the contract join), so
+# starting it here lets it run CONCURRENTLY with the intents-UI bake below and with every
+# remaining wait, exactly as it used to overlap with them when compose started it. The
+# `wait_compose_healthy offer-poster` stays where it always was, further down — that is what
+# makes this ordering cost the bring-up nothing but the colour poll.
+#
+# THE EXIT CODE IS NOT THE PROPERTY THE POSTER NEEDS. `issuer-registrar` exiting 0 says the
+# `UPDATE known_tokens` and the `POST /v1/known-tokens` ran. What the poster's first quote
+# depends on is the kernel being ABLE TO PRICE its two colours, and pricing resolves
+# colour -> decimals + `asset_id` -> `asset_prices.price_usd / 10^decimals`. A colour with a
+# NULL `asset_id` is the second fabrication in issues/00024: the kernel writes a deterministic
+# colour-hash price with `source: "fallback"` for it. So the gate is the observable one —
+# `GET /v1/known-tokens` carries a non-null `asset_id` for the give AND the want colour — and
+# it is polled, bounded and NAMED on exhaustion.
+#
+# On a healthy stack this costs ONE poll: the registrar ran seconds ago and its own last act is
+# to read the registry back.
+if (( POSTER_HELD )); then
+  echo
+  if (( FAILED )); then
+    # NOT started, and said as a failure line rather than a silent skip. `FAILED` is already 1
+    # here — from the registrar, the faucet, the kernel or anything else above — and the whole
+    # point of this project is that a poster started against an unbound registry posts real,
+    # settleable, wildly mispriced offers.
+    err "offer-poster was NOT started: this bring-up failed before the poster step"
+    info "that is deliberate. On a kernel that does not yet know the poster's colours,"
+    info "GET /v1/quote fabricates \$1 per BASE UNIT (market_rate=1) and still says"
+    info "sponsored:true, and the poster posts real, settleable offers mispriced by ~11 orders"
+    info "of magnitude that the solver's ladder then PREFERS. See the organizer's issues/00023"
+    info "(the stack-side defect this ordering closes) and issues/00024 (the kernel half)."
+    info "fix what failed above, then re-run ./up.sh — the poster is started by that run."
+  else
+    log "the poster starts LAST: waiting for the kernel to price its two colours"
+
+    # ── the two colours, through the ONE registry reader in this repository ──
+    # `issuer_registry_lines` is primed HERE, as a plain function call in this shell, so its
+    # process-lifetime cache is set before the two `$( )` reads below inherit it. Called from
+    # inside a command substitution instead, each read would be a SUBSHELL, the cache would
+    # never survive, and every call would re-run `docker compose run --rm --no-deps -T
+    # issuer-registry` — a container that INHERITS AND CONSUMES STDIN (measured in 00020 phase
+    # G, where it ate five of six lines of a `while read` loop). One run, both colours.
+    issuer_registry_lines >/dev/null 2>&1 || true
+
+    # poster_colour <configured value> — the 64-hex colour for the poster's leg, or nothing.
+    #
+    # A raw 64-hex value passes through untouched and a NAME is resolved against the issuer's
+    # registry: exactly what `entrypoint-offer-poster.sh` does with the same two variables, so
+    # the gate describes the colours the poster will really trade. NEVER DEFAULTS — an
+    # unresolvable name yields the empty string and the named failure below.
+    poster_colour() {
+      local value="${1:-}"
+      case "$value" in
+        ????????????????????????????????????????????????????????????????)
+          case "$value" in
+            *[!0-9a-f]*) : ;;
+            *) printf '%s' "$value"; return 0 ;;
+          esac ;;
+      esac
+      issuer_token_id "$value"
+    }
+
+    # poster_colour_priced <known-tokens body> <colour> — does that colour carry an asset_id?
+    #
+    # `tr '{' '\n'` splits the array into one row per line, the same idiom verify-kernel.sh
+    # uses on this very endpoint (this host has no jq and these scripts take no dependency a
+    # stock macOS box lacks). Whitespace-tolerant: the kernel's serialiser emits none today and
+    # a check that silently stops matching if that changes is worse than one that reads the
+    # value. `|| true` on both extractions — a body with no such row must yield the empty
+    # string and a `return 1`, never a `pipefail` exit from inside `$( )` (00011 C.8).
+    poster_colour_priced() {
+      local body="${1:-}" colour="${2:-}" row hits
+      [[ -n "$colour" ]] || return 1
+      row="$(printf '%s' "$body" | tr '{' '\n' \
+             | grep -E "\"token_color\"[[:space:]]*:[[:space:]]*\"${colour}\"" | head -1 || true)"
+      [[ -n "$row" ]] || return 1
+      # A non-null, non-empty asset_id. `"asset_id":null` and `"asset_id":""` both fail this.
+      hits="$(printf '%s' "$row" | grep -cE '"asset_id"[[:space:]]*:[[:space:]]*"[^"]+"' || true)"
+      [[ "${hits:-0}" != "0" ]]
+    }
+
+    POSTER_GIVE_COLOUR="$(poster_colour "${OFFER_POSTER_GIVE_TOKEN:-}" || true)"
+    POSTER_WANT_COLOUR="$(poster_colour "${OFFER_POSTER_WANT_TOKEN:-}" || true)"
+    if [[ -z "$POSTER_GIVE_COLOUR" || -z "$POSTER_WANT_COLOUR" ]]; then
+      err "could not resolve the poster's two legs to colours on this chain"
+      info "give ${OFFER_POSTER_GIVE_TOKEN:-unset} -> ${POSTER_GIVE_COLOUR:-nothing}"
+      info "want ${OFFER_POSTER_WANT_TOKEN:-unset} -> ${POSTER_WANT_COLOUR:-nothing}"
+      info "the \`poster\` profile requires \`issuer\` (this script adds it) and reads the six"
+      info "colours through the one validating reader in the image. See what it reports with:"
+      info "  docker compose run --rm --no-deps issuer-registry"
+      info "offer-poster was NOT started (issues/00023)."
+      FAILED=1
+    else
+      info "give ${OFFER_POSTER_GIVE_TOKEN} = ${POSTER_GIVE_COLOUR:0:16}…"
+      info "want ${OFFER_POSTER_WANT_TOKEN} = ${POSTER_WANT_COLOUR:0:16}…"
+      POSTER_COLOURS_START=$SECONDS
+      POSTER_COLOURS_DEADLINE=$(( SECONDS + POSTER_COLOURS_WAIT_S ))
+      POSTER_COLOURS_OK=0
+      POSTER_KNOWN=""
+      POSTER_COLOURS_POLLS=0
+      while :; do
+        POSTER_COLOURS_POLLS=$(( POSTER_COLOURS_POLLS + 1 ))
+        POSTER_KNOWN="$(curl -fsS --max-time 10 "${KERNEL_URL}/v1/known-tokens" 2>/dev/null || true)"
+        if [[ -n "$POSTER_KNOWN" ]] \
+           && poster_colour_priced "$POSTER_KNOWN" "$POSTER_GIVE_COLOUR" \
+           && poster_colour_priced "$POSTER_KNOWN" "$POSTER_WANT_COLOUR"; then
+          POSTER_COLOURS_OK=1
+          break
+        fi
+        (( SECONDS < POSTER_COLOURS_DEADLINE )) || break
+        sleep "$POSTER_COLOURS_POLL_S"
+      done
+      POSTER_COLOURS_ELAPSED=$(( SECONDS - POSTER_COLOURS_START ))
+      if (( POSTER_COLOURS_OK )); then
+        ok "the kernel prices BOTH of the poster's colours (non-null asset_id) — ${POSTER_COLOURS_ELAPSED}s, ${POSTER_COLOURS_POLLS} poll(s)"
+        log "starting offer-poster — the last service in this bring-up"
+        # `--no-deps`: every one of its declared dependencies (kernel healthy, both one-shots
+        # completed) was satisfied by the `up` above, which would not have returned otherwise.
+        # Without the flag compose re-evaluates the whole dependency graph and re-runs the
+        # one-shots for a container that needs neither.
+        if ! dc up -d --no-deps offer-poster; then
+          err "could not start offer-poster after its colours were bound"
+          info "  docker compose logs offer-poster"
+          FAILED=1
+        fi
+      else
+        err "the kernel still does not price the poster's colours after ${POSTER_COLOURS_ELAPSED}s (${POSTER_COLOURS_POLLS} poll(s), budget ${POSTER_COLOURS_WAIT_S}s)"
+        info "give ${OFFER_POSTER_GIVE_TOKEN} ${POSTER_GIVE_COLOUR:0:16}… asset_id present: $(poster_colour_priced "$POSTER_KNOWN" "$POSTER_GIVE_COLOUR" && echo yes || echo no)"
+        info "want ${OFFER_POSTER_WANT_TOKEN} ${POSTER_WANT_COLOUR:0:16}… asset_id present: $(poster_colour_priced "$POSTER_KNOWN" "$POSTER_WANT_COLOUR" && echo yes || echo no)"
+        info "offer-poster was NOT started, on purpose: a colour the kernel cannot price is"
+        info "quoted from a fabricated \$1 per BASE UNIT at market_rate=1 and STILL reported"
+        info "sponsored:true, so the poster would post real, settleable offers mispriced by"
+        info "~11 orders of magnitude. See issues/00023 and issues/00024."
+        info "issuer-registrar writes that asset_id — read its log, then re-run ./up.sh:"
+        info "  docker compose logs issuer-registrar"
+        info "  docker compose run --rm --no-deps issuer-registrar"
+        info "raise the budget with POSTER_COLOURS_WAIT_S=<seconds> if this host is slower."
+        FAILED=1
+      fi
+    fi
   fi
 fi
 # ── the THIRD cross-profile step: the intents UI's labels and DECIMALS (00020 phase G) ──
@@ -553,12 +778,16 @@ if (( ! FAILED )) \
     fi
   fi
 fi
-# The poster. Its health server binds only AFTER wallet sync, DUST registration, the bounded
-# dust wait and the contract join, which is why POSTER_WAIT_TIMEOUT is minutes and not seconds
-# — and why compose gives its healthcheck a 15-minute start_period. Reaching healthy here means
-# the poster is ALIVE, not that it has posted anything: /health answers 200 while it is still
+# The poster's health server binds only AFTER wallet sync, DUST registration, the bounded dust
+# wait and the contract join, which is why POSTER_WAIT_TIMEOUT is minutes and not seconds — and
+# why compose gives its healthcheck a 15-minute start_period. Reaching healthy here means the
+# poster is ALIVE, not that it has posted anything: /health answers 200 while it is still
 # `starting` and while it is `degraded` (no dust yet), on purpose. Whether it actually mints
 # and posts is ./verify.sh's poster section, which carries a budget for exactly that.
+#
+# `service_present` is still the guard and it is still the right one: on the held path the
+# container was created by the step above, and on the already-running path it was there all
+# along. If the step above failed, FAILED is 1 and this is skipped.
 if (( ! FAILED )) && [[ " $PROFILES " == *" poster "* ]] && service_present offer-poster; then
   wait_compose_healthy offer-poster "$POSTER_WAIT_TIMEOUT" || FAILED=1
 fi

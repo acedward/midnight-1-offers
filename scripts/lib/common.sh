@@ -425,6 +425,20 @@ load_env() {
   # contract join + ~30 s of proving, so the budget is minutes rather than seconds; see
   # docs/KNOWN-LIMITATIONS.md.
   : "${POSTER_VERIFY_BUDGET_S:=420}"
+  # ── the poster starts LAST, and this is how long it waits for its colours ──
+  # `up.sh` holds `offer-poster` out of the initial `docker compose up` and starts it only
+  # after `issuer-registrar` has bound this stack's colours in the kernel's token registry —
+  # i.e. after `GET /v1/known-tokens` carries a NON-NULL `asset_id` for the poster's give and
+  # want colours. Until it does, `GET /v1/quote` prices an unknown colour at $1 per BASE UNIT
+  # and still answers `sponsored: true`, so the poster posts real, settleable offers mispriced
+  # by ~11 orders of magnitude (organizer issues/00023, root cause issues/00024).
+  #
+  # The registrar has just exited 0 when this wait starts, so on a healthy stack it costs ONE
+  # poll. The budget exists for the case where the registrar reported success and the kernel's
+  # projection has not caught up: that is a NAMED failure with the poster left unstarted, never
+  # a silent start.
+  : "${POSTER_COLOURS_WAIT_S:=180}"
+  : "${POSTER_COLOURS_POLL_S:=5}"
 
   # ── the issuer profile (00020 PR B) ────────────────────────────────────────
   # A DEDICATED, non-genesis seed — `…0051` in wallets/wallets.json, assigned to nothing else.
@@ -498,6 +512,8 @@ load_env() {
          CELESTIA_WAIT_TIMEOUT KERNEL_WAIT_TIMEOUT FRONTEND_WAIT_TIMEOUT \
          SOLVER_WAIT_TIMEOUT RELAY_WAIT_TIMEOUT POSTER_WAIT_TIMEOUT ISSUER_WAIT_TIMEOUT \
          OFFER_POSTER_SEED POSTER_VERIFY_BUDGET_S \
+         OFFER_POSTER_GIVE_TOKEN OFFER_POSTER_WANT_TOKEN \
+         POSTER_COLOURS_WAIT_S POSTER_COLOURS_POLL_S \
          ISSUER_SEED ISSUER_VERIFY_BUDGET_S \
          ISSUER_VERIFY_FUND_TOKEN ISSUER_VERIFY_FUND_AMOUNT ISSUER_VERIFY_FUND_SEED
 
@@ -1021,6 +1037,27 @@ service_present() {
   [[ -n "$(docker ps -aq \
     --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME}" \
     --filter "label=com.docker.compose.service=$1" 2>/dev/null)" ]]
+}
+
+# service_running <service> — is a container for it RUNNING right now, in this project?
+#
+# The narrower question `service_present` cannot answer, and `up.sh` needs it for exactly one
+# decision (00025): whether to pass `--scale offer-poster=0` to the initial `docker compose up`.
+# Measured on compose v5.1.4 — scaling a service to 0 while its container is running STOPS and
+# REMOVES it, so passing that flag unconditionally would restart a healthy poster on every
+# additive `--with poster` re-run, which is precisely what the idempotence requirement forbids.
+#
+# `--filter status=running` is DAEMON-OWNED state, not a parsed `docker compose ps` table and
+# not a process list: a `pgrep`-shaped answer would match this script's own command line.
+# `oneoff=False` excludes `docker compose run` containers, for the reason spelled out in
+# scripts/verify-oneshots.sh — a `run` probe still being torn down must not count as the
+# service being up.
+service_running() {
+  [[ -n "$(docker ps -q \
+    --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME}" \
+    --filter "label=com.docker.compose.service=$1" \
+    --filter "label=com.docker.compose.oneoff=False" \
+    --filter "status=running" 2>/dev/null)" ]]
 }
 
 # ── the issuer's six tokens, on the HOST side (00020 PR C) ───────────────────
