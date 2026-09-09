@@ -198,6 +198,34 @@ The same is true, permanently, of a stack brought up with `MAKER_OFFER_ENABLED=f
 `SOLVER_PROVISION_ENABLED=false`: the ladder is derived from the book, so with nothing to quote
 an empty publication is honest and the panel stays empty.
 
+### The intents UI's token labels and DECIMALS are baked, so they need a second pass (00020 PR F)
+
+The relay's `GET /tokens` carries raw 64-hex colours and nothing else, so the browser UI takes a
+token's label and its decimals from a config block baked into `index.html` **at build time** —
+upstream's design, not this repository's choice. This stack's colours, meanwhile, derive from the
+contracts the `issuer` profile deploys, so they do not exist until `issuer-deploy` has run. A
+build-time knob and a per-chain value cannot be reconciled in one pass, so the second pass is one
+command rather than a hand transcription of six 64-character hex strings:
+
+```sh
+./scripts/issuer-token-names.sh >> .env     # INTENTS_UI_TOKEN_NAMES=TWBTC=…:8:twBTC,…
+./up.sh --with offerfiles --with issuer --with solver --build
+```
+
+**Until you do it the UI is not merely ugly, it is wrong about amounts.** With no entry for a
+colour the page shows its last 8 hex characters — cosmetic — but it also assumes **six**
+decimals, which is right for TWUSDC/TWUSDM/UTWUSDC, wrong for TWBTC and UTWBTC (8) and wrong by
+twelve orders of magnitude for TWETH (18). Nothing warns: the page renders a plausible number.
+That is why the generator always emits the decimals and why the image REFUSES a malformed or
+empty field instead of falling back.
+
+Two things bound the cost. The `solver` profile's own assertions never depend on the labels —
+`./verify.sh` reads colours, and the UI check asserts that the page's `/api/v1` edge mirrors the
+relay rather than what the page *calls* a token. And the value is stable for the life of a chain:
+you re-run the two commands after a `./down.sh -v`, not after a restart. An upstream
+`window.*`-style runtime override would remove the second pass entirely; that is the same
+follow-up Q4 records for the SPA's faucet URL, one repository over.
+
 ### The seeded maker offer does not survive a long run, and `./verify.sh` re-seeds
 
 An offer on this chain lives `min(ROOT_WINDOW_SECONDS, OFFER_TTL_SECONDS)` = **1 hour**, whatever

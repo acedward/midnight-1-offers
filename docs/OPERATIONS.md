@@ -1,8 +1,8 @@
 # Operations
 
 > **Scope.** This file documents the **`issuer`** profile (the stack's own token source), the
-> **`solver`** profile's monitor and status listener, the **`shielded-night`** profile and its
-> re-pins, the
+> **`solver`** profile's monitor, status listener and relay re-pins, the
+> **`shielded-night`** profile and its re-pins, the
 > `core` profile's own re-pins (the node image), the **`frontend`** profile's re-pins (the one
 > place where a value is baked into an image rather than written at container start), and the
 > `offerfiles`-profile notes that each kernel re-pin makes unavoidable for anyone running an
@@ -13,7 +13,8 @@
 
 **Read this one first if you are upgrading an existing stack.** It is the only BREAKING re-pin in
 project 00020 and it changes where this stack's tokens come from. (The NEWEST re-pin is the
-shielded-night dApp's, two sections below; the frontend's is between them. Neither is breaking.)
+relay's, in the section directly below; the shielded-night dApp's and the frontend's follow it.
+None of those three is breaking.)
 
 ```sh
 git pull
@@ -84,9 +85,80 @@ the six issued tokens through a connected wallet in exactly the same way. See th
 and `docs/KNOWN-LIMITATIONS.md`. Nothing automated ever depended on the in-page mint:
 `issuer-fund` is the headless path and the browser mint was always an owner hand test.
 
+## Re-pin the relay and the intents UI to the operator clone's `main` @ `b32e0b100` (00020 PR F) — **not breaking; two images**
+
+**The newest re-pin — read this one first.** Nothing outside `images/relay` and
+`images/intents-ui` changes: no chain state, no database, no volume, no kernel, no solver, and no
+change to the relay's wire shape. The relay is stateless apart from its wallet-sync cache, which
+it rebuilds.
+
+**It is the one re-pin you cannot take with `git pull` alone**, because the source is not in this
+repository: the relay and its browser UI are built from YOUR OWN clone of a private repository,
+so you move that clone yourself and then rebuild.
+
+```sh
+git pull
+git -C ./local/intents-swaps fetch
+git -C ./local/intents-swaps checkout b32e0b100a5715d1fbf89c155afe6c2236d3b013
+./up.sh --build --with offerfiles --with issuer --with solver
+```
+
+`up.sh` refuses to build until that clone sits at exactly `RELAY_REF` with a clean tree, and it
+names the `checkout` command when it does not — so a forgotten clone is a one-line failure before
+any layer runs, not a mystery at run time. The check keys on the **commit**, never on a branch
+name, which is what kept it working when the branch the previous pin lived on was deleted
+upstream.
+
+### What moved, and the three things of six that matter here
+
+Twenty-six merges on from `061f4d3258e2…`, of which six touch the workspace this stack builds:
+
+| upstream change | what it means here |
+|---|---|
+| **fastify onto the 5.12 line** across the workspace and its shared, relay and solver packages, with the lockfile regenerated | nothing in this repository names a fastify version. What it does mean is that both transcribed Dockerfiles run `npm ci` against a NEW lockfile — which is exactly what `--build` exercises, and what the 00020 PR F gate ran from clean |
+| **the browser app's token naming was replaced** | the one change that needed work here. See the next section |
+| **a WebSocket route in upstream's own edge template**, in front of the relay's solver-facing socket | **n/a here.** This stack publishes that socket's port on the host directly (`RELAY_WS_HOST_PORT`) and its own solver connects to it *inside* the compose network; the intents-ui image ships its own nginx, written for this topology, and upstream's edge is not part of it. Confirmed from the app side too: the UI tree at this pin opens no WebSocket at all — its token list is an HTTP fetch of the same-origin `/api/v1` prefix |
+| **two token env passthroughs in upstream's own compose file** | **n/a here**: this repository renders its own compose and names its own solver env |
+| a committed `ui-config` for a public network | never read here — this stack's UI is configured per chain from the issuer's registry, because the colours are minted fresh on every `./down.sh -v` |
+| the relay's HTTP routes, its solver WebSocket and its bearer handshake | **unchanged in shape**, which is what `./verify.sh`'s solver section and the settlement driver assert rather than assume |
+
+### The UI now shows labels and decimals-aware amounts — and SIX became a wrong default
+
+The app resolves each token from three keys in the config block baked into `index.html`:
+
+| key | what it does | absent means |
+|---|---|---|
+| `TOKEN_<NAME>` | this colour is a token the UI can name | the UI shows the colour's last 8 hex characters |
+| `METADATA_TOKEN_<NAME>_LABEL` | what is written beside an amount | the UI shows the whole key, `TOKEN_TWBTC` |
+| `METADATA_TOKEN_<NAME>_DECIMALS` | how the amount is scaled | **SIX** |
+
+That last default is why this is not a cosmetic change. Six is right for TWUSDC, TWUSDM and
+UTWUSDC; it is wrong for TWBTC and UTWBTC (8) and wrong by twelve orders of magnitude for TWETH
+(18) — and it is wrong SILENTLY, because the page renders a plausible number. So
+`INTENTS_UI_TOKEN_NAMES` entries now carry all three fields:
+
+```
+<NAME>=<64-hex colour>[:<decimals>[:<label>]]        TWBTC=f1205a0d…9806:8:twBTC
+```
+
+and one command fills the whole line from the issuer's own registry, after `issuer-deploy` has
+run (the colours do not exist before it, which is why this is a two-pass knob at all):
+
+```sh
+./scripts/issuer-token-names.sh >> .env        # INTENTS_UI_TOKEN_NAMES=TWBTC=…:8:twBTC,…
+./up.sh --with offerfiles --with issuer --with solver --build
+```
+
+`--table` prints the same six with their decimals and privacy. A malformed entry FAILS the image
+build — with the entry quoted and the reason named — rather than shipping a UI that shows hex
+tails or mis-scaled amounts, and a field written EMPTY (`…:8:` or `…::twBTC`) fails too: that is
+an unset variable in whatever produced the line, not a choice. The build also greps all three
+keys back out of the emitted `index.html`, so a silently ignored env line cannot ship.
+
 ## Re-pin the Shielded NIGHT dApp to `main` @ `2bb32838a` (00020 PR E) — **not breaking; one image**
 
-**The newest re-pin — read this one first.** Nothing outside `images/shielded-night` changes: no
+**Not breaking.** (The NEWEST re-pin is the relay's, one section above.) Nothing outside
+`images/shielded-night` changes: no
 chain state, no database, no volume, no wire format, no other image. The contract itself is
 byte-identical to the previous pin, so an existing stack's deployed sNight contract, its derived
 colour and every sNight coin already minted stay exactly as they are.
