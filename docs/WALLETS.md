@@ -1,6 +1,7 @@
 # Wallets
 
-> **Scope.** This file documents the wallets the **`shielded-night`** and **`poster`**
+> **Scope.** This file documents the wallets the **`shielded-night`**, **`poster`** and
+> **`issuer`**
 > profiles use, and the browser hand test. The full roster — every seed, its measured genesis
 > funding and its derived addresses — lives in `wallets/wallets.json`, which is the source of
 > truth; the whole-stack narrative lands with 00005 P6.
@@ -39,9 +40,12 @@ exits 78 (`EX_CONFIG`) with an explanation. The same refusal applies to the veri
 
 ### Why the driver is the deployer's own wallet
 
-On this line the `midnight-node` 1.0.0 dev preset funds exactly four wallets — `genesis-1`,
+On this line the `midnight-node` dev preset funds exactly four wallets — `genesis-1`,
 `genesis-2`, `batcher` (genesis seed 3) and `lace-test` — and only those four have DUST
-registered at genesis. A wallet holding NIGHT with **no DUST registration cannot pay a fee at
+registered at genesis. (The figures in `wallets/wallets.json` were measured on node 1.0.0; the
+core was re-pinned to **1.0.1** in 00020 PR A and they still hold, because
+`res/genesis/genesis_{state,block}_undeployed.mn` — the two files `CFG_PRESET=dev` loads — are
+byte-identical in the two images, and so is the whole of `res/dev`.) A wallet holding NIGHT with **no DUST registration cannot pay a fee at
 all**, and this repository has no funding lane (no `fund-wallet.sh`, no pinned toolkit image)
 to provision a fresh seed from nothing. Of the four, `genesis-1` is the kernel's, the faucet's
 and the offer-files mint wallet's, and `genesis-3` is the batcher's — both long-lived facades.
@@ -65,15 +69,56 @@ wallet and nothing in the fragment, the image or the verify script changes.
 | **the funder** (`MIDNIGHT_GENESIS_SEED`) | `genesis-1` | `0x…0001` | The only prefunded wallet this profile touches, and only from the one-shot, which exits. It is also `solver-provision`'s and `maker-offer`'s funder — see the mutex below. |
 | **the taker in `./verify.sh`** (`TAKER_SEED`) | `e2e-taker` | `0x…0032` | Empty at genesis and provisioned by the check itself: NIGHT from genesis-1, then it MINTS the demanded faucet token through the contract, because nothing on this stack holds a faucet preset until something mints one. |
 
+## The `issuer` profile's wallet (00020 PR B)
+
+| role | wallet | seed | why this one |
+|---|---|---|---|
+| **the token issuer** (`ISSUER_SEED`) | `issuer` | `0x…0051` | The deploy runner holds a facade open through SIX contract deployments with proving — many minutes — and `issuer-fund` opens one for every mint, so it must have a seed of its own. Empty at genesis by design: `issuer-deploy` sends it four large NIGHT UTXOs from genesis-1, **registers that NIGHT for DUST itself** (nothing in `mint-test-tokens` does — it is written for wallets that arrive already funded), and waits for the DUST before it will deploy anything. It holds NO test tokens: `issuer-fund` mints DIRECTLY to the recipient's coin public key or user address. |
+| **the funder** (`MIDNIGHT_GENESIS_SEED`) | `genesis-1` | `0x…0001` | The only prefunded wallet this profile touches, and only from the one-shot, which exits — and which RELEASES the shared genesis lock as soon as the transfer confirms, before the long deploy. |
+| **the recipient** (an argument, not a variable) | whatever the caller names | — | `issuer-fund <TOKEN> <base-units> <seed>` opens a facade on the recipient too, in order to read the balance back. The CALLER is responsible for that wallet being idle — see below. |
+
+### Why not genesis-1, which is what upstream's own `undeployed` path would use
+
+`mint-test-tokens` accepts any funded seed. On this stack genesis-1 is the faucet, the
+offer-files deploy/mint wallet, the kernel's own `MIDNIGHT_WALLET_SEED` and the source every
+other provisioning one-shot draws from — so a facade held on it for the length of six proving
+deployments would take one of those offline with no error naming the cause. Recorded as project
+00020 question Q5.
+
+`images/issuer/m1/provision.ts` enforces it in code rather than by rule: it exits **78**
+(EX_CONFIG) if `MN_SEED_FILE` and `MN_GENESIS_SEED_FILE` carry the same seed, before any NIGHT
+moves. `issuer-fund` refuses to mint to the issuer's own seed for the same reason — that would be
+two facades on `…0051` inside one process.
+
+### The recipient is the caller's responsibility, and that is the one rule this profile cannot enforce
+
+`issuer-fund` holds a `flock` on the `issuer-state` volume, so no two issuer containers can drive
+`…0051` at once — but nothing here can know whether the RECIPIENT's wallet is open somewhere else.
+Every provisioning one-shot in this stack is already gated by compose on
+`service_completed_successfully` before the long-lived service that holds that wallet starts, so in
+practice this is not a constraint. It matters when an operator funds a wallet by hand on a running
+stack: stop the service that owns it first.
+
+### The seed never appears on a command line inside the container
+
+The pinned repository accepts a master seed **only through a file** (`MN_SEED_FILE`, and its
+validator demands exactly 32 or 64 bytes of hex), and this stack keeps that property: the
+entrypoints write each seed to a `0600` file on a `/run/issuer` **tmpfs** and hand the runner only
+the path. Nothing puts a seed in `docker inspect`, in `ps` or in a log line. The seeds themselves
+are public devnet values from this file — the hygiene is so that a stack pointed at a real network
+by mistake does not additionally leak its key.
+
 ### One facade per seed, and who enforces it
 
 | seed | who holds a facade on it | for how long | enforced by |
 |---|---|---|---|
-| `genesis-1` `…0001` | `offerfiles-deploy`, `solver-provision`, `maker-offer`, `poster-provision`, the verify drivers | one-shots only — each exits | `depends_on` inside a fragment, and a **`flock`** on the shared `genesis-lock` volume ACROSS fragments |
+| `genesis-1` `…0001` | `issuer-deploy`, `solver-provision`, `poster-provision`, `maker-provision`, the verify drivers | one-shots only — each exits | `depends_on` inside a fragment, and a **`flock`** on the shared `genesis-lock` volume ACROSS fragments. `maker-offer` LEFT this list in 00020 PR C: it holds …0031 now and takes the lock only if an operator points `MAKER_OFFER_SEED` back at genesis |
 | `genesis-2` `…0002` | `shielded-night-deploy`, then the verify driver | sequentially; the deploy has exited first | the deploy one-shot's `restart: "no"` |
 | `batcher` `…0003` | the `batcher` container | the life of the stack | this table, and nothing else |
-| `solver` `…0021` | `solver-provision` (then it exits), then the `solver` container | the life of the stack | compose's `service_completed_successfully` |
-| **`poster` `…0041`** | `poster-provision` (then it exits), then `offer-poster` | the life of the stack | compose's `service_completed_successfully` **and** `poster-config.ts`, which exits 78 if the seed collides |
+| `solver` `…0021` | `solver-provision`, then `solver-inventory` (both exit), then the `solver` container | the life of the stack | compose's `service_completed_successfully`, twice in a row |
+| **`e2e-maker` `…0031`** | `maker-provision`, `maker-inventory`, `maker-offer` and the e2e driver — ALL one-shots | never long-lived, and that is the whole safety argument | compose's `service_completed_successfully`. **NOTHING LONG-LIVED MAY EVER HOLD THIS SEED**: four jobs share it, safely, only because they run one after another. New in 00020 PR C — the maker was genesis-1 until kernel #69 deleted the mint that credited it |
+| **`poster` `…0041`** | `poster-provision`, then `poster-inventory` (both exit), then `offer-poster` | the life of the stack | compose's `service_completed_successfully`, twice in a row, **and** `poster-config.ts`, which exits 78 if the seed collides |
+| **`issuer` `…0051`** | `issuer-deploy` (then it exits), `issuer-fund` per mint, and the three `*-inventory` one-shots | one-shots only — but `issuer-deploy`'s facade is open for MINUTES (six proving deployments), and an inventory run holds it for one lock across ALL its mints | a **`flock`** on `/app/.local/.issuer-facade.lock` (the `issuer-state` volume), held by every issuer container, **and** `m1/provision.ts`'s exit-78 refusal of the genesis seed |
 | `lace-test` | nothing automated — reserved for the operator's browser | — | deliberately unassigned |
 
 **`OFFER_POSTER_SEED` must never equal any other seed in the roster.** It is the only entry
@@ -87,13 +132,21 @@ inheriting a seed variable the poster never uses would only give it something to
 
 ### The genesis-1 mutex
 
-Four one-shots want the genesis facade, in two different compose fragments. A `depends_on`
-cannot cross a fragment boundary — compose refuses to render a dependency on a service outside
-the merged set, and `--with poster` without `--with solver` is supported — so
-`solver-provision`, `maker-offer` and `poster-provision` each take a `flock` on
-`/srv/genesis-lock/lock`, on a named volume both fragments declare identically. The helper is
-`take_genesis_lock()` in `images/offerfiles-kernel/entrypoint-common.sh`; it logs when it waits
-and when it acquires, so a slow bring-up says which one-shot is holding the wallet.
+FIVE one-shots want the genesis facade, in THREE different compose fragments
+(`compose/solver.yml`, `compose/poster.yml`, `compose/issuer.yml`). A `depends_on` cannot cross a
+fragment boundary — compose refuses to render a dependency on a service outside the merged set,
+and `--with poster` without `--with solver` is supported, as is `--with issuer` on its own — so
+`solver-provision`, `maker-offer`, `poster-provision` and `issuer-deploy` each take a `flock` on
+`/srv/genesis-lock/lock`, on a named volume all three fragments declare identically. The helper is
+`take_genesis_lock()` in `images/offerfiles-kernel/entrypoint-common.sh` (and its twin in
+`images/issuer/entrypoint-common.sh`, because that image has no kernel tree to source it from); it
+logs when it waits and when it acquires, so a slow bring-up says which one-shot is holding the
+wallet.
+
+`issuer-deploy` is the one that RELEASES the lock early, and it has to: it touches genesis for the
+~1 minute of a four-UTXO transfer and then spends many minutes proving six deployments on its OWN
+wallet. Holding the mutex through that would serialise the whole `--all` bring-up behind it for no
+reason.
 
 ## The browser hand test (Lace)
 

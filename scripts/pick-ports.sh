@@ -82,11 +82,15 @@ INTENTS_UI_IMAGE=midnight-1-offers/intents-ui:${IMAGE_TAG_SUFFIX}
 # reuse the first one's binaries.
 SHIELDED_NIGHT_IMAGE=midnight-1-offers/shielded-night:${IMAGE_TAG_SUFFIX}
 SHIELDED_NIGHT_DEPLOY_IMAGE=midnight-1-offers/shielded-night-deploy:${IMAGE_TAG_SUFFIX}
+# The token issuer: one build context, TWO runtime targets again (the node runtime that runs
+# the deploy/registrar/fund roles, and the nginx faucet site), so two image names.
+ISSUER_IMAGE=midnight-1-offers/issuer:${IMAGE_TAG_SUFFIX}
+ISSUER_FAUCET_IMAGE=midnight-1-offers/issuer-faucet:${IMAGE_TAG_SUFFIX}
 
 # External runtime images: repository + IMMUTABLE DIGEST, never a tag. All three are good
 # official multiarch indexes (linux/amd64 + linux/arm64). Readable versions: midnight-node
-# 1.0.0, indexer-standalone 4.3.3, proof-server 8.1.0.
-NODE_IMAGE=${NODE_IMAGE:-docker.io/midnightntwrk/midnight-node@sha256:ede01da35e982b6a4b85461ad8492ae2753ef14246fba33c8039b782aa8e39fb}
+# 1.0.1, indexer-standalone 4.3.3, proof-server 8.1.0.
+NODE_IMAGE=${NODE_IMAGE:-docker.io/midnightntwrk/midnight-node@sha256:a340cdea456d58d79c0d0e6c8891a3988b472febc228496d33c8448cc1b5b632}
 INDEXER_IMAGE=${INDEXER_IMAGE:-docker.io/midnightntwrk/indexer-standalone@sha256:03afd079b00bcd229df29a24771439c5e7695c339cd89216d0763ce40731cc4b}
 PROOF_IMAGE=${PROOF_IMAGE:-docker.io/midnightntwrk/proof-server@sha256:801bbc0340e9e96f16735f77b523f23c7459e3359842f7c79c2c53f4e994d531}
 
@@ -125,6 +129,12 @@ SOLVER_FRONTEND_HOST_PORT=$(( BASE + 11 ))
 # container). Nothing else in the poster profile publishes a port.
 POSTER_HEALTH_HOST_PORT=$(( BASE + 12 ))
 
+# The issuer's FAUCET SITE (:10500 in the container) — the one port the issuer profile
+# publishes. Open it at http://127.0.0.1:$(( BASE + 13 ))/?network=undeployed
+# (NO BACKTICKS ANYWHERE BELOW: this whole block is an unquoted heredoc, so a backtick would
+# be command substitution and the generated .env would carry its output — or its error.)
+FAUCET_HOST_PORT=$(( BASE + 13 ))
+
 # The status listener's bearer, random per generated stack. Both sides read this ONE value
 # (the solver enforces it; solver-frontend sends it), and the solver REFUSES TO START with
 # fewer than 32 characters whenever its status port is set.
@@ -144,6 +154,20 @@ FRONTEND_INDEXER_URI=http://127.0.0.1:$(( BASE + 1 ))${INDEXER_API_PATH:-/api/v3
 FRONTEND_INDEXER_WS_URI=ws://127.0.0.1:$(( BASE + 1 ))${INDEXER_API_PATH:-/api/v3/graphql}/ws
 FRONTEND_PROOF_SERVER_URI=http://127.0.0.1:$(( BASE + 2 ))
 
+# AND ONE THAT IS NOT RUNTIME (00020 PR D, Q4). effectstream #920 added VITE_FAUCET_URL, which
+# the template reads from import.meta.env at BUILD time and exposes through no window.*
+# override at all — so unlike the six above it cannot go into /config.js and is BAKED INTO THE
+# IMAGE. That is affordable because the image is built per stack anyway (FRONTEND_IMAGE above
+# carries this run's tag), and it is CHECKED: scripts/verify-frontend.sh asserts the served
+# bundle carries exactly this string, so a frontend image built for a different port block
+# fails the gate instead of sending a person to a dead port. Change the block, rebuild:
+# ./up.sh --build ...
+#
+# It must be the FAUCET_HOST_PORT above (this stack's own issuer faucet site), not the public
+# mint-test-tokens site the template defaults to. The ?network=undeployed matches what up.sh
+# prints; the template overwrites that parameter from the network id the image was built with.
+FRONTEND_FAUCET_URL=http://127.0.0.1:$(( BASE + 13 ))/?network=undeployed
+
 INDEXER_SECRET=303132333435363738393031323334353637383930313233343536373839303132
 
 NODE_WAIT_TIMEOUT=${NODE_WAIT_TIMEOUT:-180}
@@ -157,4 +181,8 @@ SOLVER_WAIT_TIMEOUT=${SOLVER_WAIT_TIMEOUT:-300}
 # The shielded-night deploy one-shot proves and submits a real contract deploy on a cold
 # chain before the web container may start; this bounds the web entrypoint's wait for it.
 SHIELDED_NIGHT_WAIT_TIMEOUT=${SHIELDED_NIGHT_WAIT_TIMEOUT:-600}
+# The issuer bring-up: compose will not start the faucet until issuer-deploy has exited 0, and
+# that one-shot funds a wallet, waits for DUST and then proves SIX contract deployments. This
+# is the longest wait in the stack; it bounds up.sh's wait for the faucet container.
+ISSUER_WAIT_TIMEOUT=${ISSUER_WAIT_TIMEOUT:-2700}
 EOF

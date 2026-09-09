@@ -4,14 +4,15 @@
 
 The image fetches `templates/zswap-da` directly from
 [`effectstream/effectstream`](https://github.com/effectstream/effectstream) at the immutable
-commit `58ab921be5513b77937a37be86bf724a41888302` — the head of the
+commit `400880ceb6814738d1ae193dae18ad5128922edc` — the head of the
 [`midnight-1`](https://github.com/effectstream/effectstream/tree/midnight-1) branch, the line
 maintained for midnight-node 1.x / ledger-v8 / `@effectstream` 0.1xx — whose template subtree
-is `3ca1d56ffc29f03c73cf43432bdfeeaf3ab43c6b`. BOTH identities are verified before checkout —
+is `a750cccd653f33306d3ff7249fe8d5853fbfafa6`. BOTH identities are verified before checkout —
 the commit alone does not prove which bytes of it were extracted — and the resolved commit is
 recorded as `/.zswap-da-commit` inside the runtime image, so "what is in here?" never depends
 on remembering which tag it was built as. No third-party SPA source is stored in this
-repository, and no generated `managed/` contract output is committed.
+repository. There is no generated contract output to commit either: since 00020 PR D this image
+compiles nothing at all — see "The contract, and the compiler that used to compile it".
 
 Upstream `templates/**` on `main` is FROZEN by effectstream 00016 FR-10, and `midnight-1` is
 the 1.x line's own branch. Nothing here pushes to either; the pin is read-only.
@@ -33,14 +34,21 @@ patch (2026-09-01).
 The 2.x sibling repository (`midnight-2-offers`) carries a 55 KB `ledger-v9.patch` that
 migrates this same template from ledger-v8 to ledger-v9. **This repository ships no such
 patch and no such stage**, and since Q14 no dependency patch either: at this ref the template
-is v8-native in both lanes — `@midnight-ntwrk/ledger-v8` 8.1.0, midnight-js 4.1.1, compact-js
-2.5.1, compact-runtime 0.16.0 for the contract lane; `@effectstream/{midnight-contracts,`
-`wallets}` 0.104.0 (ledger-v8, wallet-sdk-facade 4.1.0) for the wallet lane — which is exactly
-the line the 1.x kernel runs. That is asserted in the build rather than assumed: the source
-stage requires `"@midnight-ntwrk/ledger-v8": "8.1.0"` and the 0.104.0 pair in `package.json`,
-refuses any `0.200.x` entry, and requires that no `ledger-v9` appears anywhere in the resolved
-`bun.lock`. If the pinned ref ever drifts, the build fails there instead of producing a
-silently mismatched bundle.
+is v8-native — `@midnight-ntwrk/ledger-v8` 8.1.0 and midnight-js 4.1.1;
+`@effectstream/{midnight-contracts,wallets}` 0.104.0 (ledger-v8, wallet-sdk-facade 4.1.0) for
+the wallet lane — which is exactly the line the 1.x kernel runs. That is asserted in the build
+rather than assumed: the source stage requires `"@midnight-ntwrk/ledger-v8": "8.1.0"` and the
+0.104.0 pair in `package.json`, refuses any `0.200.x` entry, and requires that no `ledger-v9`
+appears anywhere in the resolved `bun.lock`. If the pinned ref ever drifts, the build fails
+there instead of producing a silently mismatched bundle.
+
+**One assertion of this set was RETIRED at `400880ce`, and it matters that it was retired rather
+than relaxed.** The list used to include `"@midnight-ntwrk/compact-runtime": "0.16.0"` (and the
+prose above used to name compact-js 2.5.1 beside it). effectstream #922 removed both packages
+along with the contract lane they served, so keeping that grep would have failed a CORRECT tree.
+It is replaced by the opposite assertion — `compact-runtime`/`compact-js` must NOT appear in
+`package.json` — which is the same guard pointed the other way and catches the case that now
+matters: a `FRONTEND_REF` moved backwards onto the contract line.
 
 ## What used to be applied, and is now upstream: the browser-network URIs
 
@@ -50,6 +58,55 @@ One function, `api.getMidnightConfig` in `src/services/api.ts`, was carried here
 **This image now applies no patch of any kind.** It asserts the pinned tree carries the fix
 (one marker per half, in the source and again in the emitted bundle) so a re-pin to a tree
 without it fails the build. The description below is of that upstream change.
+
+### Re-pin (00020 PR D) to the branch head after #920 and #922 — the contract lane goes
+
+`FRONTEND_REF` moved to `400880ce` (from `58ab921`), subtree `a750cccd` (from `3ca1d56f`), two
+first-parent merges on. **This is the FRONTEND HALF of kernel
+[#69](https://github.com/effectstream/zswap-offerfiles-kernel/pull/69) and it moves together
+with `KERNEL_REF`**, for the same reason #918 did: it is one change split across two
+repositories.
+
+[effectstream#922](https://github.com/effectstream/effectstream/pull/922) deletes the
+template's whole contract lane. Verified against the tree rather than inferred from the PR
+title: `git ls-tree -r 400880ce -- templates/zswap-da/src/contract` and
+`… -- templates/zswap-da/scripts` are **both empty**. Gone with them: the
+`build:contract` / `verify:contract` / `predev` / `prebuild` npm scripts,
+`src/screens/Faucet.tsx`, `hooks/useContract.ts`, `hooks/useMintReconciler.ts`,
+`services/contractWallet.ts`, `services/mintQueue.ts`, `api.registerKnownToken`, vite's
+`zk-artifact-404` plugin, and the `@midnight-ntwrk/{compact-js,compact-runtime}` plus five
+`midnight-js` contract-lane dependencies. `services/browserContract.ts` became
+`services/browserOffers.ts`. `public/` now holds one file, `favicon.svg`.
+
+[effectstream#920](https://github.com/effectstream/effectstream/pull/920) replaces the Faucet
+TAB with a Faucet **LINK** (`src/ui/FaucetLink.tsx` + `src/faucetUrl.ts`) — a plain `<a>` that
+needs no wallet and never probes the service — and adds two build-time knobs to
+`src/config.ts`, `VITE_MIDNIGHT_NETWORK_ID` and `VITE_FAUCET_URL`. **Neither has a `window.*`
+runtime override**, unlike `window.API_BASE` / `window.BATCHER_URL`, so both are build inputs of
+this image (`FRONTEND_NETWORK_ID`, `FRONTEND_FAUCET_URL`; see 00020 Q4). #920 also **flipped
+`VITE_MIDNIGHT_NETWORK_ID`'s default from `undeployed` to `preprod`**, and `useWallet.ts` and
+`state/wallet.ts` now take the wallet-handshake network from that same constant — so an image
+that sets none would format addresses, parse offers, call `initialApi.connect()` and build the
+in-page JS wallet on the wrong network while looking entirely healthy.
+
+Every other assertion in this file was re-measured against the new subtree BEFORE anything was
+built, and all hold: `ledger-v8 8.1.0` present, `ledger-v9` absent from both `package.json` and
+the resolved `bun.lock`, `@effectstream/{midnight-contracts,wallets} 0.104.0` with no `0.200.x`,
+the #912 `pageHost` / `'proofServerUri'` markers still in `src/services/api.ts`, and both
+LICENSE files. The one that did NOT hold, `compact-runtime 0.16.0`, is described above.
+
+**The lockfile at this ref is one entry stale, and the guard was made exact rather than
+dropped.** #922 removed seven dependencies from `package.json` and from `bun.lock`'s
+`workspaces` block but left one resolved entry in the `packages` map —
+`@midnight-ntwrk/midnight-js-fetch-zk-config-provider@4.1.1`, which nothing depends on any more
+— so `bun install --frozen-lockfile` refuses a correct tree with *"lockfile had changes, but
+lockfile is frozen"*. (The other six are still reachable transitively through
+`@effectstream/midnight-contracts` and `midnight-js-protocol`.) Measured with
+`bun install --lockfile-only` on the extracted tree: the ENTIRE drift is the removal of that one
+entry — 683 packages, no addition, no version change. The image therefore installs unfrozen and
+then requires that the resolution added nothing, changed nothing and removed only that orphan.
+That is strictly stronger than the frozen flag, and an empty diff satisfies it too, so it keeps
+working the day upstream regenerates the lockfile.
 
 ### Re-pin (00011 PR A) to the branch head after #918 — the whole-coin line
 
@@ -114,7 +171,14 @@ nothing is listening on, and the failure looks like a dead indexer rather than a
 misconfiguration. `pick-ports.sh` therefore emits all four `FRONTEND_*_URI` overrides
 alongside `FRONTEND_API_BASE`/`FRONTEND_BATCHER_URL`.
 
-## The contract, and which compiler compiles it
+## The contract, and the compiler that used to compile it — BOTH GONE at `400880ce`
+
+> **History.** Everything in this section describes the image up to `FRONTEND_REF=58ab921…`.
+> effectstream #922 deleted the template's Compact source, its build script and its committed
+> manifest, so this image has no `compact` stage, no `COMPACT_VERSION` build arg and no entry in
+> `config/artifact-decisions.json` → `toolchains` any more. It is kept because it explains what
+> the image used to prove, and because the byte-identity it records is why the two sides could be
+> compiled by different compilers at all.
 
 `src/contract/offer-files.compact` is byte-identical to the kernel's own
 `packages/contracts-midnight/contract-offer-files/src/offer-files.compact`
@@ -128,10 +192,13 @@ any mismatch. `compact compile` is deterministic, so that manifest is an exact c
 image runs it (`--verify-only`) as its fail-closed gate; routine builds must never
 self-bless compiler output with `--update-manifest`.
 
-**There are two Compact toolchains in this stack, on purpose.** The kernel image compiles the
-same source with 0.30.0 (its package pragma, paired with compact-runtime 0.15.0); this image
-compiles with 0.31.0 (paired with compact-runtime 0.16.0, which the generated module
-version-checks at import time). See `config/artifact-decisions.json` → `toolchains` and Q9.
+**There were two Compact toolchains for this one contract, on purpose.** The kernel image
+compiled the source with 0.30.0 (its package pragma, paired with compact-runtime 0.15.0); this
+image compiled with 0.31.0 (paired with compact-runtime 0.16.0, which the generated module
+version-checked at import time). **Both ends are now gone** — the kernel's with kernel #69
+(00020 PR C), the template's with effectstream #922 (00020 PR D) — and the `compact` entry was
+removed from `config/artifact-decisions.json`, leaving two Compact toolchains in the repository
+that compile contracts which still exist (shielded-night 0.31.1, issuer 0.31.1).
 
 Both are fetched from `midnightntwrk/compact` (repository id 967499978) — NOT
 `LFDT-Minokawa/compact` (id 1115336329), which is a different repository. For

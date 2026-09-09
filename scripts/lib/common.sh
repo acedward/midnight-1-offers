@@ -215,20 +215,30 @@ load_env() {
       warn "${retired} is RETIRED and IGNORED — the solver IS the kernel commit; set KERNEL_REF instead"
     fi
   done
-  # There are THREE Compact toolchains here (kernel 0.30.0, zswap-da 0.31.0, shielded-night
-  # 0.31.1), so one variable could never have configured them. Each is pinned where it is
-  # enforced — a Dockerfile ARG in images/offerfiles-kernel, a literal in compose/frontend.yml
-  # and one in compose/shielded-night.yml, both of which scripts/verify-compose-pins.sh binds
-  # to their OWN matrix entry — and none of them reads the environment.
+  # There are TWO Compact toolchains left (shielded-night 0.31.1, issuer 0.31.1), so one
+  # variable could never have configured them. There were FOUR a project ago, and both of the
+  # departed ones compiled the SAME offer-files contract from opposite ends: the KERNEL's
+  # 0.30.0 went with kernel #69, which deleted the contract package (00020 PR C), and the
+  # ZSWAP-DA TEMPLATE's 0.31.0 went with effectstream #922, which deleted the template's copy
+  # of the source, its build script and its committed manifest (00020 PR D). Neither image has
+  # a Compact stage, a `COMPACT_VERSION` ARG or a compiler of any version now.
+  #
+  # Each of the two left is pinned where it is enforced — a literal in
+  # compose/shielded-night.yml and one in compose/issuer.yml, each of which
+  # scripts/verify-compose-pins.sh binds to its OWN matrix entry — and neither reads the
+  # environment. They are the same compiler VERSION and therefore the same release asset and
+  # the same two SHA-256s, but they are separate matrix entries because they are separate
+  # build inputs that can be re-pinned independently.
   if [[ -n "${COMPACT_VERSION-}" ]]; then
-    warn "COMPACT_VERSION is IGNORED — kernel 0.30.0, zswap-da 0.31.0, shielded-night 0.31.1, all pinned in-build"
+    warn "COMPACT_VERSION is IGNORED — shielded-night 0.31.1 and issuer 0.31.1 are pinned in-build; neither the kernel image (kernel #69) nor zswap-da (effectstream #922) compiles anything"
   fi
 
   # ── external runtime images: repository + IMMUTABLE DIGEST, never a tag ─────
   # All three are good official multiarch (linux/amd64 + linux/arm64) indexes, so the same
   # reference resolves natively on Intel and on Apple Silicon. Digests resolved 2026-09-01
-  # and frozen in config/artifact-decisions.json; nothing here may drift from that file.
-  : "${NODE_IMAGE:=docker.io/midnightntwrk/midnight-node@sha256:ede01da35e982b6a4b85461ad8492ae2753ef14246fba33c8039b782aa8e39fb}"
+  # (the node's re-resolved 2026-09-08 when it moved to 1.0.1) and frozen in
+  # config/artifact-decisions.json; nothing here may drift from that file.
+  : "${NODE_IMAGE:=docker.io/midnightntwrk/midnight-node@sha256:a340cdea456d58d79c0d0e6c8891a3988b472febc228496d33c8448cc1b5b632}"
   : "${INDEXER_IMAGE:=docker.io/midnightntwrk/indexer-standalone@sha256:03afd079b00bcd229df29a24771439c5e7695c339cd89216d0763ce40731cc4b}"
   : "${PROOF_IMAGE:=docker.io/midnightntwrk/proof-server@sha256:801bbc0340e9e96f16735f77b523f23c7459e3359842f7c79c2c53f4e994d531}"
   # Reported here, made fatal by assert_image_pins() in whatever is about to start
@@ -238,7 +248,7 @@ load_env() {
 
   # READABLE VERSION LABELS, display only. Nothing resolves an image from these; they exist
   # so logs can say "1.0.0" instead of a 64-character hash. Identity is the digest, only.
-  : "${NODE_VERSION:=1.0.0}"
+  : "${NODE_VERSION:=1.0.1}"
   : "${INDEXER_VERSION:=4.3.3}"
   : "${PROOF_VERSION:=8.1.0}"
 
@@ -262,18 +272,30 @@ load_env() {
   # is its UI half. BREAKING for an existing `postgres` volume — `./down.sh -v`. See
   # .env.example and docs/OPERATIONS.md.
   : "${KERNEL_REPO:=https://github.com/effectstream/zswap-offerfiles-kernel.git}"
-  : "${KERNEL_REF:=a608fa67419c16188e9405417ecdf34f3f7c47a1}"
+  : "${KERNEL_REF:=e3b9388d11dfe1a6c5554a4c8699250fe595e4ce}"
   : "${FRONTEND_REPO:=https://github.com/effectstream/effectstream.git}"
-  : "${FRONTEND_REF:=58ab921be5513b77937a37be86bf724a41888302}"
+  : "${FRONTEND_REF:=400880ceb6814738d1ae193dae18ad5128922edc}"
   # The Shielded NIGHT dApp. A first-party public repository already on this stack's 1.x line
   # (ledger-v8 8.1.0 / midnight-js 4.1.1 / compact-runtime 0.16.0), so nothing here is
   # patched — see config/artifact-decisions.json -> sources[shielded-night].
+  # RE-PINNED in 00020 PR E to main @ 2bb32838a (upstream #13 multinetwork + the isolated
+  # frontend/protocols/{shared,v1,v2} trees, #14 proving-asset URLs resolved against the page
+  # origin, #15 reverse any sNight amount). `undeployed` is `midnight-1.x` in upstream's own
+  # network table, so this stack still runs the v1/ledger-v8 adapter. Not breaking; `--build`.
   : "${SHIELDED_NIGHT_REPO:=https://github.com/effectstream/shielded-night.git}"
-  : "${SHIELDED_NIGHT_REF:=f7fcefa7921bf2c3f634871f9ad3aa3a32251af0}"
+  : "${SHIELDED_NIGHT_REF:=2bb32838a0572019a49436c3743bae7d0299817a}"
+  # THE TOKEN ISSUER (00020 PR B). `effectstream/mint-test-tokens` is public and already on
+  # this stack's exact 1.x line (ledger-v8 8.1.0 / compact-runtime 0.16.0 / compactc 0.31.1 /
+  # midnight-js 4.1.1), and it supports `MN_NETWORK=undeployed` explicitly — which is the only
+  # reason this stack can still have tokens at all now that kernel #69 has removed the local
+  # faucet contract. See images/issuer/PROVENANCE.md and config/artifact-decisions.json ->
+  # sources[issuer].
+  : "${ISSUER_REPO:=https://github.com/effectstream/mint-test-tokens.git}"
+  : "${ISSUER_REF:=7ecad008b07acb2a491d8291e05455cbd638910f}"
   # The relay/intents-UI pin. There is deliberately no *_REPO for it: the source is private
   # and is never fetched by this repository. RELAY_SOURCE_DIR names the operator's own
   # clone, and assert_relay_source() below verifies that clone is at exactly this commit.
-  : "${RELAY_REF:=061f4d3258e25b9f3a451b4b4358ed232349d96b}"
+  : "${RELAY_REF:=b32e0b100a5715d1fbf89c155afe6c2236d3b013}"
   : "${RELAY_SOURCE_DIR:=}"
 
   # ── warehouse-backed binaries (Celestia) ───────────────────────────────────
@@ -302,6 +324,9 @@ load_env() {
   # calls the host side HOST_OFFER_POSTER_HEALTH_PORT and publishes 19977; this repository's
   # port block keeps the *_HOST_PORT spelling every other service here uses.
   : "${POSTER_HEALTH_HOST_PORT:=19977}"
+  # The issuer's faucet SITE (:10500 in the container). This is the one port the `issuer`
+  # profile publishes: the deploy one-shot, the registrar and the funding CLI publish nothing.
+  : "${FAUCET_HOST_PORT:=10500}"
 
   # ── the shared PostgreSQL (Q7) ─────────────────────────────────────────────
   # The role/database the offer-files kernel authenticates as. Defaulted here as well as in
@@ -344,12 +369,37 @@ load_env() {
   # unwrap step burn it whole (convertToUnshielded consumes one coin, never part of one).
   : "${SNIGHT_BOOK_AMOUNT:=1000000}"
   : "${SNIGHT_BOOK_WANT_AMOUNT:=750000}"
-  # Which minted demo colour the sNight offer asks for. `shieldedA` is DEVA, `shieldedB` DEVB;
-  # both are minted by the offerfiles deploy one-shot and named by its token-names one-shot.
-  : "${SNIGHT_BOOK_WANT_KEY:=shieldedA}"
+  # WHICH TOKEN THE sNIGHT OFFER ASKS FOR, as an ISSUER TOKEN NAME (00020 PR C). It was
+  # `SNIGHT_BOOK_WANT_KEY=shieldedA`, a key into the deploy one-shot's `minted-tokens.json`;
+  # kernel #69 deleted the mint, the file and the volume it lived on. It must be SHIELDED — the
+  # offer is a shielded-to-shielded swap — which rules out UTWUSDC and UTWBTC.
+  : "${SNIGHT_BOOK_WANT_TOKEN:=TWUSDC}"
+
+  # ── THE TWO TRADED PAIRS, IN ONE PLACE (00020 PR C) ────────────────────────
+  # Since kernel #69 every token comes from the `issuer` profile, so which NAMES the maker and
+  # the poster trade is configuration rather than construction — and FOUR readers have to agree
+  # on it: compose/solver.yml's anchors, compose/poster.yml, scripts/verify-solver.sh and
+  # scripts/verify-poster.sh. The verify scripts read them from HERE and carry no fallback of
+  # their own; the compose fragments carry the twin literal because a compose file cannot source
+  # a shell library, exactly as they do for KERNEL_REF.
+  #
+  # THIS EXISTS BECAUSE THE DRIFT ALREADY HAPPENED. Run 2 of the 00020 PR C gate failed five
+  # solver assertions with `the seeded offer gives 3e901d34…, but this stack's TWBTC is
+  # 65d405e9…`: compose had been moved to TWUSDC -> TWUSDM and verify-solver.sh still defaulted
+  # to TWBTC -> TWETH inline. The receipt and the ladder were correct; the script was looking up
+  # the wrong two names.
+  #
+  # THE TWO PAIRS MUST STAY DISJOINT. The solver's published ladder is derived from the whole
+  # book for a directed pair, and verify-solver.sh asserts `quote(WANT_AMOUNT) == GIVE_AMOUNT`
+  # exactly — which holds only while the maker's offer is alone on its pair. See
+  # docs/OPERATIONS.md, "The maker and the poster trade DIFFERENT pairs, on purpose".
+  : "${MAKER_OFFER_GIVE_TOKEN:=TWUSDC}"   # 6 decimals, shielded, priced as usd-coin
+  : "${MAKER_OFFER_WANT_TOKEN:=TWUSDM}"   # 6 decimals, shielded, priced as usdm-2
+  : "${OFFER_POSTER_GIVE_TOKEN:=TWBTC}"   # 8 decimals, shielded, priced as bitcoin
+  : "${OFFER_POSTER_WANT_TOKEN:=TWETH}"   # 18 decimals, shielded, priced as ethereum
   # The taker, and the wallet that funds it. e2e-taker starts empty at genesis (measured), so
-  # the chain provisions it from the faucet wallet — which is also the wallet the demo colours
-  # were minted to, and therefore the only one that can hand it the token the offer demands.
+  # the chain provisions it: NIGHT from the funder below, and the token the offer demands from
+  # `issuer-fund` — since 00020 PR C nothing else on the stack can produce one.
   : "${SNIGHT_BOOK_TAKER_SEED:=${TAKER_SEED:-0000000000000000000000000000000000000000000000000000000000000032}}"
   : "${SNIGHT_BOOK_FUNDER_SEED:=${MIDNIGHT_GENESIS_SEED:-0000000000000000000000000000000000000000000000000000000000000001}}"
   : "${SHIELDED_NIGHT_NAME:=Shielded Night}"
@@ -375,6 +425,46 @@ load_env() {
   # contract join + ~30 s of proving, so the budget is minutes rather than seconds; see
   # docs/KNOWN-LIMITATIONS.md.
   : "${POSTER_VERIFY_BUDGET_S:=420}"
+  # ── the poster starts LAST, and this is how long it waits for its colours ──
+  # `up.sh` holds `offer-poster` out of the initial `docker compose up` and starts it only
+  # after `issuer-registrar` has bound this stack's colours in the kernel's token registry —
+  # i.e. after `GET /v1/known-tokens` carries a NON-NULL `asset_id` for the poster's give and
+  # want colours. Until it does, `GET /v1/quote` prices an unknown colour at $1 per BASE UNIT
+  # and still answers `sponsored: true`, so the poster posts real, settleable offers mispriced
+  # by ~11 orders of magnitude (organizer issues/00023, root cause issues/00024).
+  #
+  # The registrar has just exited 0 when this wait starts, so on a healthy stack it costs ONE
+  # poll. The budget exists for the case where the registrar reported success and the kernel's
+  # projection has not caught up: that is a NAMED failure with the poster left unstarted, never
+  # a silent start.
+  : "${POSTER_COLOURS_WAIT_S:=180}"
+  : "${POSTER_COLOURS_POLL_S:=5}"
+
+  # ── the issuer profile (00020 PR B) ────────────────────────────────────────
+  # A DEDICATED, non-genesis seed — `…0051` in wallets/wallets.json, assigned to nothing else.
+  # The deploy runner holds a wallet facade open through six proving deployments, and genesis-1
+  # is already the faucet, the kernel's MIDNIGHT_WALLET_SEED and the source every other
+  # provisioning one-shot draws from; two facades on one seed silently force each other's
+  # connection down. images/issuer/m1/provision.ts exits 78 if it is handed the genesis seed
+  # rather than trusting this default (project 00020 question Q5).
+  #
+  # As with the poster's, this repository COMMITS a default where upstream ships none: `./up.sh`
+  # on a clean host with no .env must reach a working stack, and the roster is public and
+  # devnet-only.
+  : "${ISSUER_SEED:=0000000000000000000000000000000000000000000000000000000000000051}"
+  # How long ./verify.sh's issuer section waits for the six contracts to be deployed and the
+  # registry published. Six deployments with proving, after a wallet sync, a NIGHT transfer, a
+  # DUST registration and the dust wait — minutes, not seconds. Measured on this host: see
+  # docs/KNOWN-LIMITATIONS.md.
+  : "${ISSUER_VERIFY_BUDGET_S:=2400}"
+  # How much of ONE token ./verify.sh mints to prove the funding lane end to end. 10^8 base
+  # units of TWBTC is exactly one whole coin at its 8 decimals, and it is the amount spec
+  # SC-002 names.
+  : "${ISSUER_VERIFY_FUND_TOKEN:=TWBTC}"
+  : "${ISSUER_VERIFY_FUND_AMOUNT:=100000000}"
+  # e2e-taker, which starts empty at genesis (measured, wallets/wallets.json) — so a balance
+  # read-back on it is unambiguous.
+  : "${ISSUER_VERIFY_FUND_SEED:=${TAKER_SEED:-0000000000000000000000000000000000000000000000000000000000000032}}"
 
   # ── wait timeouts (seconds) ────────────────────────────────────────────────
   : "${NODE_WAIT_TIMEOUT:=180}"
@@ -393,14 +483,20 @@ load_env() {
   # dust wait and the contract join — the same reason its compose healthcheck has a 15-minute
   # start_period. up.sh's wait has to be of that order or it gives up on a healthy bring-up.
   : "${POSTER_WAIT_TIMEOUT:=900}"
+  # The faucet container itself binds in seconds — but compose will not START it until
+  # `issuer-deploy` has exited 0, and that one-shot funds a wallet, waits for DUST and then
+  # proves six contract deployments. So this budget is the WHOLE issuer bring-up, not nginx's
+  # startup, and it is the longest wait in the stack by a wide margin.
+  : "${ISSUER_WAIT_TIMEOUT:=2700}"
 
   export COMPOSE_PROJECT_NAME \
          NODE_IMAGE INDEXER_IMAGE PROOF_IMAGE \
          NODE_VERSION INDEXER_VERSION PROOF_VERSION \
          KERNEL_REPO KERNEL_REF FRONTEND_REPO FRONTEND_REF \
          SHIELDED_NIGHT_REPO SHIELDED_NIGHT_REF \
+         ISSUER_REPO ISSUER_REF \
          SHIELDED_NIGHT_WALLET_SEED SHIELDED_NIGHT_DRIVER_SEED \
-         SNIGHT_BOOK_AMOUNT SNIGHT_BOOK_WANT_AMOUNT SNIGHT_BOOK_WANT_KEY \
+         SNIGHT_BOOK_AMOUNT SNIGHT_BOOK_WANT_AMOUNT SNIGHT_BOOK_WANT_TOKEN \
          SNIGHT_BOOK_TAKER_SEED SNIGHT_BOOK_FUNDER_SEED \
          SHIELDED_NIGHT_NAME SHIELDED_NIGHT_SYMBOL SHIELDED_NIGHT_DECIMALS \
          SHIELDED_NIGHT_LOCK SHIELDED_NIGHT_WAIT_TIMEOUT \
@@ -410,11 +506,16 @@ load_env() {
          KERNEL_HOST_PORT BATCHER_HOST_PORT CELESTIA_HOST_PORT FRONTEND_HOST_PORT \
          RELAY_HTTP_HOST_PORT RELAY_WS_HOST_PORT INTENTS_UI_HOST_PORT \
          SOLVER_FRONTEND_HOST_PORT SHIELDED_NIGHT_HOST_PORT POSTER_HEALTH_HOST_PORT \
+         FAUCET_HOST_PORT \
          INDEXER_API_PATH OFFERFILES_PG_USER OFFERFILES_PG_DB PROOF_WARM_TIMEOUT \
          NODE_WAIT_TIMEOUT INDEXER_WAIT_TIMEOUT PROOF_WAIT_TIMEOUT POSTGRES_WAIT_TIMEOUT \
          CELESTIA_WAIT_TIMEOUT KERNEL_WAIT_TIMEOUT FRONTEND_WAIT_TIMEOUT \
-         SOLVER_WAIT_TIMEOUT RELAY_WAIT_TIMEOUT POSTER_WAIT_TIMEOUT \
-         OFFER_POSTER_SEED POSTER_VERIFY_BUDGET_S
+         SOLVER_WAIT_TIMEOUT RELAY_WAIT_TIMEOUT POSTER_WAIT_TIMEOUT ISSUER_WAIT_TIMEOUT \
+         OFFER_POSTER_SEED POSTER_VERIFY_BUDGET_S \
+         OFFER_POSTER_GIVE_TOKEN OFFER_POSTER_WANT_TOKEN \
+         POSTER_COLOURS_WAIT_S POSTER_COLOURS_POLL_S \
+         ISSUER_SEED ISSUER_VERIFY_BUDGET_S \
+         ISSUER_VERIFY_FUND_TOKEN ISSUER_VERIFY_FUND_AMOUNT ISSUER_VERIFY_FUND_SEED
 
   # A host address the scripts can actually connect to. BIND_ADDR may be 0.0.0.0, which
   # is a valid bind target but not a valid connect target.
@@ -430,8 +531,26 @@ load_env() {
   SOLVER_FRONTEND_URL="http://${HOST_ADDR}:${SOLVER_FRONTEND_HOST_PORT}"
   SHIELDED_NIGHT_URL="http://${HOST_ADDR}:${SHIELDED_NIGHT_HOST_PORT}"
   POSTER_URL="http://${HOST_ADDR}:${POSTER_HEALTH_HOST_PORT}"
+  # The faucet SITE. `?network=undeployed` is not decoration: the SPA reads the network out of
+  # the query string, and without it the page defaults to Preprod and shows the public tokens.
+  FAUCET_URL="http://${HOST_ADDR}:${FAUCET_HOST_PORT}"
   export NODE_RPC_URL INDEXER_GQL_URL KERNEL_URL BATCHER_URL RELAY_URL \
-         SOLVER_FRONTEND_URL SHIELDED_NIGHT_URL POSTER_URL
+         SOLVER_FRONTEND_URL SHIELDED_NIGHT_URL POSTER_URL FAUCET_URL
+
+  # WHAT THE zswap-da SPA'S FAUCET LINK IS BUILT WITH (00020 PR D, Q4).
+  #
+  # Defaulted HERE rather than beside the other host ports because it is derived from
+  # FAUCET_URL, which is only computed once HOST_ADDR is known. It is a BUILD arg for
+  # compose/frontend.yml — effectstream #920's VITE_FAUCET_URL has no `window.*` runtime
+  # override, unlike the six endpoint URLs images/zswap-da/entrypoint.sh writes into
+  # /config.js — so exporting it is what makes `./up.sh --build` bake the right one when no
+  # generated .env is present. scripts/pick-ports.sh emits it explicitly for every generated
+  # stack, and that value wins because load_env keeps the FIRST setting of a variable.
+  #
+  # `?network=undeployed` matches what up.sh prints and what src/faucetUrl.ts would write
+  # anyway; see .env.example.
+  : "${FRONTEND_FAUCET_URL:=${FAUCET_URL}/?network=undeployed}"
+  export FRONTEND_FAUCET_URL
 }
 
 # ── the PRIVATE relay source (spec FR-11, plan Q4) ───────────────────────────
@@ -524,7 +643,8 @@ assert_relay_source() {
 # `--profile`, so a service carrying one would be declared and then never start, which is a
 # uniquely quiet way to break a stack.
 #
-# There are exactly seven: core, offerfiles, frontend, shielded-night, solver, poster, prices.
+# There are exactly EIGHT: core, offerfiles, frontend, shielded-night, solver, poster, prices,
+# issuer.
 
 # KNOWN_FUTURE_PROFILES are profiles this stack reserves ports and documentation for but has
 # not built yet. Empty: every fragment exists. Keep the machinery for the next one.
@@ -613,7 +733,22 @@ pending_profiles() {
 # `offer-poster poster-provision`, measured, and only the new profile gets a new answer
 # (`price-feed`). Above `frontend`/`solver` it would pull the private relay build context in
 # for a profile that has no relay in it.
-PROFILE_LAYER_ORDER="core shielded-night offerfiles poster prices frontend solver"
+#
+# `issuer` sits directly above `offerfiles` AND BELOW `poster` — it was above `prices` when the
+# profile was added in 00020 PR B, and 00020 PR C had to move it. Its own dependency is still
+# `core` ALONE (node, indexer, proof server — spec FR-002's requirement, the same one
+# shielded-night carries), so the position is free from its own side; what forces it is that
+# `poster` and `solver` now DEPEND on it. `_render_services poster` renders every layer up to
+# and including `poster`, and with `issuer` above that point the render would fail
+# ("depends on undefined service issuer-deploy") — which `_render_services` cannot distinguish
+# from "this fragment declares no services", so `profile_services poster` would quietly answer
+# nothing and every `service_present` check in up.sh would go silent. Above `frontend`/`solver`
+# it would additionally pull the private relay build context in for a profile that has no relay
+# in it.
+#
+# `poster`'s and `prices`' layer STACKS therefore gained `issuer` beneath them; their own
+# answers did not change, because `profile_services` is a DIFFERENCE against the layers below.
+PROFILE_LAYER_ORDER="core shielded-night offerfiles issuer poster prices frontend solver"
 
 # _layer_files <profile> [--below] — the `-f <fragment>` arguments for every layer up to and
 # including <profile>, or strictly below it, one word per line.
@@ -902,6 +1037,94 @@ service_present() {
   [[ -n "$(docker ps -aq \
     --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME}" \
     --filter "label=com.docker.compose.service=$1" 2>/dev/null)" ]]
+}
+
+# service_running <service> — is a container for it RUNNING right now, in this project?
+#
+# The narrower question `service_present` cannot answer, and `up.sh` needs it for exactly one
+# decision (00025): whether to pass `--scale offer-poster=0` to the initial `docker compose up`.
+# Measured on compose v5.1.4 — scaling a service to 0 while its container is running STOPS and
+# REMOVES it, so passing that flag unconditionally would restart a healthy poster on every
+# additive `--with poster` re-run, which is precisely what the idempotence requirement forbids.
+#
+# `--filter status=running` is DAEMON-OWNED state, not a parsed `docker compose ps` table and
+# not a process list: a `pgrep`-shaped answer would match this script's own command line.
+# `oneoff=False` excludes `docker compose run` containers, for the reason spelled out in
+# scripts/verify-oneshots.sh — a `run` probe still being torn down must not count as the
+# service being up.
+service_running() {
+  [[ -n "$(docker ps -q \
+    --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME}" \
+    --filter "label=com.docker.compose.service=$1" \
+    --filter "label=com.docker.compose.oneoff=False" \
+    --filter "status=running" 2>/dev/null)" ]]
+}
+
+# ── the issuer's six tokens, on the HOST side (00020 PR C) ───────────────────
+#
+# Since kernel #69 the ids this stack trades are ISSUED per chain and every host-side verify
+# script needs them: verify-kernel matches the kernel registry against them, verify-solver
+# resolves the seeded pair, verify-poster resolves the poster's legs, verify-shielded-night
+# resolves the book chain's want leg. They used to come out of `minted-tokens.json` on a shared
+# volume, which is gone with the mint that wrote it.
+#
+# THERE IS EXACTLY ONE READER OF THE REGISTRY FILE and it is not this function:
+# `images/issuer/m1/registry.ts` validates `metadata.undeployed.json` against the pinned tree's
+# JSON schema AND against the semantic validator the faucet site runs, then prints one
+# `ISSUER_TOKEN <NAME> …` line per token. This runs it and parses those lines. A second parser
+# — in shell, over a 40 kB nested document — would be a second definition of "what this stack's
+# tokens are", and the two would drift.
+#
+# CACHED for the life of the process, because `docker compose run` costs a second or two and a
+# verify script asks for the same six ids several times. The cache holds a single space when
+# there is nothing, so "asked and found nothing" is distinguishable from "not asked yet".
+_ISSUER_REGISTRY_CACHE=""
+issuer_registry_lines() {
+  if [[ -z "$_ISSUER_REGISTRY_CACHE" ]]; then
+    if service_present faucet; then
+      # `2>/dev/null` on the run, not on the capture: the reporter logs progress on stderr and
+      # prints its result on stdout. `|| true` so an unreadable registry yields the empty
+      # string and a NAMED failure in the caller, never a `pipefail` exit from inside `$( )`
+      # (00011 C.8).
+      _ISSUER_REGISTRY_CACHE="$(dc run --rm --no-deps -T issuer-registry 2>/dev/null \
+                                 | grep '^ISSUER_TOKEN ' || true)"
+    fi
+    [[ -n "$_ISSUER_REGISTRY_CACHE" ]] || _ISSUER_REGISTRY_CACHE=" "
+  fi
+  [[ "$_ISSUER_REGISTRY_CACHE" == " " ]] && return 0
+  printf '%s\n' "$_ISSUER_REGISTRY_CACHE"
+}
+
+# issuer_token_field <NAME> <field> — one `key=value` field off that token's line, or nothing.
+#
+# NEVER DEFAULTS. A consumer that cannot find its token must fail with the name it was looking
+# for: an offer posted against a silently-wrong colour is accepted by the kernel, unpriceable,
+# unsponsorable and invisible in every panel — the exact class of silent failure this stack
+# keeps paying to remove. Same rule as `issuer_token_id` on the container side
+# (images/offerfiles-kernel/registry-env.sh).
+issuer_token_field() {
+  local name field line
+  name="$(printf '%s' "${1:-}" | tr '[:lower:]' '[:upper:]')"
+  field="${2:-id}"
+  line="$(issuer_registry_lines | grep "^ISSUER_TOKEN ${name} " | head -1 || true)"
+  [[ -n "$line" ]] || return 0
+  # `[[:space:]]` and not `\s`: BSD sed (what macOS ships) does not know the GNU escape and
+  # would silently match nothing.
+  printf '%s' "$line" \
+    | sed -n "s/.*[[:space:]]${field}=\([^[:space:]]*\).*/\1/p" | head -1 || true
+}
+
+# issuer_token_id <NAME> — the 64-hex id, validated. Empty if this stack has no such token.
+issuer_token_id() {
+  local value
+  value="$(issuer_token_field "${1:-}" id)"
+  case "$value" in
+    ????????????????????????????????????????????????????????????????)
+      case "$value" in
+        *[!0-9a-f]*) return 0 ;;
+        *) printf '%s' "$value" ;;
+      esac ;;
+  esac
 }
 
 # ── chain / indexer queries ──────────────────────────────────────────────────

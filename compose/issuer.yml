@@ -1,0 +1,399 @@
+# compose/issuer.yml — the `issuer` profile: THIS STACK ISSUES ITS OWN TEST TOKENS.
+#
+#   ./up.sh --with issuer                        the tokens + the faucet site
+#   ./up.sh --with offerfiles --with issuer      …and the offer-files kernel learns their names
+#
+# A profile IS this file's basename; no compose `profiles:` key is used here. up.sh never
+# passes `--profile`, so a service carrying one would be declared, rendered, verified — and
+# then silently never started.
+#
+# ─── WHY THIS PROFILE EXISTS (project 00020, spec US2 / FR-002) ──────────────
+# Until now the only token source in this stack was the offer-files kernel's own faucet
+# contract: `offerfiles-deploy` deployed it and minted DEVA/DEVB/DEVU. Kernel #69 REMOVED that
+# contract — on the public networks tokens now come from the hosted mint-test-tokens registry,
+# and upstream's own words are that "a public faucet cannot fund a fresh local chain". So an
+# `undeployed` stack has to issue its own, and `effectstream/mint-test-tokens` (public) supports
+# exactly that on this repository's 1.x line. See images/issuer/PROVENANCE.md.
+#
+# ─── IT DEPENDS ONLY ON `core` ───────────────────────────────────────────────
+# node, indexer and proof-server — nothing else. `./up.sh --with issuer` on its own is legal
+# and complete: it deploys the six token contracts, publishes the registry and serves the
+# faucet site. There is no offerfiles dependency, no kernel, no Celestia, no Postgres. That is
+# a REQUIREMENT (the same one compose/shielded-night.yml carries), not an accident of ordering,
+# and scripts/verify-compose-pins.sh renders `core issuer` alone to keep it true.
+#
+# The ONE service here that knows the kernel exists — `issuer-registrar` — therefore cannot
+# express its dependency in compose at all (compose REJECTS a `depends_on`, even
+# `required: false`, that names a service no selected fragment defines; measured on compose
+# v5.4.0). It declares `deploy: { replicas: 0 }` and `up.sh` runs it explicitly when
+# `service_present kernel` says the offerfiles profile is up — exactly the model
+# `shielded-night-token-name` has used since 00015.
+#
+# ─── FOUR SERVICES, ONE CONCERN EACH ────────────────────────────────────────
+#   issuer-deploy      ONE-SHOT, MANDATORY: funds the dedicated `issuer` wallet from genesis-1
+#                      under the shared `genesis-lock`, DUST-registers it, runs the pinned
+#                      repository's own v1 deploy, and publishes
+#                      metadata.undeployed.json on the `issuer-registry` volume.
+#   faucet             nginx over the repository's built static site plus that registry, on
+#                      ${FAUCET_HOST_PORT}. THE HUMAN LANE: it mints through a connected
+#                      browser wallet (Lace), so it is the owner's hand test and no automation
+#                      depends on it.
+#   issuer-registrar   NEVER STARTED BY up.sh implicitly: teaches the offer-files kernel the six
+#                      colours (UPDATE by name, then POST /v1/known-tokens). Run when the
+#                      `offerfiles` profile is up too.
+#   issuer-fund        NEVER STARTED AT ALL: the headless funding CLI every other profile's
+#                      provisioning calls.
+#                        docker compose run --rm issuer-fund TWBTC 100000000 <recipient-seed>
+#                        docker compose run --rm issuer-fund TWBTC 1000000 <seed> 12   # 12 coins
+#   issuer-registry    NEVER STARTED AT ALL: validate + dump the registry (./verify.sh, and an
+#                      operator answering "what tokens does this stack have?").
+#   issuer-tokens-env  NEVER STARTED AT ALL: re-publish the shell-sourceable token handoff
+#                      `tokens.env` (00020 PR C) — repair and inspection only; `issuer-deploy`
+#                      already writes it on both its deploy and its resume path.
+#
+# ─── THE TOKEN HANDOFF, AND WHY IT IS A SECOND VOLUME (00020 PR C) ───────────
+# Since kernel #69 the solver, the maker, the offer poster and the e2e driver all need token
+# IDS that only exist once this profile has deployed, and every one of them runs the KERNEL
+# image — which has no reader for `metadata.undeployed.json` and must never grow one, because
+# `images/issuer/m1/registry.ts` is the single reader and the only place the file is validated.
+#
+# So `issuer-deploy` publishes a deliberately dull projection of that reader's output —
+# `NAME=value` lines, one block per token — onto the `issuer-tokens` volume, and
+# `images/offerfiles-kernel/registry-env.sh` sources it. It is a SEPARATE volume from
+# `issuer-registry` because that one is an nginx document root on `faucet` below; every
+# consumer mounts `issuer-tokens` READ-ONLY, and nothing serves it.
+#
+# ─── THE SEED RULE, WHICH THIS PROFILE OBEYS AND ENFORCES ───────────────────
+# The deploy runner holds a wallet facade open through six proving deployments, and genesis-1 is
+# already the faucet, the kernel's MIDNIGHT_WALLET_SEED and the source every other provisioning
+# one-shot draws from. Two facades on one seed against one Midnight node force each other's
+# connection down with no error naming the cause (wallets/wallets.json), so the issuer has its
+# OWN roster seed — `…0051`, assigned to nothing else — and m1/provision.ts exits 78 if it is
+# handed the genesis seed. `issuer-fund` additionally refuses to mint to the issuer's own seed
+# and holds a `flock` so two fund calls cannot open two facades on …0051.
+#
+# ─── THE GENESIS-1 FACADE MUTEX (00011 Q7) ──────────────────────────────────
+# `issuer-deploy` drives genesis-1 for the ~1 minute it takes to send four NIGHT UTXOs. So do
+# `solver-provision` and `maker-offer` (compose/solver.yml) and `poster-provision`
+# (compose/poster.yml). A `depends_on` cannot serialise across fragments, so all four take a
+# `flock` on a file on the `genesis-lock` volume, which every one of those fragments declares
+# IDENTICALLY (compose merges duplicate declarations). The issuer RELEASES it before it starts
+# deploying, so the long half of this one-shot does not block the other three.
+#
+# ─── ONE BUILD, TWO TARGETS, FOUR ENTRYPOINTS ───────────────────────────────
+# Every service below is one of two images built from ../images/issuer: `runtime` (the node
+# runtime with the pinned tree, its .git and psql) or `faucet` (nginx over the built site).
+# ISSUER_REF is stated ONCE, in the YAML anchor, so a pin cannot drift between services.
+
+services:
+  # ── issuer-deploy ──────────────────────────────────────────────────────────
+  # ONE-SHOT. `restart: "no"` — a one-shot that restarts is a redeploy loop, and a redeploy
+  # here is as bad as it gets: each token's COLOUR is derived from its contract address, so new
+  # addresses silently turn every coin already minted into a different, unspendable token. The
+  # runner's own resume journal is what makes a re-run free instead of destructive, and it lives
+  # on the `issuer-state` volume for exactly that reason.
+  issuer-deploy:
+    image: '${ISSUER_IMAGE:-midnight-1-offers/issuer:local}'
+    build: &issuer_build
+      context: '../images/issuer'
+      target: 'runtime'
+      args: &issuer_build_args
+        ISSUER_REPO: '${ISSUER_REPO:-https://github.com/effectstream/mint-test-tokens.git}'
+        ISSUER_REF: '${ISSUER_REF:-7ecad008b07acb2a491d8291e05455cbd638910f}'
+        # DELIBERATELY NOT OVERRIDABLE from the environment, exactly as compose/shielded-night.yml
+        # pins 0.31.1 and compose/frontend.yml pins 0.31.0. The pinned tree's own
+        # compatibility.json and scripts/v1-deploy.ts both name this compiler, the image asserts
+        # both still say so, then recompiles all three v1 contracts and requires the output to be
+        # byte-identical to the committed contracts/v1/managed/. Any other compiler simply fails
+        # — but it would fail as an inscrutable diff of binary keys rather than as the policy
+        # violation it is. Pinned literally here so scripts/verify-compose-pins.sh checks it
+        # against ITS OWN matrix entry (`compact-issuer`).
+        COMPACT_VERSION: '0.31.1'
+    entrypoint: ['/usr/local/bin/entrypoint-deploy.sh']
+    restart: 'no'
+    environment: &issuer_env
+      # SERVICE HOSTNAMES, never 127.0.0.1: mint-test-tokens' `undeployed` defaults are
+      # loopback, and inside a container loopback is this container. These five names are the
+      # upstream knob (scripts/lib/network-config.ts) that makes a compose-hosted deploy
+      # possible at all, and images/issuer/Dockerfile asserts every one of them is still read.
+      MN_NETWORK: 'undeployed'
+      MN_NODE_URL: 'http://node:9944'
+      MN_NODE_WS_URL: 'ws://node:9944'
+      # /api/v4, not the stack's INDEXER_API_PATH default of /api/v3: mint-test-tokens' wallet
+      # and provider wiring are written against v4 (its own docs spell the path out), and
+      # indexer-standalone 4.3.3 serves an IDENTICAL schema on both paths (measured — verify.sh
+      # asserts both answer). Hard-coded rather than parameterised so the two consumers cannot
+      # drift onto different paths, exactly as compose/shielded-night.yml does.
+      MN_INDEXER_URL: 'http://indexer:8088/api/v4/graphql'
+      MN_INDEXER_WS_URL: 'ws://indexer:8088/api/v4/graphql/ws'
+      MN_PROOF_SERVER_URL: 'http://proof-server:6300'
+      # The registry DIRECTORY. Never a single-file bind mount: atomic publication replaces the
+      # file's inode, so a file mount can stay attached to the previous snapshot (upstream
+      # docs/registry.md says so in as many words).
+      MN_METADATA_OUTPUT_DIR: '/srv/issuer-registry'
+      # How long any one SDK operation may take. The default in the pinned runner is 180 s,
+      # which is generous for a public network and tight for a cold local proof server: the
+      # FIRST proving operation on a fresh stack includes the proof server's own warm-up.
+      MN_TIMEOUT_MS: '${ISSUER_MN_TIMEOUT_MS:-600000}'
+      # Set to `debug` to get the wallet SDK's own log on stderr. Blank by default, and the
+      # entrypoint unsets it when blank, so the container's environment never claims otherwise.
+      ISSUER_SDK_LOG_LEVEL: '${ISSUER_SDK_LOG_LEVEL:-}'
+      # ── THE TWO WALLETS THIS ONE-SHOT DRIVES ────────────────────────────────
+      # Named explicitly, and NOT in the shared `*issuer_env` anchor: the registrar and the
+      # registry reporter have no business carrying a seed, and an anchor that handed them one
+      # would put it in `docker inspect` for two containers that never sign anything.
+      #
+      # `ISSUER_SEED` is the DEDICATED roster seed `…0051` (wallets/wallets.json), assigned to
+      # nothing else. `MIDNIGHT_GENESIS_SEED` is the funder, and it is the SAME default and the
+      # SAME variable compose/offerfiles.yml and compose/poster.yml use — one source of truth
+      # for "which wallet is the faucet". m1/provision.ts exits 78 if the two are equal.
+      #
+      # The entrypoint writes each of them to a 0600 file on the /run/issuer tmpfs below and
+      # hands the RUNNER only the paths (`MN_SEED_FILE`, `MN_GENESIS_SEED_FILE`), because the
+      # pinned repository accepts a seed no other way — and neither should this stack.
+      ISSUER_SEED: '${ISSUER_SEED:-0000000000000000000000000000000000000000000000000000000000000051}'
+      MIDNIGHT_GENESIS_SEED: '${MIDNIGHT_GENESIS_SEED:-0000000000000000000000000000000000000000000000000000000000000001}'
+      # An operator's explicit confirmations, passed through rather than defaulted. See the
+      # entrypoint's header: a stale registry against a fresh chain must NOT redeploy itself.
+      ISSUER_REDEPLOY_STALE: '${ISSUER_REDEPLOY_STALE:-}'
+      ISSUER_CONFIRM_NO_DEPLOYMENT: '${ISSUER_CONFIRM_NO_DEPLOYMENT:-}'
+      # How long the six deployments may take before the one-shot gives up and leaves a
+      # reconcilable journal. Six proofs on a cold proof server; 90 minutes is generous.
+      ISSUER_DEPLOY_TIMEOUT_S: '${ISSUER_DEPLOY_TIMEOUT_S:-5400}'
+    volumes:
+      # THE REGISTRY, shared with the faucet, the registrar and every funding call.
+      - 'issuer-registry:/srv/issuer-registry'
+      # THE TOKEN HANDOFF, read-WRITE here and read-only everywhere else: this one-shot is the
+      # only thing that publishes it (step 4 of its entrypoint, on both the deploy and the
+      # resume path).
+      - 'issuer-tokens:/srv/issuer-tokens'
+      # THE RESUME JOURNAL AND PRIVATE STATE, at the path the pinned runner chooses for itself
+      # (`<repo root>/.local`, keyed by sha256(registry path + stack identity)). On a
+      # container-local directory every `./up.sh` would deploy six more contracts.
+      - 'issuer-state:/app/.local'
+      - 'genesis-lock:/srv/genesis-lock'
+    # The seed files this container writes live here and nowhere else: a tmpfs is not in a
+    # layer, not in a volume, and gone when the container is.
+    tmpfs:
+      - '/run/issuer:mode=0700'
+    depends_on:
+      node: { condition: service_healthy }
+      indexer: { condition: service_healthy }
+      proof-server: { condition: service_healthy }
+
+  # ── faucet ─────────────────────────────────────────────────────────────────
+  # THE HUMAN LANE. The site loads the registry at runtime, connects a dApp-connector 4.x
+  # wallet (Lace), reads the exact shielded and unshielded balances and submits the fixed faucet
+  # presets through that wallet — the wallet does the proving. Nothing automated depends on it:
+  # every headless mint goes through `issuer-fund`. That split is deliberate, and it is what
+  # makes the browser flow an OWNER HAND TEST rather than a gate.
+  faucet:
+    image: '${ISSUER_FAUCET_IMAGE:-midnight-1-offers/issuer-faucet:local}'
+    build:
+      <<: *issuer_build
+      target: 'faucet'
+    restart: 'unless-stopped'
+    ports:
+      - '${BIND_ADDR:-127.0.0.1}:${FAUCET_HOST_PORT:-10500}:10500'
+    volumes:
+      # READ-ONLY: it serves the registry, it never writes one.
+      - 'issuer-registry:/srv/issuer-registry:ro'
+    healthcheck:
+      # THREE paths, because they prove three different things.
+      #
+      # `/` proves nginx is up and `dist` was copied.
+      #
+      # `/metadata.undeployed.json` proves THE REGISTRY LANE IS WIRED — that the alias resolves
+      # onto the shared volume and answers with a JSON content type. It is matched on a string
+      # from the file's own body (`"status": "ready"`), not merely fetched, because a bare 200
+      # here would also be satisfied by the SPA shell if the `location =` block were ever lost,
+      # and the SPA rejects a text/html body with "Expected JSON metadata".
+      #
+      # A verifier key proves the ZK artifact lane is served as BYTES: without
+      # `try_files … =404` a missing artifact would answer 200 with the app shell, and
+      # midnight-js's FetchZkConfigProvider only checks `response.ok` — the prover would be
+      # handed an HTML document as a proving key.
+      #
+      # NO `${…}` ANYWHERE IN THIS SCRIPT: compose interpolates it in every value it renders.
+      test:
+        - 'CMD-SHELL'
+        - 'wget -qO/dev/null http://127.0.0.1:10500/ && wget -qO- http://127.0.0.1:10500/metadata.undeployed.json | grep -q ''"status": "ready"'' && wget -qO/tmp/vk http://127.0.0.1:10500/contract/v1/shielded/keys/mint.verifier && [ -s /tmp/vk ]'
+      interval: 5s
+      timeout: 4s
+      retries: 12
+      # The registry does not exist until issuer-deploy has finished, and compose gates this
+      # container on exactly that — so the window here is only how long nginx may take to bind.
+      start_period: 15s
+    depends_on:
+      issuer-deploy: { condition: service_completed_successfully }
+
+  # ── issuer-registrar ───────────────────────────────────────────────────────
+  # THE REGISTRY ONE-SHOT, and the only service in this profile that knows the offer-files
+  # kernel exists. It makes the kernel's token registry say that THIS stack's six colours are
+  # TWBTC/TWETH/TWUSDC/TWUSDM/UTWUSDC/UTWBTC, in two steps per token and in this order
+  # (the 00015 mechanism, generalised from one name to six):
+  #
+  #   1. PATCH  `UPDATE known_tokens … WHERE upper(name) = upper(:'name')` — the statement the
+  #             kernel's own packages/database/migrations/000-init.sql prescribes, versioned as
+  #             images/issuer/sql/issuer-registry-patch.sql and run with `psql`. Kernel `main`
+  #             @ e3b9388 SEEDS all six names at the PUBLIC PREPROD colours; `known_tokens.name`
+  #             is UNIQUE and POST /v1/known-tokens checks the NAME before the colour, so
+  #             without this the real colours can never be registered under their own names.
+  #             `UPDATE 0` on a re-run — the statement is idempotent by its own WHERE clause.
+  #   2. POST   /v1/known-tokens with the colour, kind, decimals and CoinGecko asset id. On a
+  #             seeded kernel that answers the name-taken 409 and the row is read back; on a
+  #             kernel that seeds no such row it registers (201) and step 1 was a no-op. Both
+  #             are success, and the log says which — which is how an operator can tell from
+  #             this one-shot alone whether they are on kernel a608fa6 or e3b9388.
+  #
+  # WHY IT WAITS FOR THE CHAIN. The seed is applied by the kernel while its database comes up,
+  # so the entrypoint gates on all three of: `/v1/health` answering, `/v1/health/sync` reporting
+  # `ok`, and the midnight-node being past block 1. A patch that won that race would be
+  # overwritten by the seed and the failure would surface much later as an unlabelled book.
+  #
+  # IT IS NEVER STARTED BY `up.sh` IMPLICITLY — `deploy: { replicas: 0 }` — because this profile
+  # must depend only on `core`. Run against a network with no kernel, the entrypoint says so in
+  # one line and exits 0.
+  issuer-registrar:
+    image: '${ISSUER_IMAGE:-midnight-1-offers/issuer:local}'
+    build: *issuer_build
+    entrypoint: ['/usr/local/bin/entrypoint-registrar.sh']
+    restart: 'no'
+    deploy:
+      replicas: 0
+    volumes:
+      # READ-ONLY: it reads the six colours, it never publishes one.
+      - 'issuer-registry:/srv/issuer-registry:ro'
+    environment:
+      <<: *issuer_env
+      # The kernel's own dev name registry. Hard-coded like every other cross-service URL here:
+      # it is a compose service name on this project's network, not an operator knob, and a
+      # parameterised one could silently point two consumers at different kernels.
+      KERNEL_API_URL: 'http://kernel:9999'
+      # ── the kernel's database, for step 1 (the UPDATE) ──────────────────────
+      # THE SAME THREE VARIABLES, WITH THE SAME DEFAULTS, that compose/core.yml creates the role
+      # and database with and that compose/offerfiles.yml hands the kernel as DB_USER/DB_PW/
+      # DB_NAME. One source of truth for the credentials; a stack that overrides them in .env
+      # keeps working with no second knob to remember.
+      #
+      # SPELLED AS PG* BECAUSE `psql` READS THESE NAMES ITSELF. Nothing in the entrypoint puts a
+      # password on a command line, in a URL or in a log — libpq takes PGPASSWORD out of the
+      # environment. `require_env` (after the kernel-presence gate) makes a missing one an
+      # EX_CONFIG failure that names itself.
+      #
+      # `postgres` and 5432 are the SERVICE and its container port, never a host port. When the
+      # `offerfiles` profile is not up there is no postgres here at all — and no kernel either,
+      # which is what the entrypoint checks first, exiting 0 before it needs a database.
+      PGHOST: 'postgres'
+      PGPORT: '5432'
+      PGUSER: '${OFFERFILES_PG_USER:-offerfiles}'
+      PGPASSWORD: '${OFFERFILES_PG_PASSWORD:-offerfiles}'
+      PGDATABASE: '${OFFERFILES_PG_DB:-offerfiles}'
+    # NO depends_on, deliberately: `docker compose run` starts whatever a service names, and
+    # this one is only ever invoked against a stack that is already up. Its entrypoint proves
+    # every dependency for itself.
+
+  # ── issuer-fund ────────────────────────────────────────────────────────────
+  # THE HEADLESS FUNDING CLI. `deploy: { replicas: 0 }`, so `docker compose up` creates no
+  # container for it, while `docker compose run --rm issuer-fund <TOKEN> <base-units> <seed>`
+  # works normally. Every other profile's provisioning calls it; ./verify.sh calls it; an
+  # operator refilling the poster calls it (docs/OPERATIONS.md).
+  #
+  # It needs the SAME volumes as the deploy one-shot and for the same reasons: the registry to
+  # learn the colour and the contract address, and `issuer-state` for the private-state store
+  # AND for the `flock` that keeps one facade on the issuer's seed.
+  issuer-fund:
+    image: '${ISSUER_IMAGE:-midnight-1-offers/issuer:local}'
+    build: *issuer_build
+    entrypoint: ['/usr/local/bin/entrypoint-fund.sh']
+    restart: 'no'
+    deploy:
+      replicas: 0
+    environment:
+      <<: *issuer_env
+      # Read the recipient's balance back after the mint and require it to have moved by
+      # EXACTLY the amount. On by default: "the transaction was accepted" and "the recipient can
+      # spend this coin" are different claims, and a provisioning one-shot needs the second.
+      ISSUER_FUND_VERIFY: '${ISSUER_FUND_VERIFY:-1}'
+      # THE ISSUER'S OWN SEED, and only that one: this command mints FROM the issuer and TO a
+      # recipient the CALLER names on the command line, so it never needs the genesis wallet.
+      ISSUER_SEED: '${ISSUER_SEED:-0000000000000000000000000000000000000000000000000000000000000051}'
+    volumes:
+      - 'issuer-registry:/srv/issuer-registry:ro'
+      - 'issuer-state:/app/.local'
+    tmpfs:
+      - '/run/issuer:mode=0700'
+
+  # ── issuer-registry ────────────────────────────────────────────────────────
+  # READ-ONLY: validate the published registry against schema/metadata.schema.json AND the
+  # semantic validator the faucet site itself runs, then print one line per token. No chain, no
+  # seed, no wallet — `--no-deps` is enough and it costs a second.
+  #
+  # With ISSUER_VERIFY_ONCHAIN=1 it additionally runs the pinned repository's own
+  # `npm run verify:v1`, which re-checks every verifier key against chain state. That needs the
+  # node and the indexer and takes minutes, so it is opt-in.
+  issuer-registry:
+    image: '${ISSUER_IMAGE:-midnight-1-offers/issuer:local}'
+    build: *issuer_build
+    entrypoint: ['/usr/local/bin/entrypoint-registry.sh']
+    restart: 'no'
+    deploy:
+      replicas: 0
+    environment:
+      <<: *issuer_env
+      ISSUER_VERIFY_ONCHAIN: '${ISSUER_VERIFY_ONCHAIN:-}'
+    volumes:
+      - 'issuer-registry:/srv/issuer-registry:ro'
+
+  # ── issuer-tokens-env ──────────────────────────────────────────────────────
+  # RE-PUBLISH the token handoff. `deploy: { replicas: 0 }`, so `docker compose up` creates no
+  # container for it. It holds no wallet and no seed, takes no lock and touches no chain: it
+  # reads the registry through the same validating loader every other consumer uses and writes
+  # one file. Two jobs only —
+  #
+  #   REPAIR      the `issuer-tokens` volume is gone (a plain `./down.sh` keeps volumes, but an
+  #               operator who removed just that one, or an older stack that never had it,
+  #               leaves a valid registry with no handoff). Re-running `issuer-deploy` would
+  #               also work and would open the issuer's wallet and take the genesis lock to do
+  #               a job that needs neither.
+  #   INSPECTION  `docker compose run --rm --no-deps issuer-tokens-env && \
+  #                docker compose run --rm --no-deps --entrypoint cat issuer-tokens-env \
+  #                  /srv/issuer-tokens/tokens.env`
+  issuer-tokens-env:
+    image: '${ISSUER_IMAGE:-midnight-1-offers/issuer:local}'
+    build: *issuer_build
+    entrypoint: ['/usr/local/bin/entrypoint-tokens-env.sh']
+    restart: 'no'
+    deploy:
+      replicas: 0
+    environment:
+      <<: *issuer_env
+    volumes:
+      # READ-ONLY on the registry, read-WRITE on the handoff — the exact opposite of every
+      # consumer, and the reason it is its own service rather than a flag on `issuer-registry`.
+      - 'issuer-registry:/srv/issuer-registry:ro'
+      - 'issuer-tokens:/srv/issuer-tokens'
+
+volumes:
+  # Declared here rather than created ad hoc: only a compose-created volume carries the
+  # com.docker.compose.project label that `down.sh -v` filters on, so a volume made any other
+  # way survives teardown and silently feeds stale state to the next bring-up.
+  issuer-tokens:    # tokens.env — the six token ids, decimals, privacy, symbols and contract
+                    # addresses as a shell-sourceable projection of the registry. Keyed to THIS
+                    # chain exactly as the registry is, and in the wipe group with it: a
+                    # handoff naming colours from a chain that no longer exists would point the
+                    # poster and the solver at tokens nobody can spend.
+  issuer-registry:  # metadata.undeployed.json — the six contract addresses, token ids, decimals
+                    # and faucet presets. Keyed to THIS chain: the runner records the chain
+                    # name, runtime version and genesis hash in it and refuses to resume against
+                    # a different one. In the wipe group with everything else.
+  issuer-state:     # the deploy runner's private RESUME JOURNAL and its private-state stores
+                    # (<repo root>/.local), plus the provisioning marker and the issuer-facade
+                    # lock. This is what makes a second `./up.sh` resume instead of deploying
+                    # six more contracts — and what `./down.sh -v` must wipe together with the
+                    # chain, because a journal without its chain is stale by definition.
+  genesis-lock:     # the genesis-1 facade mutex (00011 Q7). Declared IDENTICALLY in
+                    # compose/solver.yml and compose/poster.yml — compose merges duplicate
+                    # volume declarations, which is what lets three fragments share a lock
+                    # without referencing each other. It holds one empty file and no state
+                    # worth keeping.

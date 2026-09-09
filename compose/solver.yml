@@ -9,15 +9,44 @@
 # The solver mirrors the offer-files kernel's book, so `--with offerfiles` is not optional:
 # this fragment declares no kernel of its own.
 #
-# ─── SIX SERVICES, ONE CONCERN EACH ──────────────────────────────────────────
+# ─── NINE SERVICES, ONE CONCERN EACH ─────────────────────────────────────────
 #   relay             the unmodified Midnight Intents relay: HTTP :3000, solver WS :9001
-#   solver-provision  ONE-SHOT, MANDATORY: mints the solver the inventory it needs to publish
+#   solver-provision  ONE-SHOT, MANDATORY: NIGHT from genesis to the solver's wallet, then
+#                     UPSTREAM'S OWN external-prefunding check, which writes the ladder and the
+#                     receipt (kernel image)
+#   solver-inventory  ONE-SHOT, MANDATORY, NEW IN 00020 PR C: both swap tokens into the
+#                     solver's wallet (ISSUER image)
+#   maker-provision   ONE-SHOT, NEW IN 00020 PR C: NIGHT from genesis to the MAKER's wallet,
+#                     which stopped being genesis-1 at this pin (kernel image)
+#   maker-inventory   ONE-SHOT, NEW IN 00020 PR C: the give token into the maker's wallet
+#                     (ISSUER image)
 #   maker-offer       ONE-SHOT: posts one real, settle-able maker offer into the kernel book
 #   solver            the COW posted-price solver in EXECUTION mode, with its read-only
 #                     status listener on :9100 (network-internal, bearer-gated)
 #   solver-frontend   the read-only MONITOR site for that listener, on the host at
 #                     ${SOLVER_FRONTEND_HOST_PORT}. Depends on the KERNEL only — see its block
 #   intents-ui        the intents browser app, with nginx as its edge to the relay
+#
+# ─── THIS PROFILE NOW REQUIRES `issuer` (00020 PR C, questions Q9.3) ─────────
+# Kernel #69 removed every way this stack had of minting a swap token. `provision-solver-fees.ts`
+# REFUSES to run without NIGHT and never funds anything; `post-maker-offer.ts` needs a wallet
+# that already holds GIVE_TOKEN; both need explicit 64-hex ids that only exist once the issuer
+# has deployed. So the two `*-inventory` one-shots run the ISSUER image, this fragment mounts
+# three of that profile's volumes, and `up.sh` ADDS `issuer` when `solver` is selected and says
+# so in one line. `docker compose -f core -f offerfiles -f solver` by hand REFUSES to render,
+# naming `issuer-deploy` — the correct, immediate failure, asserted by
+# scripts/verify-compose-pins.sh.
+#
+# ─── FIVE ONE-SHOTS IN A ROW, AND THE ORDER IS THE WHOLE POINT ───────────────
+#   solver-provision → solver-inventory → maker-provision → maker-inventory → maker-offer
+#
+# Three facades are involved and none of them may be open twice at once: GENESIS (the two
+# `*-provision` one-shots, plus `poster-provision` and `issuer-deploy` in other fragments — the
+# `genesis-lock` flock serialises those, because `depends_on` cannot reach across a fragment),
+# the SOLVER's …0021 (its provisioning, its inventory, and the long-lived `solver`), and the
+# MAKER's …0031 (its provisioning, its inventory, `maker-offer`, and later the e2e driver).
+# Within this fragment the ordering is expressed with `service_completed_successfully`, which is
+# exact; across fragments it is the flock.
 #
 # ─── THE SOLVER IS THE KERNEL COMMIT (00011 PR B) ────────────────────────────
 # `images/cow-solver` no longer fetches a second commit and overlays it: it is
@@ -66,11 +95,71 @@ x-midnight-endpoints: &midnight_endpoints
   MIDNIGHT_INDEXER_HTTP: 'http://indexer:8088${INDEXER_API_PATH:-/api/v3/graphql}'
   MIDNIGHT_INDEXER_WS: 'ws://indexer:8088${INDEXER_API_PATH:-/api/v3/graphql}/ws'
   MIDNIGHT_PROOF_SERVER_URL: 'http://proof-server:6300'
-  # Where the deploy one-shot published this stack's contract address and minted colours.
-  CONTRACT_SHARE_DIR: '/srv/offerfiles-deploy'
   # The kernel whose book the solver mirrors and whose offers it rebuilds. Container port,
   # never the host port.
   ZSWAP_API: 'http://kernel:9999'
+
+# ── the issuer image's endpoints, for the two inventory one-shots ────────────
+# A SEPARATE anchor because it is a different image with a different variable family: the
+# issuer reads MN_*, the kernel reads MIDNIGHT_*, and merging them would hand each container
+# four endpoint variables it has never heard of. The values repeat compose/issuer.yml's own
+# anchor because YAML anchors do not cross files; the /api/v4 indexer path is deliberate and
+# is explained there (mint-test-tokens is written against v4; 4.3.3 serves an identical schema
+# on both paths, measured).
+x-issuer-endpoints: &issuer_endpoints
+  MN_NETWORK: 'undeployed'
+  MN_NODE_URL: 'http://node:9944'
+  MN_NODE_WS_URL: 'ws://node:9944'
+  MN_INDEXER_URL: 'http://indexer:8088/api/v4/graphql'
+  MN_INDEXER_WS_URL: 'ws://indexer:8088/api/v4/graphql/ws'
+  MN_PROOF_SERVER_URL: 'http://proof-server:6300'
+  MN_METADATA_OUTPUT_DIR: '/srv/issuer-registry'
+  MN_TIMEOUT_MS: '${ISSUER_MN_TIMEOUT_MS:-600000}'
+  ISSUER_SDK_LOG_LEVEL: '${ISSUER_SDK_LOG_LEVEL:-}'
+  # The issuer pays for and submits every mint; the recipient's seed only receives.
+  ISSUER_SEED: '${ISSUER_SEED:-0000000000000000000000000000000000000000000000000000000000000051}'
+
+# ── the two swap legs, as NAMES, in ONE place ────────────────────────────────
+# Four services need the same two tokens and they must agree exactly: the solver's ladder pair,
+# the maker's give/want legs and the maker's inventory. Written once here as an anchor so a
+# change cannot land in three of the four.
+#
+# NAMES, not ids: the ids are issued per chain and each entrypoint resolves the name through
+# the issuer's handoff (`resolve_token_leg` in images/offerfiles-kernel/registry-env.sh).
+#
+# DIRECTION. An offer that GIVES `MAKER_OFFER_GIVE_TOKEN` and WANTS `MAKER_OFFER_WANT_TOKEN` is
+# filled by a taker who pays the want and receives the give — so from the SOLVER's side that is
+# tokenIn = want, tokenOut = give. `SOLVER_PROVISION_TOKEN_IN`/`_OUT` below follow that, and it
+# is the pair scripts/verify-solver.sh quotes.
+#
+# ── WHY THIS PAIR IS **TWUSDC → TWUSDM** AND NOT TWBTC → TWETH ───────────────
+# MEASURED, on the first `--all` gate at this pin: with the maker on TWBTC → TWETH the solver's
+# exact-quote assertion failed with
+#   POST /quote … 422 {"error":"unfulfillable","message":"amountIn is outside the published
+#   price range for this pair"}
+# and the cause is structural rather than a tuning problem.
+#
+# THE SOLVER'S PUBLISHED LADDER IS DERIVED FROM THE WHOLE BOOK for a directed pair
+# (`deriveLadder(cache.book.all(), …)`), not from one offer. Before kernel #69 the maker and the
+# poster could not collide by construction — the maker gave a colour `mint-test-tokens.ts`
+# derived from a domain separator, the poster minted its give leg from a faucet PRESET name —
+# and `scripts/verify-solver.sh`'s whole design rests on that: it asserts
+# `quote(WANT_AMOUNT) == GIVE_AMOUNT` EXACTLY, which holds only while the maker's offer is the
+# only one on its pair.
+#
+# At this pin every token comes from the issuer, so a maker and a poster on the same two names
+# land in ONE ladder — and their prices differ by ELEVEN ORDERS OF MAGNITUDE, because the
+# poster's want leg is QUOTED from real USD prices across an 8-decimal and an 18-decimal token
+# while the maker's `500000 → 750000` are upstream's defaults from when both legs were 6
+# decimals. The maker's own rung is then not reachable at its own `amountIn`.
+#
+# So the maker gets a pair of its own, and one whose legs share their decimals — TWUSDC and
+# TWUSDM are both 6, both shielded, and both priced (`usd-coin`, `usdm-2`). That restores the
+# pre-#69 invariant exactly, and it makes upstream's `500000`/`750000` defaults mean what they
+# meant when they were written. The poster keeps TWBTC → TWETH, so 8 and 18 decimals are still
+# exercised end to end — by the poster's take, and by verify-kernel's price rule.
+x-swap-give: &swap_give '${MAKER_OFFER_GIVE_TOKEN:-TWUSDC}'
+x-swap-want: &swap_want '${MAKER_OFFER_WANT_TOKEN:-TWUSDM}'
 
 # NO BUILD ARGS, and no SOLVER_REF: the image IS the kernel image (00011 PR B). Its only
 # input is the named context below, so there is nothing here for a pin to drift from — the
@@ -106,7 +195,7 @@ services:
     build:
       context: '../images/relay'
       args:
-        RELAY_REF: '${RELAY_REF:-061f4d3258e25b9f3a451b4b4358ed232349d96b}'
+        RELAY_REF: '${RELAY_REF:-b32e0b100a5715d1fbf89c155afe6c2236d3b013}'
       additional_contexts:
         # YOUR clone, from YOUR environment. The default below is a deliberately non-existent
         # path: it keeps `docker compose config` renderable on a clean checkout (the offline
@@ -170,6 +259,16 @@ services:
   # ONE-SHOT, and MANDATORY rather than a convenience — see the entrypoint's header. The
   # pinned solver publishes NOTHING for a pair it holds no tokenIn inventory for, so an
   # unfunded solver reaches all-healthy and quotes nothing, with no error anywhere.
+  #
+  # TWO STEPS IN ONE CONTAINER since 00020 PR C: this deployment sends the NIGHT
+  # (`night-provision.ts`, under the genesis lock), then UPSTREAM'S OWN
+  # `deploy/scripts/provision-solver-fees.ts` verifies it, registers it for DUST, and writes
+  # BOTH the ladder and the machine-readable receipt (`mode: external-prefunded`,
+  # `inventorySource: external`, `dustReady`) the settlement driver asserts on. It cannot be
+  # split: upstream's script refuses to run at all until the NIGHT is there.
+  #
+  # THE SWAP TOKENS ARE NOT ITS JOB — `solver-inventory` below mints those, on the issuer
+  # image, because this one has no token contract to mint from.
   solver-provision:
     image: '${SOLVER_IMAGE:-midnight-1-offers/cow-solver:local}'
     build: *solver_build
@@ -177,35 +276,157 @@ services:
     restart: 'no'
     environment:
       <<: *midnight_endpoints
-      # It funds NIGHT from genesis before minting, so it drives TWO wallets: this one and
-      # SOLVER_SEED.
+      # It sends NIGHT from genesis, so it drives TWO wallets: this one and SOLVER_SEED.
+      # night-provision.ts reads the funder as MIDNIGHT_GENESIS_SEED and refuses (exit 78) if
+      # the two are equal.
       MIDNIGHT_WALLET_SEED: '${MIDNIGHT_GENESIS_SEED:-0000000000000000000000000000000000000000000000000000000000000001}'
+      MIDNIGHT_GENESIS_SEED: '${MIDNIGHT_GENESIS_SEED:-0000000000000000000000000000000000000000000000000000000000000001}'
       MIDNIGHT_STORAGE_PASSWORD: '${MIDNIGHT_STORAGE_PASSWORD:-YourPasswordMy1!}'
       SOLVER_SEED: '${SOLVER_SEED:-0000000000000000000000000000000000000000000000000000000000000021}'
       SOLVER_PROVISION_ENABLED: '${SOLVER_PROVISION_ENABLED:-true}'
-      # The GENERATED ladder, not the branch's checked-in one: token colours derive from the
-      # deployed contract address, so the in-repo file names colours from an older deployment.
-      # This one-shot rewrites it with THIS stack's real ones onto the shared volume.
+      # THE LADDER PAIR, REQUIRED at this pin and validated by upstream's script (64-hex each,
+      # must differ, neither may be NIGHT). Given as NAMES and resolved through the issuer's
+      # handoff by the entrypoint. tokenIn is the maker's WANT leg and tokenOut its GIVE leg —
+      # see the anchors at the top of this file.
+      SOLVER_PROVISION_TOKEN_IN: *swap_want
+      SOLVER_PROVISION_TOKEN_OUT: *swap_give
+      # The GENERATED ladder, not the branch's checked-in one: token ids are issued per chain,
+      # so the in-repo file names colours from an older deployment. This one-shot rewrites it
+      # with THIS stack's real ones onto the shared volume.
       SOLVER_LADDER_CONFIG: '/srv/solver-config/ladders.dev.json'
+      # The receipt upstream's script writes and the settlement driver reads. Same volume, so
+      # it survives this container and is readable by ./verify.sh.
+      SOLVER_PROVISION_RECEIPT: '/srv/solver-config/provision-receipt.json'
     volumes:
-      - 'offerfiles-deploy:/srv/offerfiles-deploy:ro'
       - 'solver-config:/srv/solver-config'
-      # The genesis-1 facade mutex (00011 Q7). bootstrap-dev.ts funds the solver's NIGHT from
-      # genesis before it mints, so this one-shot is one of THREE that drive that wallet —
-      # with `maker-offer` below and `poster-provision` in compose/poster.yml. The first two
-      # are ordered by `depends_on`; the third is in another fragment, which `depends_on`
-      # cannot reach across (a dependency on a service outside the merged set does not render,
-      # and `--with poster` without `--with solver` is supported). So all three take a `flock`
-      # on a file on this volume, declared IDENTICALLY in both fragments — compose merges
-      # duplicate declarations, which is what lets them share a lock without referencing each
-      # other. See take_genesis_lock() in images/offerfiles-kernel/entrypoint-common.sh.
+      # THE TOKEN HANDOFF, read-only: the entrypoint sources it to turn the two names above
+      # into this chain's 64-hex ids.
+      - 'issuer-tokens:/srv/issuer-tokens:ro'
+      # The genesis-1 facade mutex (00011 Q7). This one-shot sends the solver's NIGHT from
+      # genesis, so it is one of FOUR that drive that wallet — with `maker-provision` below,
+      # `poster-provision` in compose/poster.yml and `issuer-deploy` in compose/issuer.yml. The
+      # ones in this file are ordered by `depends_on`; the others are in fragments
+      # `depends_on` cannot reach across (a dependency on a service outside the merged set does
+      # not render, and `--with poster` without `--with solver` is supported). So all of them
+      # take a `flock` on a file on this volume, declared IDENTICALLY in every one of those
+      # fragments — compose merges duplicate declarations, which is what lets them share a lock
+      # without referencing each other. See take_genesis_lock() in
+      # images/offerfiles-kernel/entrypoint-common.sh.
       - 'genesis-lock:/srv/genesis-lock'
     depends_on:
       node: { condition: service_healthy }
       indexer: { condition: service_healthy }
       proof-server: { condition: service_healthy }
-      # The contract must exist before anything can mint against it.
-      offerfiles-deploy: { condition: service_completed_successfully }
+      # The token ids must exist before the ladder can name them.
+      issuer-deploy: { condition: service_completed_successfully }
+
+  # ── solver-inventory ───────────────────────────────────────────────────────
+  # ONE-SHOT, MANDATORY, and NEW IN 00020 PR C. The ISSUER image — the only one here carrying
+  # the token contracts — mints the solver BOTH sides of the pair.
+  #
+  # BOTH, and not just tokenIn: a rung whose worst-case residual exceeds available tokenOut is
+  # withheld along with every rung above it, so a solver holding only the input side publishes
+  # a truncated ladder rather than none, which is the harder failure to see.
+  #
+  # THE SIZE. `provision-solver-fees.ts` writes FIXED base-unit rungs
+  # {1000 -> 1000, 100000 -> 99000, 1000000 -> 970000}, so the largest rung needs 10^6 base
+  # units of tokenIn on hand. This mints 10^8 of each — a hundred times the deepest rung, with
+  # room for the residuals — as ONE coin per token, because unlike the poster the solver does
+  # not select by exact coin value. Both legs are 6-decimal tokens, so 10^8 base units is 100
+  # whole coins of each.
+  solver-inventory:
+    image: '${ISSUER_IMAGE:-midnight-1-offers/issuer:local}'
+    entrypoint: ['/usr/local/bin/entrypoint-provision.sh']
+    restart: 'no'
+    environment:
+      <<: *issuer_endpoints
+      ISSUER_PROVISION_ROLE: 'solver'
+      ISSUER_PROVISION_SEED: '${SOLVER_SEED:-0000000000000000000000000000000000000000000000000000000000000021}'
+      ISSUER_PROVISION_SPEC: '${SOLVER_INVENTORY_SPEC:-TWUSDC:100000000 TWUSDM:100000000}'
+      # On `solver-config`, which is this profile's own volume and dies with `./down.sh -v`.
+      ISSUER_PROVISION_MARKER: '/srv/solver-config/.inventory-provisioned'
+    volumes:
+      - 'issuer-registry:/srv/issuer-registry:ro'
+      # The issuer's private-state store AND the `flock` that keeps one facade on its seed —
+      # the same volume `issuer-fund` mounts, for the same two reasons.
+      - 'issuer-state:/app/.local'
+      - 'solver-config:/srv/solver-config'
+    tmpfs:
+      - '/run/issuer:mode=0700'
+    depends_on:
+      node: { condition: service_healthy }
+      indexer: { condition: service_healthy }
+      proof-server: { condition: service_healthy }
+      issuer-deploy: { condition: service_completed_successfully }
+      # It opens the SOLVER's facade, and so does solver-provision. Sequential, never
+      # concurrent.
+      solver-provision: { condition: service_completed_successfully }
+
+  # ── maker-provision ────────────────────────────────────────────────────────
+  # ONE-SHOT, NEW IN 00020 PR C: four large NIGHT UTXOs from genesis to the MAKER's wallet.
+  #
+  # It exists because the maker stopped being genesis-1 at this pin. It only ever was because
+  # the deleted faucet contract's mint credited exactly that wallet, so genesis-1 was the only
+  # wallet on the chain holding a test token to give away; with tokens coming from the issuer
+  # the maker gets its own roster seed (…0031, `e2e-maker` in wallets/wallets.json) and needs
+  # its own NIGHT to pay for the proving.
+  maker-provision:
+    image: '${KERNEL_IMAGE:-midnight-1-offers/offerfiles-kernel:local}'
+    build: *solver_build
+    entrypoint: ['/usr/local/bin/entrypoint-night-provision.sh']
+    restart: 'no'
+    environment:
+      <<: *midnight_endpoints
+      MIDNIGHT_WALLET_SEED: '${MIDNIGHT_GENESIS_SEED:-0000000000000000000000000000000000000000000000000000000000000001}'
+      MIDNIGHT_GENESIS_SEED: '${MIDNIGHT_GENESIS_SEED:-0000000000000000000000000000000000000000000000000000000000000001}'
+      MIDNIGHT_STORAGE_PASSWORD: '${MIDNIGHT_STORAGE_PASSWORD:-YourPasswordMy1!}'
+      M1_NIGHT_ROLE: 'maker'
+      M1_NIGHT_RECIPIENT_SEED: '${MAKER_OFFER_SEED:-0000000000000000000000000000000000000000000000000000000000000031}'
+      # Beside the maker's own posting marker, so `./down.sh -v` resets both together.
+      M1_NIGHT_MARKER: '/var/lib/maker-offer/.night-provisioned'
+      M1_NIGHT_ENABLED: '${MAKER_OFFER_ENABLED:-true}'
+    volumes:
+      - 'maker-offer-state:/var/lib/maker-offer'
+      - 'genesis-lock:/srv/genesis-lock'
+    depends_on:
+      node: { condition: service_healthy }
+      indexer: { condition: service_healthy }
+      proof-server: { condition: service_healthy }
+      # It drives the GENESIS facade, and so does solver-provision. The flock would serialise
+      # them anyway; ordering them here means neither waits on a lock it could have avoided.
+      solver-provision: { condition: service_completed_successfully }
+
+  # ── maker-inventory ────────────────────────────────────────────────────────
+  # ONE-SHOT, NEW IN 00020 PR C: the maker's GIVE leg, from the issuer.
+  #
+  # ONLY THE GIVE LEG. `post-maker-offer.ts` spends GIVE_TOKEN and receives WANT_TOKEN, so the
+  # want side is what a taker brings. The amount is generous relative to
+  # MAKER_OFFER_GIVE_AMOUNT because ./verify.sh RE-SEEDS the book when the seeded offer has
+  # been consumed or has expired (`MAKER_OFFER_RESEED=true`), and each re-seed spends another
+  # give coin.
+  maker-inventory:
+    image: '${ISSUER_IMAGE:-midnight-1-offers/issuer:local}'
+    entrypoint: ['/usr/local/bin/entrypoint-provision.sh']
+    restart: 'no'
+    environment:
+      <<: *issuer_endpoints
+      ISSUER_PROVISION_ROLE: 'maker'
+      ISSUER_PROVISION_SEED: '${MAKER_OFFER_SEED:-0000000000000000000000000000000000000000000000000000000000000031}'
+      ISSUER_PROVISION_SPEC: '${MAKER_INVENTORY_SPEC:-TWUSDC:100000000}'
+      ISSUER_PROVISION_MARKER: '/var/lib/maker-offer/.inventory-provisioned'
+    volumes:
+      - 'issuer-registry:/srv/issuer-registry:ro'
+      - 'issuer-state:/app/.local'
+      - 'maker-offer-state:/var/lib/maker-offer'
+    tmpfs:
+      - '/run/issuer:mode=0700'
+    depends_on:
+      node: { condition: service_healthy }
+      indexer: { condition: service_healthy }
+      proof-server: { condition: service_healthy }
+      issuer-deploy: { condition: service_completed_successfully }
+      # It opens the MAKER's facade, and so does maker-provision. Sequential, never concurrent.
+      maker-provision: { condition: service_completed_successfully }
 
   # ── maker-offer ────────────────────────────────────────────────────────────
   # ONE-SHOT: one real, settle-able offer, so the mirrored book is not empty. The solver's
@@ -219,34 +440,45 @@ services:
     environment:
       <<: *midnight_endpoints
       MAKER_OFFER_ENABLED: '${MAKER_OFFER_ENABLED:-true}'
-      # The genesis wallet by default, because the deploy one-shot's mint credits exactly that
-      # wallet — it is the only one holding a test token to give away.
-      MAKER_SEED: '${MAKER_OFFER_SEED:-0000000000000000000000000000000000000000000000000000000000000001}'
+      # ITS OWN ROSTER SEED SINCE 00020 PR C (…0031, `e2e-maker` in wallets/wallets.json). It
+      # was genesis-1 up to `KERNEL_REF=a608fa6…` for one mechanical reason — the deleted
+      # faucet mint credited exactly that wallet, so genesis-1 was the only one on the chain
+      # holding a test token to give away. `maker-provision` funds it with NIGHT and
+      # `maker-inventory` stocks it with the give token, both above. The entrypoint takes the
+      # genesis lock ONLY if an operator points this back at the genesis seed (questions Q9.6).
+      MAKER_SEED: '${MAKER_OFFER_SEED:-0000000000000000000000000000000000000000000000000000000000000031}'
+      # Read by the entrypoint to decide whether the genesis lock is needed at all.
+      MIDNIGHT_GENESIS_SEED: '${MIDNIGHT_GENESIS_SEED:-0000000000000000000000000000000000000000000000000000000000000001}'
       MIDNIGHT_STORAGE_PASSWORD: '${MIDNIGHT_STORAGE_PASSWORD:-YourPasswordMy1!}'
-      # Unset ⇒ read from minted-tokens.json on the shared volume. Colours derive from the
-      # deployed contract address, so they differ on every fresh stack and cannot be written
-      # down here.
-      GIVE_TOKEN: '${MAKER_OFFER_GIVE_TOKEN:-}'
-      WANT_TOKEN: '${MAKER_OFFER_WANT_TOKEN:-}'
+      # BOTH REQUIRED at this pin: `resolveExplicitTokens()` has no `minted-tokens.json`
+      # fallback of any kind and a blank leg is a hard refusal. Given as NAMES from the anchors
+      # at the top of this file — the same two the solver's ladder pair and `maker-inventory`
+      # use — and resolved to this chain's ids by the entrypoint.
+      GIVE_TOKEN: *swap_give
+      WANT_TOKEN: *swap_want
+      # BASE UNITS, and upstream's own two defaults. 500000 of TWBTC (8 decimals) is 0.005
+      # whole coins; 750000 of TWETH (18 decimals) is a very small fraction of one. Together
+      # they set this offer's PRICE, which is what the solver's fee-sizing mirror quotes
+      # against — they are not a claim about what BTC and ETH are worth, and the generated
+      # ladder's `refPricesUsd` is "1" on both sides for the same reason.
       GIVE_AMOUNT: '${MAKER_OFFER_GIVE_AMOUNT:-500000}'
       WANT_AMOUNT: '${MAKER_OFFER_WANT_AMOUNT:-750000}'
       TTL_MINUTES: '${MAKER_OFFER_TTL_MINUTES:-120}'
       MAKER_OFFER_MARKER_DIR: '/var/lib/maker-offer'
     volumes:
-      - 'offerfiles-deploy:/srv/offerfiles-deploy:ro'
       - 'maker-offer-state:/var/lib/maker-offer'
-      # MAKER_SEED is the GENESIS seed by default (the deploy one-shot's mint credited exactly
-      # that wallet), so this one-shot is the third genesis-1 facade — see the note on
-      # solver-provision's volumes above and 00011 Q7.
+      # THE TOKEN HANDOFF, read-only: the entrypoint sources it to resolve the two names above.
+      - 'issuer-tokens:/srv/issuer-tokens:ro'
+      # Still mounted, because MAKER_SEED remains overridable to the genesis seed and the
+      # entrypoint then takes this lock. On the default path it is never touched.
       - 'genesis-lock:/srv/genesis-lock'
     depends_on:
       kernel: { condition: service_healthy }
-      offerfiles-deploy: { condition: service_completed_successfully }
-      # NOT ordering for its own sake: solver-provision drives a wallet on the SAME genesis
-      # seed this service posts from, and two wallet facades on one seed against one node
-      # force each other's connection down — the second to connect wins and the first
-      # silently stops syncing.
-      solver-provision: { condition: service_completed_successfully }
+      # NOT ordering for its own sake: maker-inventory drives a facade on the SAME seed this
+      # service posts from, and two wallet facades on one seed against one node force each
+      # other's connection down — the second to connect wins and the first silently stops
+      # syncing. It is also what puts the give coin in the wallet.
+      maker-inventory: { condition: service_completed_successfully }
 
   # ── solver ─────────────────────────────────────────────────────────────────
   solver:
@@ -319,7 +551,7 @@ services:
       # about a stack whose whole point is that every kernel-built process is ONE commit. It
       # is DISPLAY ONLY — the authoritative identity assertion is
       # scripts/verify-source-pins.sh against /app/.kernel-commit in the image.
-      GIT_COMMIT: '${KERNEL_REF:-a608fa67419c16188e9405417ecdf34f3f7c47a1}'
+      GIT_COMMIT: '${KERNEL_REF:-e3b9388d11dfe1a6c5554a4c8699250fe595e4ce}'
       # MAKER_OFFER_ENABLED / SOLVER_PROVISION_ENABLED USED TO BE HERE, read ONLY by the old
       # healthcheck to decide how strict it could be about an empty relay token list. That probe
       # is gone (00015 PR B), and with it their only reader on THIS service — the solver process
@@ -345,7 +577,6 @@ services:
     # ports:
     #   - '${BIND_ADDR:-127.0.0.1}:${SOLVER_STATUS_HOST_PORT:-19100}:9100'
     volumes:
-      - 'offerfiles-deploy:/srv/offerfiles-deploy:ro'
       - 'solver-config:/srv/solver-config:ro'
       # Per-instance and chain-keyed: a journal that outlives the genesis it was written
       # against is worse than no journal.
@@ -408,10 +639,12 @@ services:
     depends_on:
       kernel: { condition: service_healthy }
       relay: { condition: service_healthy }
-      offerfiles-deploy: { condition: service_completed_successfully }
-      # NOT merely ordering: solver-provision drives a wallet on SOLVER_SEED, and it writes
-      # the ladder config this service reads.
+      # NOT merely ordering: BOTH one-shots drive a wallet on SOLVER_SEED, which this service
+      # then holds open for the life of the stack. `solver-provision` writes the ladder config
+      # and the receipt this service and ./verify.sh read; `solver-inventory` puts the tokens
+      # in the wallet, without which every rung is withheld and the ladder publishes empty.
       solver-provision: { condition: service_completed_successfully }
+      solver-inventory: { condition: service_completed_successfully }
     # on-failure, NOT unless-stopped: a solver that exits 1 because its configuration is
     # incomplete must stay down and visible. Its launch check reports every problem at once,
     # so one restart shows the whole list — a perpetual loop would bury it. SOLVER_ENABLED=
@@ -511,7 +744,7 @@ services:
     build:
       context: '../images/intents-ui'
       args:
-        RELAY_REF: '${RELAY_REF:-061f4d3258e25b9f3a451b4b4358ed232349d96b}'
+        RELAY_REF: '${RELAY_REF:-b32e0b100a5715d1fbf89c155afe6c2236d3b013}'
         # Friendly names for the UI, baked at build time (see .env.example). Empty by default:
         # colours are per chain, so a committed value would name the wrong tokens.
         UI_TOKEN_NAMES: '${INTENTS_UI_TOKEN_NAMES:-}'
@@ -540,13 +773,24 @@ volumes:
   relay-wallet-cache: # a wallet sync cache for a chain that no longer exists is worse than a
                       # cold start: it replays state whose nullifiers and coins are gone.
   solver-journal:     # wallet operations keyed to a chain state that `./down.sh -v` destroys.
-  solver-config:      # the ladder generated against THIS chain's contract address; carried
-                      # across a reset it points the solver at token colours that do not exist.
-  maker-offer-state:  # the marker recording that this chain's book was already seeded.
+  solver-config:      # the ladder generated against THIS chain's issued token ids, the
+                      # provisioning receipt, and the inventory marker; carried across a reset
+                      # they point the solver at colours that do not exist.
+  maker-offer-state:  # the marker recording that this chain's book was already seeded, plus
+                      # the maker's NIGHT and inventory markers.
   #
   # AND ONE THAT IS NOT CHAIN STATE AT ALL:
   genesis-lock:       # the genesis-1 facade mutex (00011 Q7), holding one empty lock file.
-                      # Declared IDENTICALLY in compose/poster.yml so `poster-provision` takes
-                      # the same lock as `solver-provision` and `maker-offer` without either
-                      # fragment referencing the other. It carries no state worth keeping and
-                      # is removed by `./down.sh -v` with the rest.
+                      # Declared IDENTICALLY in compose/poster.yml and compose/issuer.yml so
+                      # `poster-provision` and `issuer-deploy` take the same lock as
+                      # `solver-provision` and `maker-provision` without any fragment
+                      # referencing another. It carries no state worth keeping and is removed
+                      # by `./down.sh -v` with the rest.
+  #
+  # AND THREE THIS FRAGMENT USES BUT DOES NOT OWN. Declared here IDENTICALLY to
+  # compose/issuer.yml — compose merges duplicate declarations, which is what lets a fragment
+  # mount another profile's volume without either referencing the other:
+  issuer-registry:    # the two `*-inventory` one-shots read the six colours from it. Read-only.
+  issuer-tokens:      # the `tokens.env` handoff `solver-provision` and `maker-offer` source.
+  issuer-state:       # the issuer's private-state store and the `flock` serialising its
+                      # facade. Read-WRITE, necessarily: both inventory one-shots mint.

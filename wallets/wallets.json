@@ -71,6 +71,20 @@
         "zero shared coin ids between any pair), so these are each wallet's own holdings and",
         "not one global ledger view repeated.",
         "",
+        "RE-CHECKED ON NODE 1.0.1 (00020 PR A, 2026-09-08). The core was re-pinned from 1.0.0 to",
+        "1.0.1 and these figures were NOT re-measured, because they cannot have changed: the two",
+        "files CFG_PRESET=dev loads are byte-identical in the two images (sha256 of",
+        "res/genesis/genesis_state_undeployed.mn = bed6ed25287753e4fb7475ce8f13e9f423df87dc4",
+        "58a42503e1993de81cf6556, of genesis_block_undeployed.mn = 3556527e04be152a82abed8c0dfc",
+        "2ad3d6e981da63907596aacfd0ccc59bbaff), the whole of res/dev and res/cfg diffs clean, and",
+        "the live chain's genesis hash was the same on both images (0xe72f7a21a0397844563b4206f8",
+        "87b779ffa0d937c2d1b2339441faa1f08b9846) with block 1 identical across a node upgrade on",
+        "one volume. The toolkit image (1.0.0, sha256:8d7dbd84...) did not move either, so",
+        "$verification.addressesDerivedWith stands unchanged. The 00020 PR A gate then exercised",
+        "every wallet in this roster end to end: ./verify.sh, all eight sections, 174 OK / 0 FAIL.",
+        "The 'how' line below therefore still records the ORIGINAL measurement on node 1.0.0, and",
+        "that is deliberate: rewriting it would turn a true historical record into a false one.",
+        "",
         "DUST is registered at genesis: each funded wallet has 5 dust UTXOs, one backing each",
         "NIGHT UTXO, all with ctime 1754395200 and initial_value 0, giving a total generation",
         "capacity of 1.25e24. `dust.capacity` is a STRING because 1.25e24 exceeds the IEEE-754",
@@ -294,7 +308,7 @@
     },
     {
       "name": "solver",
-      "role": "THE COW SOLVER's wallet — holds swap-token inventory and settles relay intents",
+      "role": "THE COW SOLVER's wallet — holds issuer-minted swap-token inventory and settles relay intents",
       "envVar": "SOLVER_SEED",
       "$comment": [
         "A DEDICATED, NON-GENESIS seed. Two things make this non-negotiable:",
@@ -314,7 +328,7 @@
       "seed": "0000000000000000000000000000000000000000000000000000000000000021",
       "seedBytes": 32,
       "funding": "provisioned",
-      "provisionedBy": "solver-provision (compose/solver.yml, profile `solver`)",
+      "provisionedBy": "solver-provision then solver-inventory (compose/solver.yml, profile `solver`) — since 00020 PR C the first sends NIGHT from genesis-1 and runs upstream's external-prefunding check, the second mints both swap tokens through the `issuer` profile. Ordered one after the other because both open a facade on this seed.",
       "expect": {
         "measuredOn": "2026-09-01",
         "node": "midnight-node 1.0.0, CFG_PRESET=dev",
@@ -333,12 +347,12 @@
     },
     {
       "name": "e2e-maker",
-      "role": "the canonical e2e driver's MAKER — posts the signed zswap offer to POST /v1/offers",
+      "role": "THE MAKER — the `maker-offer` one-shot's wallet since 00020 PR C, and the canonical e2e driver's maker. It posts the signed zswap offer to POST /v1/offers.",
       "envVar": "MAKER_SEED",
       "seed": "0000000000000000000000000000000000000000000000000000000000000031",
       "seedBytes": 32,
       "funding": "provisioned",
-      "provisionedBy": "the e2e driver (P5/T5.2), from genesis-1",
+      "provisionedBy": "maker-provision then maker-inventory (compose/solver.yml, profile `solver`) — NIGHT from genesis-1, then the give token from the `issuer` profile — and, when it is run, the canonical e2e driver. SHARED BY MORE THAN ONE JOB, AND SAFE ONLY BECAUSE THEY ARE SEQUENTIAL: maker-provision, maker-inventory, maker-offer and the e2e driver are one-shots ordered one after another, and none of them is running when another opens this facade. Nothing long-lived may ever hold this seed. Up to 00020 PR B the maker was genesis-1, because the kernel's deleted faucet mint credited exactly that wallet; kernel #69 removed the mint, so the maker got its own seed.",
       "expect": {
         "measuredOn": "2026-09-01",
         "node": "midnight-node 1.0.0, CFG_PRESET=dev",
@@ -357,13 +371,13 @@
     },
     {
       "name": "e2e-taker",
-      "role": "the canonical e2e driver's TAKER — submits the intent at the relay and is credited",
+      "role": "THE TAKER — submits the intent at the relay and is credited, and takes one poster offer in scripts/verify-poster.sh. Since 00020 PR C it cannot mint the token an offer demands (kernel #69 deleted the faucet circuit): `issuer-fund` credits it first.",
       "envVar": "TAKER_SEED",
       "$comment": "Its credit is asserted for EXACT EQUALITY with the demanded amount, not a bound, so this wallet must start empty of the demanded token and be used by nothing else.",
       "seed": "0000000000000000000000000000000000000000000000000000000000000032",
       "seedBytes": 32,
       "funding": "provisioned",
-      "provisionedBy": "the e2e driver (P5/T5.2), from genesis-1",
+      "provisionedBy": "NIGHT from genesis-1 by whichever driver is running it (scripts/driver/take-poster-offer.ts, the e2e driver); the SWAP TOKEN it must pay with comes from `issuer-fund` — since 00020 PR C nothing in this stack can mint from the taker's own wallet.",
       "expect": {
         "measuredOn": "2026-09-01",
         "node": "midnight-node 1.0.0, CFG_PRESET=dev",
@@ -382,7 +396,7 @@
     },
     {
       "name": "poster",
-      "role": "THE OFFER POSTER's wallet — mints one faucet coin per tick and posts one sponsored ZSwap offer spending exactly that coin",
+      "role": "THE OFFER POSTER's wallet — posts one sponsored ZSwap offer per tick, spending exactly ONE pre-minted issuer coin whole. It has not minted anything since 00020 PR C: kernel #69 deleted the faucet circuit, so its inventory is pre-minted by `poster-inventory` and the book is bounded by that stock.",
       "envVar": "OFFER_POSTER_SEED",
       "$comment": [
         "A DEDICATED, NON-GENESIS seed, added by project 00011 PR C with the `poster` profile.",
@@ -411,8 +425,8 @@
       ],
       "seed": "0000000000000000000000000000000000000000000000000000000000000041",
       "seedBytes": 32,
-      "funding": "provisioned by poster-provision (NIGHT from genesis-1, then DUST registration by the poster wallet itself)",
-      "provisionedBy": "poster-provision (compose/poster.yml, profile `poster`)",
+      "funding": "provisioned in two steps: poster-provision (NIGHT from genesis-1, then DUST registration by the poster wallet itself) and poster-inventory (POSTER_PREMINT_COUNT coins of exactly OFFER_POSTER_GIVE_AMOUNT base units of the give token, minted by the `issuer` profile)",
+      "provisionedBy": "poster-provision then poster-inventory (compose/poster.yml, profile `poster`)",
       "expect": {
         "measuredOn": "2026-09-03",
         "node": "midnight-node 1.0.0, CFG_PRESET=dev",
@@ -428,6 +442,65 @@
         "userAddress": "7c17172c6330cb94edc1c7cc8402baf8f02c4cbfd5814cbf2108b27690128d69",
         "coinPublic": "a6419d71567e29de4556ea6062171f51b953df693669b358c1cc9753dc591406"
       }
+    },
+    {
+      "name": "issuer",
+      "role": "THE TOKEN ISSUER's wallet — deploys this stack's six mint-test-tokens v1 token contracts once per chain and pays for every headless mint (`issuer-fund`)",
+      "envVar": "ISSUER_SEED",
+      "$comment": [
+        "A DEDICATED, NON-GENESIS seed, added by project 00020 PR B with the `issuer` profile.",
+        "",
+        "  1. THE FACADE HAZARD AT THE TOP OF THIS FILE APPLIES IN FULL. `issuer-deploy` holds",
+        "     a wallet facade open for the length of SIX contract deployments with proving —",
+        "     many minutes — and `issuer-fund` opens one for every mint. So this seed must never",
+        "     equal any other in this roster, and nothing else may ever open a facade on it.",
+        "     images/issuer/m1/provision.ts exits 78 (EX_CONFIG) if it is handed the genesis",
+        "     seed, `issuer-fund` refuses to mint to the issuer's own seed, and both hold a",
+        "     `flock` on the `issuer-state` volume so two issuer containers cannot run at once.",
+        "",
+        "  2. WHY NOT genesis-1, which is what mint-test-tokens' own `undeployed` path would",
+        "     otherwise be pointed at: on this stack genesis-1 is the faucet, the offer-files",
+        "     deploy/mint wallet, the kernel's own MIDNIGHT_WALLET_SEED and the source every",
+        "     other provisioning one-shot draws from. A facade held on it for the length of six",
+        "     proving deployments would take one of those offline with no error naming the",
+        "     cause. Recorded as project 00020 question Q5.",
+        "",
+        "  3. It is NOT funded at genesis (only genesis-1, genesis-2, batcher and lace-test are",
+        "     — measured, see $verification). `issuer-deploy` sends it four large NIGHT UTXOs",
+        "     from genesis-1 under a flock on the shared `genesis-lock` volume, REGISTERS that",
+        "     NIGHT for DUST itself (nothing in mint-test-tokens does — it is written for",
+        "     wallets that arrive already funded), and waits for the DUST to appear before it",
+        "     will deploy anything. Every mint afterwards is paid out of the DUST that NIGHT",
+        "     keeps generating.",
+        "",
+        "  4. It holds NO test tokens of its own by design: `issuer-fund` mints DIRECTLY to the",
+        "     recipient's coin public key (shielded) or user address (unshielded), so nothing is",
+        "     ever minted here and then transferred. That is the opposite of the poster's",
+        "     wallet, which holds one shielded coin per un-offered tick.",
+        "",
+        "  5. `…0051` continues the roster's placeholder pattern (solver `…21`, e2e-maker",
+        "     `…31`, e2e-taker `…32`, poster `…41`) and is deliberately far from every genesis",
+        "     seed."
+      ],
+      "seed": "0000000000000000000000000000000000000000000000000000000000000051",
+      "seedBytes": 32,
+      "funding": "provisioned by issuer-deploy (four large NIGHT UTXOs from genesis-1, then DUST registration by the issuer wallet itself, then a bounded wait for the DUST to arrive)",
+      "provisionedBy": "issuer-deploy (compose/issuer.yml, profile `issuer`)",
+      "expect": {
+        "measuredOn": null,
+        "node": "midnight-node 1.0.1, CFG_PRESET=dev",
+        "emptyAtGenesis": true,
+        "note": "emptyAtGenesis is ASSERTED here rather than measured per-wallet: the dev preset funds exactly four wallets (genesis-1, genesis-2, batcher, lace-test — see $verification) and this seed is none of them. What IS measured is the funding path: issuer-deploy refuses to write its marker unless the wallet really holds >= 5000000000000 NIGHT and strictly positive DUST afterwards, and it prints both numbers."
+      },
+      "addresses": {
+        "unshielded": "mn_addr_undeployed1s7kqvhutmza0v0d0pp569dvmnhc093qn7xtn7m8es8hmdrz697gqa5s7fl",
+        "shielded": "mn_shield-addr_undeployed15zwdkpfagrm7q39r6wj7vl66e4j9evptn9l66zq4ekf8cnvuwfgj4pw5tcl40z2hxnrqgj6zxuaq6nnhuev92py2mhymmsrv57tx6cscpklk0",
+        "dust": "mn_dust_undeployed1wds7euxz423tfx2ne60dmg55lal46gn5s8kltjtzp7d0ez7v2ksnvv80fh2",
+        "userAddress": "87ac065f8bd8baf63daf0869a2b59b9df0f2c413f1973f6cf981efb68c5a2f90",
+        "coinPublic": "a09cdb053d40f7e044a3d3a5e67f5acd645cb02b997fad0815cd927c4d9c7251",
+        "verifyingKey": "e1f4d9fc243594e274c39d2648f98c93597e336227b73e01a854fbee597f7647"
+      },
+      "addressesDerivedOn": "2026-09-08"
     }
   ]
 }

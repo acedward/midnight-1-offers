@@ -25,8 +25,14 @@ services:
   # npm network access. See images/zswap-da/PROVENANCE.md.
   #
   # UNPATCHED FOR LEDGER, unlike the 2.x sibling: the template is v8-native at this ref
-  # (ledger-v8 8.1.0, midnight-js 4.1.1, compact-js 2.5.1, compact-runtime 0.16.0), which the
-  # build asserts in both directions rather than assuming.
+  # (ledger-v8 8.1.0, midnight-js 4.1.1), which the build asserts in both directions rather
+  # than assuming.
+  #
+  # AND IT COMPILES NOTHING since `FRONTEND_REF=400880ce…` (00020 PR D). effectstream #922 —
+  # the frontend half of kernel #69 — deleted the template's Compact source, its build script,
+  # its committed manifest and its Faucet SCREEN. There is no `COMPACT_VERSION` build arg here
+  # any more and no `compact` entry in config/artifact-decisions.json; the image asserts the
+  # absence instead, so a ref moved backwards fails the build.
   frontend:
     image: '${FRONTEND_IMAGE:-midnight-1-offers/zswap-da:local}'
     build:
@@ -34,17 +40,34 @@ services:
       args:
         FRONTEND_REPO: '${FRONTEND_REPO:-https://github.com/effectstream/effectstream.git}'
         # effectstream `midnight-1` head — the branch maintained for the 1.x line (Q14).
-        FRONTEND_REF: '${FRONTEND_REF:-58ab921be5513b77937a37be86bf724a41888302}'
+        FRONTEND_REF: '${FRONTEND_REF:-400880ceb6814738d1ae193dae18ad5128922edc}'
         # The commit says WHICH history; the subtree SHA says which BYTES of it were
         # extracted. scripts/verify-compose-pins.sh binds both to config/artifact-decisions.json.
-        FRONTEND_SUBTREE_SHA: '${FRONTEND_SUBTREE_SHA:-3ca1d56ffc29f03c73cf43432bdfeeaf3ab43c6b}'
-        # DELIBERATELY NOT OVERRIDABLE from the environment. The template's own
-        # scripts/build-contract.ts pins 0.31.0 and its committed manifest.json verifies all
-        # 16 outputs byte-for-byte, so any other compiler simply fails the build — but it
-        # would fail as a confusing hash mismatch rather than as a policy violation. Pinned
-        # literally here so verify-compose-pins.sh checks it against the matrix instead.
-        # (The kernel image compiles the same source with 0.30.0; two toolchains, on purpose.)
-        COMPACT_VERSION: '0.31.0'
+        FRONTEND_SUBTREE_SHA: '${FRONTEND_SUBTREE_SHA:-a750cccd653f33306d3ff7249fe8d5853fbfafa6}'
+        # ── the two values #920 made build-time (00020 Q4) ───────────────────
+        #
+        # src/config.ts reads BOTH from `import.meta.env` and offers NO `window.*` override
+        # for either, so neither can be moved into /config.js the way the six endpoint URLs
+        # are. They are baked, and this image is built per stack anyway (FRONTEND_IMAGE
+        # carries the run's tag).
+        #
+        # DELIBERATELY NOT OVERRIDABLE from the environment, like COMPACT_VERSION was: this
+        # repository is a local `undeployed` devnet in every other pin it makes, and #920
+        # flipped the template's own default to `preprod`. An env typo here would put the SPA
+        # on the wrong network for address formatting, offer parsing, the Lace handshake and
+        # the built-in JS wallet at once. The image refuses any other value.
+        FRONTEND_NETWORK_ID: 'undeployed'
+        # This stack's OWN faucet site — the `issuer` profile's nginx on ${FAUCET_HOST_PORT}
+        # (compose/issuer.yml), NOT the public mint-test-tokens site the template defaults to.
+        # scripts/pick-ports.sh emits this for every generated stack and scripts/lib/common.sh
+        # defaults it from the FAUCET_URL it already computes; the default below is the
+        # default port block's, matching FAUCET_HOST_PORT=10500.
+        #
+        # The `?network=undeployed` is DOCUMENTATION: src/faucetUrl.ts overwrites the
+        # parameter from FRONTEND_NETWORK_ID above. It is carried so the baked string is
+        # byte-identical to the URL `up.sh` prints, which is what lets
+        # scripts/verify-frontend.sh assert it out of the served bundle as an EXACT match.
+        FRONTEND_FAUCET_URL: '${FRONTEND_FAUCET_URL:-http://127.0.0.1:10500/?network=undeployed}'
     ports:
       - '${BIND_ADDR:-127.0.0.1}:${FRONTEND_HOST_PORT:-10600}:10600'
     environment:

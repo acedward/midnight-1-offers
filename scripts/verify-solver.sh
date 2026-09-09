@@ -16,7 +16,11 @@
 #                     unreachable through the published port — docker's proxy arrives from
 #                     the bridge network, not from 127.0.0.1. `connectedCount` is the only
 #                     direct evidence that the WS handshake and its bearer succeeded.
-#   ladder published  the two minted dev colours appear in /tokens. That union is built from
+#   provisioning      the receipt `provision-solver-fees.ts` MEASURED on the solver's wallet
+#                     (mode external-prefunded, inventorySource external, dustReady) and the
+#                     ladder config it wrote — whose three rungs are FIXED BASE UNITS,
+#                     {1000, 100000, 1000000}, NOT scaled by this pair's 8 and 18 decimals.
+#   ladder published  the two issued colours appear in /tokens. That union is built from
 #                     what connected solvers advertise, which the solver derives from the
 #                     MIRRORED BOOK — so this single assertion covers provisioning, book
 #                     sync, derivation and publication at once. An empty list here is the
@@ -38,7 +42,18 @@
 #   intents UI        the page is served AND the same token set is reachable through its own
 #                     /api/v1 edge. That second half is the browser-network property: a
 #                     browser can only reach the relay through this proxy, so if it works
-#                     from the host it works from the page.
+#                     from the host it works from the page. Since 00020 phase G it also
+#                     asserts the SERVED config's `METADATA_TOKEN_<NAME>_DECIMALS` equals the
+#                     ISSUER REGISTRY's own decimals for all six colours — the relay answers
+#                     in base units and the page divides by that number, so an absent value
+#                     silently renders TWETH twelve orders of magnitude wrong — and, when the
+#                     `poster` profile is up, quotes the 8-decimal/18-decimal TWBTC -> TWETH
+#                     pair through the UI's own edge.
+#   settlement        THE CANONICAL 18-ASSERTION DRIVER (deploy/scripts/e2e.ts, case A), run
+#                     LAST because it consumes the offer it fills. Default ON,
+#                     SOLVER_VERIFY_SETTLEMENT=false to skip. See the block at the end of this
+#                     file for why it moved into the gate in phase G and for the two
+#                     measurements it depends on (E2E_SKIP_PROVISION and the projection wait).
 #   status listener   the solver's read-only /status/* on :9100, from INSIDE the compose
 #                     network: 200 with the bearer, 401 without it. It is deliberately not
 #                     published to the host, so `docker compose exec` is the only way to
@@ -52,6 +67,12 @@
 #                     container with `bun -e`, for the same reason /state is: this host has
 #                     no jq and no bun, and the verify scripts take no dependency a stock
 #                     macOS box lacks.
+#                     AND, since 00025, that EVERY PUBLISHED RUNG on the poster's pair is
+#                     priced within a band of the kernel's own reference. That is the exact
+#                     symptom of organizer issues/00023: a non-empty, un-withheld ladder whose
+#                     only rung was an offer mispriced by eleven orders of magnitude, which the
+#                     derivation preferred because it was the cheapest fill on the book — and
+#                     every assertion in this section passed while it was published.
 #   health            THE CONTAINER HEALTHCHECK ITSELF, because a healthcheck is a thing that
 #                     can be wrong. Since 00015 it asks the solver's own /health for `ready`
 #                     (issues/00013); the claim worth checking is not "healthy now" but "stays
@@ -63,11 +84,10 @@
 #
 # WHAT IT DELIBERATELY DOES NOT PROVE. The UI's swap flow needs a Midnight WALLET EXTENSION
 # to sign an intent (`window.midnight`, the dapp-connector API), which no script on this host
-# can provide. The quote half of that flow is asserted above; the take half is a manual step,
-# and the scripted settlement proof is the P5 driver, not this script.
-#
-# ALSO NOT HERE: settlement itself. A take CONSUMES the offer it fills, so a script that
-# settled would make its own next run fail with an empty book.
+# can provide. The quote half of that flow is asserted above and the settlement half is
+# asserted by the driver at the end of this file — but through the driver's own wallet, not
+# through the page. A human clicking Swap with a wallet extension is still the one claim only a
+# human can make, and it is recorded as an owner hand test.
 #
 # ── LIVING BESIDE THE `poster` PROFILE (00011 FR-014) ───────────────────────
 # The `poster` profile keeps a spread of its own offers on the same kernel book. Nothing this
@@ -80,19 +100,34 @@
 #      records, and reports the total book size separately.
 #   2. the exact-quote expectation, which came from MAKER_OFFER_GIVE_AMOUNT /
 #      _WANT_AMOUNT in the environment. It now comes from `GET /v1/offers/<maker hash>` —
-#      the offer's OWN legs — and the two dev colours resolved from minted-tokens.json are
+#      the offer's OWN legs — and the two colours resolved from the issuer's registry are
 #      cross-checked against that same offer, so a marker pointing at somebody else's offer
 #      is a failure rather than a wrong expectation.
 #
 # The ladder assertion ("the relay advertises both dev colours") is unaffected by design: it
 # asks whether two specific colours are in the relay's union, not how many are.
 #
-# The poster's own pair CANNOT collide with the maker's on this stack, and that is a property
-# of the two sources rather than of a lucky choice: the poster mints its give leg from the
-# FAUCET, which derives a colour from a preset NAME (WBTC), while the maker gives a colour
-# `mint-test-tokens.ts` minted from a fixed domain separator that no preset name maps to. The
-# assertions above do not rely on that — they identify the offer by hash — but it is why a
-# poster offer can never be mistaken for the seeded one.
+# THE MAKER AND THE POSTER MUST NOT SHARE A PAIR, and at this pin that is a CONFIGURATION
+# property rather than a structural one. Up to `KERNEL_REF=a608fa6…` they could not collide by
+# construction: the poster minted its give leg from the FAUCET (a colour derived from a preset
+# name), while the maker gave a colour `mint-test-tokens.ts` derived from a domain separator no
+# preset name maps to. Kernel #69 deleted both sources — every token on the stack is now one of
+# the issuer's six — so nothing STOPS an operator pointing both at the same two names.
+#
+# WHY IT MATTERS HERE, MEASURED RATHER THAN ARGUED. The exact-quote assertion below asks the
+# relay for `quote(WANT_AMOUNT)` and requires EXACTLY `GIVE_AMOUNT`. That holds only while the
+# maker's offer is the only one on its directed pair: the published ladder is derived from the
+# WHOLE BOOK (`deriveLadder(cache.book.all(), …)`), and its rungs are cumulative sums sorted by
+# price. On the first `--all` gate at this pin, with both services on TWBTC -> TWETH, the poster's
+# offers — whose want leg is QUOTED from real USD prices across an 8-decimal and an 18-decimal
+# token — sat in the same ladder at a price ELEVEN ORDERS OF MAGNITUDE from the maker's, and the
+# maker's own rung was no longer reachable at its own amountIn:
+#   POST /quote … 422 {"error":"unfulfillable","message":"amountIn is outside the published
+#   price range for this pair"}
+#
+# So compose gives the maker TWUSDC -> TWUSDM (both 6 decimals, both priced) and leaves the
+# poster on TWBTC -> TWETH. Identifying the maker offer BY HASH — which every assertion below
+# does — is necessary but NOT sufficient; the pair has to be the maker's alone.
 #
 # ── THE ONE SIDE EFFECT THIS SCRIPT DOES HAVE (00011 B.5b) ──────────────────
 # It re-seeds the book when there is no live maker offer left, and it does so LOUDLY.
@@ -191,27 +226,49 @@ else
   fi
 fi
 
-# ── which colours this stack actually minted ─────────────────────────────────
-# Read from the shared volume rather than hard-coded: colours derive from the deployed
-# contract address, so they differ on every fresh stack.
+# ── which colours the seeded offer trades ────────────────────────────────────
+#
+# THE SOURCE MOVED IN 00020 PR C. Up to `KERNEL_REF=a608fa6…` the two colours came out of
+# `minted-tokens.json` on the `offerfiles-deploy` volume, published by the deploy one-shot's
+# mint. Kernel #69 deleted the mint, the file and the volume; the ids are now ISSUED per chain
+# by the `issuer` profile, and `issuer_token_id` (scripts/lib/common.sh) reads them through the
+# one validating reader of that registry.
+#
+# `MAKER_OFFER_GIVE_TOKEN`/`_WANT_TOKEN` are NAMES here, exactly as compose passes them —
+# `TWBTC`/`TWETH` by default — because that is what an operator configures. A raw 64-hex value
+# is still accepted, for the same reason the entrypoints accept one: a deliberate override.
 echo
 log "solver: the seeded pair"
-MINTED="$(dc exec -T solver cat /srv/offerfiles-deploy/minted-tokens.json 2>/dev/null || true)"
-[[ -n "$MINTED" ]] || MINTED="$(dc exec -T kernel cat /srv/offerfiles-deploy/minted-tokens.json 2>/dev/null || true)"
-GIVE_TOKEN="${MAKER_OFFER_GIVE_TOKEN:-}"
-WANT_TOKEN="${MAKER_OFFER_WANT_TOKEN:-}"
-if [[ -z "$GIVE_TOKEN" || -z "$WANT_TOKEN" ]]; then
-  if [[ -z "$MINTED" ]]; then
-    fail "could not read minted-tokens.json from the shared volume, and no colours are configured"
-    exit 1
-  fi
-  GIVE_TOKEN="$(printf '%s' "$MINTED" | grep -oE '"shieldedA"[[:space:]]*:[[:space:]]*"[0-9a-f]{64}"' | grep -oE '[0-9a-f]{64}' | head -1)"
-  WANT_TOKEN="$(printf '%s' "$MINTED" | grep -oE '"shieldedB"[[:space:]]*:[[:space:]]*"[0-9a-f]{64}"' | grep -oE '[0-9a-f]{64}' | head -1)"
-fi
+
+# resolve_pair_leg <configured value> — a 64-hex id, or nothing.
+resolve_pair_leg() {
+  local value="${1:-}"
+  case "$value" in
+    "") return 0 ;;
+    *[!0-9a-fA-F]*) : ;;                       # has a non-hex character, so it is a NAME
+    *) if [[ "${#value}" -eq 64 ]]; then       # already an id
+         printf '%s' "$value" | tr 'A-F' 'a-f'
+         return 0
+       fi ;;
+  esac
+  issuer_token_id "$value" || true
+}
+
+# NO INLINE FALLBACK: `load_env` (scripts/lib/common.sh) is the single place these two names are
+# defaulted, and compose/solver.yml carries the twin literal. A copy here is exactly what made
+# run 2 of this phase's gate fail five assertions — see that block in common.sh.
+GIVE_NAME="${MAKER_OFFER_GIVE_TOKEN}"
+WANT_NAME="${MAKER_OFFER_WANT_TOKEN}"
+GIVE_TOKEN="$(resolve_pair_leg "$GIVE_NAME")"
+WANT_TOKEN="$(resolve_pair_leg "$WANT_NAME")"
 if [[ ! "$GIVE_TOKEN" =~ ^[0-9a-f]{64}$ || ! "$WANT_TOKEN" =~ ^[0-9a-f]{64}$ ]]; then
-  fail "could not resolve the two dev colours (give=${GIVE_TOKEN:-?} want=${WANT_TOKEN:-?})"
+  fail "could not resolve the seeded pair (give='${GIVE_NAME}' -> ${GIVE_TOKEN:-?},
+        want='${WANT_NAME}' -> ${WANT_TOKEN:-?}). These are ISSUER token names since 00020 PR C
+        and the ids come from the issuer's registry — is the \`issuer\` profile up?
+        This profile requires it: ./up.sh --with offerfiles --with issuer --with solver"
   exit 1
 fi
+info "pair from the issuer registry: ${GIVE_NAME}=${GIVE_TOKEN:0:16}… ${WANT_NAME}=${WANT_TOKEN:0:16}…"
 # The maker GIVES the first colour and WANTS the second, so from the solver's side the
 # directed pair is tokenIn=want, tokenOut=give. Getting this backwards is the single easiest
 # mistake to make here, and it presents as a 503 that looks like a broken solver.
@@ -321,6 +378,90 @@ maker_hash() {
 
 # mfield <key> — one flat key=value line out of MAKER_FIELDS.
 mfield() { printf '%s\n' "${MAKER_FIELDS:-}" | sed -n "s/^$1=//p" | head -1 || true; }
+
+# ── the provisioning receipt and the ladder config (00020 PR C, spec SC-003) ─
+#
+# NEW AT `KERNEL_REF=e3b9388…`, and it is the only place two of this pin's central claims are
+# observable at all.
+#
+# 1. THE RECEIPT. `deploy/scripts/provision-solver-fees.ts` writes a machine-readable record of
+#    what it MEASURED on the solver's own wallet, at the moment provisioning finished and
+#    before the solver booted — by the only process entitled to open that facade. Its
+#    `mode: "external-prefunded"`, `inventorySource: "external"` and `dustReady: true` are what
+#    "this deployment does not mint the solver's swap tokens" means as an OBSERVATION rather
+#    than as a configuration claim, and the kernel's own settlement driver asserts on exactly
+#    these three fields.
+#
+# 2. THE LADDER CONFIG'S RUNGS ARE FIXED BASE UNITS, and NOT scaled by decimals:
+#    {1000 -> 1000, 100000 -> 99000, 1000000 -> 970000} in both directions, `refPricesUsd` "1"
+#    on both sides. That is worth asserting precisely because it looks like something that
+#    should scale: this stack's pair is 8-decimal TWBTC against 18-decimal TWETH, and a reader
+#    who assumed the rungs followed the decimals would be wrong in a way nothing else here
+#    would catch. They come from the pinned script, so this asserts the pin.
+#
+# BOTH FILES LIVE ON `solver-config`, read through the SOLVER container (which mounts it
+# read-only) rather than through the one-shot, because the one-shot is gone by now.
+echo
+log "solver: provisioning receipt and ladder config"
+RECEIPT="$(dc exec -T solver cat /srv/solver-config/provision-receipt.json 2>/dev/null || true)"
+if [[ -z "$RECEIPT" ]]; then
+  fail "no /srv/solver-config/provision-receipt.json — solver-provision writes it, and the
+        settlement driver asserts on it. Check that one-shot's log."
+else
+  RCPT_BAD=""
+  for want in '"mode":"external-prefunded"' '"inventorySource":"external"' '"dustReady":true'; do
+    # The file is pretty-printed JSON, so whitespace is stripped before matching rather than
+    # matched around: `tr -d` is exact and needs no parser.
+    if [[ "$(printf '%s' "$RECEIPT" | tr -d ' \n')" != *"$want"* ]]; then
+      RCPT_BAD="${RCPT_BAD} ${want}"
+    fi
+  done
+  if [[ -z "$RCPT_BAD" ]]; then
+    ok "the provisioning receipt records mode=external-prefunded inventorySource=external dustReady=true"
+  else
+    fail "the provisioning receipt is missing or contradicts:${RCPT_BAD}
+          ${RECEIPT:0:400}"
+  fi
+  # The two ids it recorded must be the pair everything else here uses. A receipt naming other
+  # tokens means the ladder was written for a pair the maker never trades.
+  R_IN="$(printf '%s' "$RECEIPT" | tr -d ' \n' | sed -n 's/.*"tokenIn":"\([0-9a-f]*\)".*/\1/p' | head -1 || true)"
+  R_OUT="$(printf '%s' "$RECEIPT" | tr -d ' \n' | sed -n 's/.*"tokenOut":"\([0-9a-f]*\)".*/\1/p' | head -1 || true)"
+  if [[ "$R_IN" == "$WANT_TOKEN" && "$R_OUT" == "$GIVE_TOKEN" ]]; then
+    ok "and the pair it provisioned is this stack's: tokenIn=${WANT_NAME} tokenOut=${GIVE_NAME}"
+  else
+    fail "the receipt provisioned tokenIn=${R_IN:0:16}… tokenOut=${R_OUT:0:16}…, but the seeded
+          offer's pair is tokenIn=${WANT_TOKEN:0:16}… (${WANT_NAME}) tokenOut=${GIVE_TOKEN:0:16}… (${GIVE_NAME})"
+  fi
+fi
+
+LADDER_JSON="$(dc exec -T solver cat /srv/solver-config/ladders.dev.json 2>/dev/null || true)"
+if [[ -z "$LADDER_JSON" ]]; then
+  fail "no /srv/solver-config/ladders.dev.json — the solver reads it unconditionally"
+else
+  LADDER_FLAT="$(printf '%s' "$LADDER_JSON" | tr -d ' \n')"
+  RUNG_BAD=""
+  for rung in '{"input":"1000","output":"1000"}' \
+              '{"input":"100000","output":"99000"}' \
+              '{"input":"1000000","output":"970000"}'; do
+    [[ "$LADDER_FLAT" == *"$rung"* ]] || RUNG_BAD="${RUNG_BAD} ${rung}"
+  done
+  if [[ -z "$RUNG_BAD" ]]; then
+    ok "the ladder config carries the pin's three FIXED base-unit rungs (1000/100000/1000000), unscaled by decimals"
+  else
+    fail "the ladder config is missing rung(s):${RUNG_BAD}
+          provision-solver-fees.ts writes {1000->1000, 100000->99000, 1000000->970000} in both
+          directions at this pin — a different set means KERNEL_REF moved or the fallback
+          in-repo ladder was installed instead. ${LADDER_JSON:0:300}"
+  fi
+  if [[ "$LADDER_FLAT" == *"\"TOKEN_IN\":\"${WANT_TOKEN}\""* && "$LADDER_FLAT" == *"\"TOKEN_OUT\":\"${GIVE_TOKEN}\""* ]]; then
+    ok "and it names this stack's own two issued colours"
+  else
+    fail "the ladder config does not name this stack's pair (TOKEN_IN=${WANT_TOKEN:0:16}…,
+          TOKEN_OUT=${GIVE_TOKEN:0:16}…). The in-repo fallback ladder names an older
+          deployment's colours and is installed only when SOLVER_PROVISION_ENABLED=false.
+          ${LADDER_JSON:0:300}"
+  fi
+fi
 
 echo
 log "solver: the book behind the ladder"
@@ -435,14 +576,14 @@ if [[ "$SEEDED" == "yes" && "$MAKER_FIELDS" == *"fetch=ok"* ]]; then
   else
     fail "could not read the maker offer's own legs from the kernel (${MAKER_FIELDS:-no output})"
   fi
-  # The colours the ladder and refusal assertions use come from minted-tokens.json; the offer
-  # is the second, independent witness. A mismatch means the marker points at somebody else's
-  # offer, and every assertion below would be describing the wrong one.
+  # The colours the ladder and refusal assertions use come from the ISSUER's registry; the
+  # offer is the second, independent witness. A mismatch means the marker points at somebody
+  # else's offer, and every assertion below would be describing the wrong one.
   if [[ -n "${MAKER_GIVE_TOKEN:-}" && "$MAKER_GIVE_TOKEN" != "$GIVE_TOKEN" ]]; then
-    fail "the seeded offer gives ${MAKER_GIVE_TOKEN:0:16}…, but this stack's minted give colour is ${GIVE_TOKEN:0:16}…"
+    fail "the seeded offer gives ${MAKER_GIVE_TOKEN:0:16}…, but this stack's ${GIVE_NAME} is ${GIVE_TOKEN:0:16}…"
   fi
   if [[ -n "${MAKER_WANT_TOKEN:-}" && "$MAKER_WANT_TOKEN" != "$WANT_TOKEN" ]]; then
-    fail "the seeded offer wants ${MAKER_WANT_TOKEN:0:16}…, but this stack's minted want colour is ${WANT_TOKEN:0:16}…"
+    fail "the seeded offer wants ${MAKER_WANT_TOKEN:0:16}…, but this stack's ${WANT_NAME} is ${WANT_TOKEN:0:16}…"
   fi
 fi
 
@@ -616,6 +757,31 @@ PROBE_JS
   fi
 fi
 
+# ── the published ladder's LEVELS, read once and used twice ──────────────────
+#
+# Flattened to `LEVEL <tokenIn> <tokenOut> <input> <output>`, one line per rung. Read from
+# inside the monitor container for the same reason every other nested field in this file is:
+# this host has no jq and no bun. A QUOTED heredoc, so nothing here is expanded by this shell.
+#
+# HOISTED OUT OF THE intents-UI BLOCK in 00025, because there are now two consumers: the
+# monitor block asserts that every rung on the poster's pair is priced within a band of the
+# kernel's reference (issues/00023), and the UI block quotes one rung through the UI's own edge.
+# One definition, so the two cannot drift apart in what "a rung" means.
+read -r -d '' LADDER_PROBE_JS <<'LADDER_JS' || true
+const r = await fetch("http://127.0.0.1:8080/api/snapshot",
+                      { signal: AbortSignal.timeout(8000) }).catch(() => null);
+if (!r || !r.ok) process.exit(0);
+const s = await r.json().catch(() => null);
+const snap = s && s.solver ? s.solver.snapshot : null;
+const lad = snap && snap.ladder && !("error" in snap.ladder) ? snap.ladder : null;
+const last = lad && lad.last ? lad.last : null;
+for (const pair of (last && Array.isArray(last.levels) ? last.levels : [])) {
+  for (const lvl of (Array.isArray(pair.levels) ? pair.levels : [])) {
+    console.log(["LEVEL", pair.tokenIn, pair.tokenOut, lvl.input, lvl.output].join(" "));
+  }
+}
+LADDER_JS
+
 # ── the monitor (solver-frontend) ────────────────────────────────────────────
 if service_present solver-frontend; then
   echo
@@ -640,6 +806,7 @@ const snap = solver.snapshot ?? null;
 const relay = snap ? sec(snap.relay) : null;
 const ladder = snap ? sec(snap.ladder) : null;
 const listener = snap ? sec(snap.listener) : null;
+const backend = snap ? sec(snap.backend) : null;
 const tokens = sec(s.relay ? s.relay.tokens : null);
 const book = sec(s.kernel ? s.kernel.book : null);
 console.log([
@@ -650,6 +817,11 @@ console.log([
   "solverTransport=" + (solver.transport ?? "none"),
   "solverContractVersion=" + (solver.contractVersion ?? "?"),
   "relayConnected=" + (relay && relay.stats ? relay.stats.connected === true : false),
+  // The kernel-projection currentness the solver itself reports. Read here because it is the
+  // gate the settlement block below waits on: a job dispatched while this is false is refused
+  // TERMINALLY with `exact_files_unavailable` (organizer issues/00022).
+  "backendCurrent=" + (backend ? backend.isCurrent === true : "?"),
+  "backendReason=" + (backend && backend.currentness ? (backend.currentness.reason ?? backend.currentness.kind) : "?"),
   "ladderState=" + (ladder ? ladder.state : "?"),
   "ladderPairs=" + (ladder && ladder.last ? ladder.last.pairs : 0),
   "ladderRungs=" + (ladder && ladder.last ? ladder.last.rungs : 0),
@@ -752,6 +924,143 @@ MONITOR_JS
     else
       ok "the monitor reads the kernel's book directly (it renders with the solver down)"
     fi
+
+    # ── EVERY PUBLISHED RUNG ON THE POSTER'S PAIR IS PRICED (00025) ─────────
+    #
+    # THE EXACT SYMPTOM OF issues/00023, asserted where it was visible and unasserted. On the
+    # 00020 phase-G gate the whole published `TWETH → TWBTC` ladder was ONE rung, and that rung
+    # was the poster's tick-2 offer: `975000 → 1000000`, i.e. a taker giving
+    # 0.000000000000975 TWETH for 0.01 TWBTC. The six correctly-priced offers behind it were all
+    # `excluded: residual-budget`, because the derivation sorts by price and a fill at 10^-11 of
+    # the reference is unbeatable. Every assertion in this section passed: the ladder was
+    # non-empty, not withheld, and the relay answered that rung EXACTLY — the relay was right,
+    # the rung was garbage.
+    #
+    # HOW THE BAND IS COMPUTED, and why it is direction-agnostic. Each rung is re-quoted through
+    # the kernel with its OWN `tokenIn`/`tokenOut` and its own amounts, and the kernel returns
+    # `discount = 1 − implied_rate/market_rate` for exactly those numbers. For a rung derived
+    # from a correctly-quoted poster offer that is ±`sponsor_discount` (0.025) depending on which
+    # way the rung faces — the taker side of a sponsored offer gets slightly MORE than market —
+    # plus whatever the reference has drifted since. So the assertion is |discount| <=
+    # SOLVER_RUNG_BAND, default 0.10, which is four times the threshold and swallows any real
+    # drift. The 00023 rung's `discount` against a corrected reference is about −3.4e11.
+    #
+    # THE POSTER'S PAIR, resolved from the issuer registry rather than typed: the colours are
+    # per chain, and `OFFER_POSTER_GIVE_TOKEN`/`_WANT_TOKEN` are defaulted in exactly one place
+    # (scripts/lib/common.sh) which compose reads too.
+    if service_present offer-poster && service_present faucet; then
+      RUNG_BAND="${SOLVER_RUNG_BAND:-0.10}"
+      # ONE `issuer-registry` run for both colours: primed as a PLAIN CALL in this shell so its
+      # process-lifetime cache survives. Inside `$( )` it would be a subshell, the cache would
+      # die with it, and every `issuer_token_id` below would start its own container — a
+      # container that INHERITS AND CONSUMES STDIN (00020 phase G).
+      issuer_registry_lines >/dev/null 2>&1 || true
+      RUNG_GIVE="$(issuer_token_id "${OFFER_POSTER_GIVE_TOKEN}" || true)"
+      RUNG_WANT="$(issuer_token_id "${OFFER_POSTER_WANT_TOKEN}" || true)"
+      if [[ ! "$RUNG_GIVE" =~ ^[0-9a-f]{64}$ || ! "$RUNG_WANT" =~ ^[0-9a-f]{64}$ ]]; then
+        fail "could not resolve the poster's pair (${OFFER_POSTER_GIVE_TOKEN} -> ${RUNG_GIVE:-?},
+              ${OFFER_POSTER_WANT_TOKEN} -> ${RUNG_WANT:-?}) from the issuer registry, so the
+              published rungs on it cannot be priced"
+      else
+        # rung_discount <tokenIn> <tokenOut> <input> <output> — the kernel's own
+        # `1 − implied/market` for that rung, or nothing when it could not be read.
+        #
+        # `|| true` on the capture and on every extraction: an unanswered quote must yield the
+        # empty string and a NAMED failure in the caller, never a `pipefail` exit from inside
+        # `$( )` (00011 C.8).
+        rung_discount() {
+          local body
+          body="$(curl -fsS --max-time 20 \
+            "${KERNEL}/v1/quote?from_token=$1&to_token=$2&from_amount=$3&to_amount=$4" \
+            2>/dev/null | tr -d '\n' || true)"
+          printf '%s' "$body" \
+            | grep -oE '"discount"[[:space:]]*:[[:space:]]*-?[0-9]+(\.[0-9]+)?([eE][-+]?[0-9]+)?' \
+            | sed 's/.*:[[:space:]]*//' | head -1 || true
+        }
+        # in_band <value> <tolerance> — |value| <= tol. awk, because bash has no floating point
+        # and 3.4e11 is not something `[[ ]]` can compare. `</dev/null` so awk cannot consume
+        # the `while read` loop's stdin below — the failure that ate five of six lines in 00020
+        # phase G.
+        in_band() {
+          awk -v v="${1:-}" -v t="${2:-0}" 'BEGIN {
+            if (v == "") { exit 2 }
+            if (v < 0) { v = -v }
+            exit (v <= t) ? 0 : 1
+          }' </dev/null
+        }
+
+        # Retried as a WHOLE — re-read the ladder, then quote it — for the same reason the UI
+        # block is: the poster posts roughly every minute and the relay withdraws its ladder
+        # fail-closed in 10-20 s windows, so a rung read now can be gone when it is quoted.
+        # `RUNG_DONE` means "this check reached a verdict", pass OR fail — not "it passed". An
+        # out-of-band rung is a finding and is reported immediately rather than retried.
+        RUNG_DONE=0
+        RUNG_LAST=""
+        for RUNG_TRY in 1 2 3; do
+          RUNG_LEVELS="$(dc exec -T solver-frontend bun -e "$LADDER_PROBE_JS" 2>/dev/null || true)"
+          RUNG_ON_PAIR="$(printf '%s\n' "$RUNG_LEVELS" \
+            | grep -E "^LEVEL (${RUNG_WANT} ${RUNG_GIVE}|${RUNG_GIVE} ${RUNG_WANT}) " || true)"
+          RUNG_COUNT="$(printf '%s\n' "$RUNG_ON_PAIR" | grep -c '^LEVEL ' || true)"
+          if [[ "${RUNG_COUNT:-0}" == "0" ]]; then
+            RUNG_LAST="the published ladder carries no rung on the poster's pair ($(printf '%s\n' "$RUNG_LEVELS" | grep -c '^LEVEL ' || true) rung(s) in total)"
+            (( RUNG_TRY < 3 )) && sleep 15
+            continue
+          fi
+          # The loop's input is a here-doc, and NOTHING inside it may read stdin: `dc exec`,
+          # `dc run` and a bare `awk` all would. `rung_discount` uses curl (which does not) and
+          # `in_band`'s awk is fed `</dev/null` for exactly this reason.
+          RUNG_CHECKED=0
+          RUNG_BAD=""
+          RUNG_UNREADABLE=""
+          RUNG_REPORT=""
+          while IFS= read -r rung; do
+            [[ -n "$rung" ]] || continue
+            # shellcheck disable=SC2034  # the literal LEVEL tag is consumed and discarded
+            read -r _R_TAG R_IN R_OUT R_AMT R_GOT <<EOF
+$rung
+EOF
+            [[ -n "${R_AMT:-}" && -n "${R_GOT:-}" ]] || continue
+            RUNG_CHECKED=$(( RUNG_CHECKED + 1 ))
+            R_DISC="$(rung_discount "$R_IN" "$R_OUT" "$R_AMT" "$R_GOT")"
+            R_RC=0
+            in_band "${R_DISC:-}" "$RUNG_BAND" || R_RC=$?
+            case "$R_RC" in
+              0) RUNG_REPORT="${RUNG_REPORT} ${R_AMT}->${R_GOT}(d=${R_DISC})" ;;
+              2) RUNG_UNREADABLE="${RUNG_UNREADABLE} ${R_AMT}->${R_GOT}" ;;
+              *) RUNG_BAD="${RUNG_BAD} ${R_AMT}->${R_GOT}(d=${R_DISC})" ;;
+            esac
+          done <<EOF
+${RUNG_ON_PAIR}
+EOF
+          if (( RUNG_CHECKED != RUNG_COUNT )); then
+            RUNG_LAST="read ${RUNG_CHECKED} of ${RUNG_COUNT} rung(s) — the check would be vacuous"
+          elif [[ -n "$RUNG_UNREADABLE" ]]; then
+            RUNG_LAST="the kernel would not quote rung(s):${RUNG_UNREADABLE}"
+          elif [[ -z "$RUNG_BAD" ]]; then
+            ok "all ${RUNG_CHECKED} published rung(s) on the poster's pair are priced within ${RUNG_BAND} of the kernel's reference:${RUNG_REPORT}"
+            RUNG_DONE=1
+            break
+          else
+            # NOT retried: an out-of-band rung is a finding, not a race. Fail immediately and
+            # name the rung, its discount and the arithmetic.
+            fail "published rung(s) on the poster's pair are priced OUTSIDE the band (|1 - implied/market| > ${RUNG_BAND}):${RUNG_BAD}
+                  ${RUNG_CHECKED} rung(s) checked, in band:${RUNG_REPORT:- none}
+                  This is issues/00023 exactly: an offer quoted before issuer-registrar bound this
+                  stack's colours is priced from the kernel's fabricated \$1-per-base-unit demo
+                  answer, and the solver's ladder derivation PREFERS it because it is the cheapest
+                  fill on the book. A taker quoting this pair through the relay is quoted, and can
+                  settle, that rung. ./up.sh starts the poster only after the registrar; check
+                  \`docker compose logs offer-poster | grep -E 'demo-fallback|market_rate='\`."
+            RUNG_DONE=1   # a verdict was reached; a finding is never retried
+            break
+          fi
+          (( RUNG_TRY < 3 )) && sleep 15
+        done
+        if (( ! RUNG_DONE )); then
+          fail "could not price the poster's published rungs in 3 attempts 15 s apart — last: ${RUNG_LAST}"
+        fi
+      fi
+    fi
   fi
 
   # 3. The SSE feed. One frame on connect is the contract; `--max-time` bounds the stream,
@@ -793,6 +1102,154 @@ if service_present intents-ui; then
     fail "the served page names the compose-internal host 'relay' — a browser cannot resolve it"
   else
     ok "the served page names no compose-internal hostname"
+  fi
+
+  # ── THE DECIMALS THE PAGE RENDERS AMOUNTS WITH (00020 phase G) ─────────────
+  #
+  # The relay answers in BASE UNITS and the page divides by
+  # `METADATA_TOKEN_<NAME>_DECIMALS` (relay pin b32e0b100). Absent, that metadata defaults to
+  # SIX — which is wrong for TWBTC/UTWBTC (8) and wrong by TWELVE ORDERS OF MAGNITUDE for
+  # TWETH (18), and wrong SILENTLY: the page renders a number, just not this one. Phase F
+  # asserted the 6-decimal pair end to end in a browser and could only assert 8 and 18 in the
+  # served config, because the only pair on the book in that profile set was the maker's
+  # 6-decimal one. Here it is asserted from the shipped bytes for every issued token, with the
+  # value taken from the REGISTRY rather than from a literal.
+  if service_present faucet; then
+    UI_DEC_BAD=""
+    UI_DEC_OK=0
+    # ONE registry read, held in a variable, and every field parsed OFF THE LINE — not
+    # `issuer_token_field` per name.
+    #
+    # THIS IS NOT AN OPTIMISATION, IT IS THE FIX FOR A REAL BUG THIS GATE FOUND. Each
+    # `issuer_token_field` call is a command substitution, i.e. a SUBSHELL, so
+    # `issuer_registry_lines`'s process-lifetime cache never survives it and every call
+    # re-runs `docker compose run --rm --no-deps -T issuer-registry`. That container
+    # INHERITS AND CONSUMES STDIN — which, inside a `while IFS= read -r` loop fed by a
+    # heredoc, is the loop's own input. On the phase-G gate that swallowed five of the six
+    # lines: the section reported `(0/6 correct): TWBTC(no-TOKEN-key)` and named one token
+    # where six were wrong. The same shape would have made a PASSING run vacuous.
+    UI_REG_LINES="$(issuer_registry_lines || true)"
+    while IFS= read -r line; do
+      [[ -n "$line" ]] || continue
+      UI_NAME="${line#ISSUER_TOKEN }"
+      UI_NAME="${UI_NAME%% *}"
+      [[ -n "$UI_NAME" && "$UI_NAME" != "$line" ]] || continue
+      # `[[:space:]]` and not `\s`: BSD sed (what macOS ships) does not know the GNU escape.
+      UI_WANT_DEC="$(printf '%s' "$line" | sed -n 's/.*[[:space:]]decimals=\([^[:space:]]*\).*/\1/p' | head -1 || true)"
+      UI_WANT_ID="$(printf '%s' "$line" | sed -n 's/.*[[:space:]]id=\([^[:space:]]*\).*/\1/p' | head -1 || true)"
+      if [[ -z "$UI_WANT_DEC" || -z "$UI_WANT_ID" ]]; then
+        UI_DEC_BAD="${UI_DEC_BAD} ${UI_NAME}(not-in-registry)"
+        continue
+      fi
+      # Exact strings, both keys, out of the SERVED page — not out of the build log.
+      if [[ "$PAGE" != *"\"TOKEN_${UI_NAME}\""* && "$PAGE" != *"TOKEN_${UI_NAME}=${UI_WANT_ID}"* ]]; then
+        UI_DEC_BAD="${UI_DEC_BAD} ${UI_NAME}(no-TOKEN-key)"
+        continue
+      fi
+      # EXTRACTED, not matched against a literal: the injected block quotes its values today
+      # and a future relay pin could emit them as numbers, and this assertion is about the
+      # VALUE being the registry's, not about JSON quoting. `|| true` on the extraction.
+      UI_GOT_DEC="$(printf '%s' "$PAGE" \
+        | sed -n "s/.*METADATA_TOKEN_${UI_NAME}_DECIMALS\"[[:space:]]*:[[:space:]]*\"\{0,1\}\([0-9]\{1,\}\).*/\1/p" \
+        | head -1 || true)"
+      if [[ "$UI_GOT_DEC" == "$UI_WANT_DEC" ]]; then
+        UI_DEC_OK=$(( UI_DEC_OK + 1 ))
+      else
+        UI_DEC_BAD="${UI_DEC_BAD} ${UI_NAME}(served '${UI_GOT_DEC:-absent}', registry ${UI_WANT_DEC})"
+      fi
+    done <<EOF
+${UI_REG_LINES}
+EOF
+    if [[ -z "$UI_DEC_BAD" ]] && (( UI_DEC_OK == 6 )); then
+      ok "the served config carries all six colours with the registry's OWN decimals — including TWBTC 8 and TWETH 18"
+    else
+      fail "the served config's token metadata is wrong or missing (${UI_DEC_OK}/6 correct):${UI_DEC_BAD}
+            regenerate the knob and rebuild: ./scripts/issuer-token-names.sh >> .env && ./up.sh --build"
+    fi
+  fi
+
+  # ── THE 8-/18-DECIMAL PAIR, QUOTED THROUGH THE UI'S OWN EDGE ───────────────
+  #
+  # Only meaningful with the `poster` profile up: the poster is what puts a TWBTC/TWETH offer
+  # on the book, and the UI only offers colours the relay advertises. This is the assertion
+  # phase F could not make and named as phase G's, and it is the whole reason the two profiles
+  # are exercised together in the `--all` gate.
+  #
+  # THE DIRECTION AND THE AMOUNT ARE READ OFF THE PUBLISHED LADDER, never guessed. Measured on
+  # the phase-G gate: the poster GIVES TWBTC and WANTS TWETH, so the tradable direction is
+  # tokenIn=TWETH -> tokenOut=TWBTC, and its single rung was `input 975000 -> output 1000000`
+  # — an amount derived from live USD prices across an 18-decimal and an 8-decimal token, so it
+  # is different on every run and on every tick. Quoting a hand-picked amount answers
+  # `422 unfulfillable` ("amountIn is outside the published price range for this pair"), which
+  # is the relay being right and the assertion being wrong. Taking the rung from the ladder
+  # makes this an EXACT assertion, the same shape as the maker's `quote(750000) = 500000`.
+  if service_present offer-poster && service_present faucet && service_present solver-frontend; then
+    UI_BTC="$(issuer_token_id TWBTC || true)"
+    UI_ETH="$(issuer_token_id TWETH || true)"
+    if [[ -z "$UI_BTC" || -z "$UI_ETH" ]]; then
+      fail "the issuer registry has no TWBTC/TWETH colour, so the poster's pair cannot be checked"
+    else
+      UI_TOKENS_NOW="$(curl -fsS --max-time 10 "$UI/api/v1/tokens" 2>/dev/null || true)"
+      if [[ "$UI_TOKENS_NOW" == *"$UI_BTC"* && "$UI_TOKENS_NOW" == *"$UI_ETH"* ]]; then
+        ok "the relay advertises the poster's 8-decimal TWBTC and 18-decimal TWETH, and the UI's edge lists both"
+      else
+        fail "the UI's /api/v1/tokens does not list TWBTC (${UI_BTC:0:16}…) and TWETH (${UI_ETH:0:16}…) — the poster's pair is not on the published ladder"
+      fi
+
+      # ui_quote <tokenIn> <tokenOut> <amountIn> — prints "<http code> <amountOut or empty>".
+      ui_quote() {
+        local body_file code body out
+        body_file="$(mktemp)"
+        code="$(curl -sS --max-time 20 -o "$body_file" -w '%{http_code}' \
+          -X POST -H 'content-type: application/json' \
+          -d "{\"tokenIn\":\"$1\",\"tokenOut\":\"$2\",\"amountIn\":\"$3\"}" \
+          "$UI/api/v1/quote" 2>/dev/null || true)"
+        body="$(tr -d '\n' < "$body_file" 2>/dev/null || true)"
+        rm -f "$body_file"
+        out="$(printf '%s' "$body" | sed -n 's/.*"amountOut"[[:space:]]*:[[:space:]]*"\{0,1\}\([0-9]\{1,\}\).*/\1/p' | head -1 || true)"
+        printf '%s %s' "${code:-none}" "${out}"
+      }
+
+      # Retried as a WHOLE — re-read the ladder, then quote it — because the poster posts a new
+      # offer roughly every minute and the relay withdraws its ladder fail-closed in ~10-20 s
+      # windows. Re-quoting a stale rung would answer 422 for a reason that is test sequencing
+      # rather than a property of the stack.
+      UI_PAIR_OK=0
+      UI_PAIR_LAST=""
+      for UI_TRY in 1 2 3; do
+        UI_LEVELS="$(dc exec -T solver-frontend bun -e "$LADDER_PROBE_JS" 2>/dev/null || true)"
+        UI_LEVEL="$(printf '%s\n' "$UI_LEVELS" \
+          | grep -m1 -E "^LEVEL (${UI_ETH} ${UI_BTC}|${UI_BTC} ${UI_ETH}) " || true)"
+        if [[ -z "$UI_LEVEL" ]]; then
+          UI_PAIR_LAST="the published ladder carries no TWBTC/TWETH level (levels: $(printf '%s' "$UI_LEVELS" | grep -c '^LEVEL ' || true))"
+        else
+          # `read` rather than `set --`: the positional parameters belong to the script, and
+          # the five fields are exactly what the probe printed.
+          UI_L_IN=""; UI_L_OUT=""; UI_L_AMT=""; UI_L_WANT=""
+          # The literal `LEVEL` tag is consumed and discarded: `read`'s first variable takes it
+          # and shellcheck would otherwise (correctly) call that variable unused.
+          # shellcheck disable=SC2034
+          read -r _UI_L_TAG UI_L_IN UI_L_OUT UI_L_AMT UI_L_WANT <<EOF
+$UI_LEVEL
+EOF
+          UI_ANS="$(ui_quote "$UI_L_IN" "$UI_L_OUT" "$UI_L_AMT")"
+          UI_Q_CODE="${UI_ANS%% *}"
+          UI_Q_OUT="${UI_ANS##* }"
+          if [[ "$UI_Q_CODE" == "200" && "$UI_Q_OUT" == "$UI_L_WANT" ]]; then
+            UI_PAIR_OK=1
+            UI_IN_DEC="$(issuer_token_field "$([[ "$UI_L_IN" == "$UI_ETH" ]] && echo TWETH || echo TWBTC)" decimals || true)"
+            UI_OUT_DEC="$(issuer_token_field "$([[ "$UI_L_OUT" == "$UI_ETH" ]] && echo TWETH || echo TWBTC)" decimals || true)"
+            ok "POST /api/v1/quote through the UI's own edge: ${UI_L_AMT} (${UI_IN_DEC} dec) -> ${UI_Q_OUT} (${UI_OUT_DEC} dec), EXACTLY the published rung"
+            break
+          fi
+          UI_PAIR_LAST="rung ${UI_L_AMT} -> ${UI_L_WANT} answered ${UI_Q_CODE} out='${UI_Q_OUT}'"
+        fi
+        (( UI_TRY < 3 )) && sleep 20
+      done
+      if (( ! UI_PAIR_OK )); then
+        fail "the UI's edge could not quote the poster's 8-/18-decimal pair in 3 attempts 20 s apart — last: ${UI_PAIR_LAST}"
+      fi
+    fi
   fi
 fi
 
@@ -967,6 +1424,173 @@ if service_present solver; then
         fail "the solver did not return to 'healthy' within 600 s of being started"
       fi
     fi
+  fi
+fi
+
+# ── SETTLEMENT: THE CANONICAL DRIVER, INSIDE THE GATE (00020 phase G) ────────
+#
+# Everything above proves the relay QUOTES. This proves the stack SETTLES: an intent pushed
+# through the relay to the connected solver, merged and submitted on chain, with the taker's
+# two balances asserted TO THE UNIT and the maker's offer consumed.
+#
+# WHY IT IS HERE NOW, when this file's header spent four phases saying it was not. Two reasons
+# used to keep it out and both are gone:
+#
+#   1. "A take CONSUMES the offer it fills, so a script that settled would make its own next
+#      run fail with an empty book." Since 00011 B.5b an empty book is not a skip: the section
+#      RE-SEEDS through the `maker-offer` one-shot (MAKER_OFFER_RESEED=true) and proceeds on
+#      the fresh offer. So a settled take costs the next run one re-seed, not its assertions.
+#   2. It was a documented one-off (00020 Q12.3) run by hand in phases B..F. The owner's
+#      phase-G mandate is that the e2e itself touches every service, and SETTLEMENT is the one
+#      claim about `solver` + `relay` + `kernel` + the taker's wallet that no verify section
+#      made. A capability proven only by a human at a terminal is not covered.
+#
+# It runs LAST, after the health sampling, so nothing above can be affected by the offer it
+# consumes.
+#
+#   SOLVER_VERIFY_SETTLEMENT=false   skip it (the section then says so, loudly, and the
+#                                    settlement claim is simply not made — never counted as
+#                                    passed)
+#   SOLVER_SETTLEMENT_CASES=A        which of the driver's cases to run. A is the
+#                                    exact-advertised settlement; B/C/D are boundary and
+#                                    refusal cases this section already covers from the relay
+#                                    side, and each extra case costs a mint and a proof.
+#
+# THE DRIVER IS THE KERNEL TREE'S OWN `deploy/scripts/e2e.ts`, present in the image and
+# asserted by images/offerfiles-kernel/Dockerfile's path list. It is run as a one-off on the
+# `solver` service so it inherits exactly the env and the two volumes it needs (ZSWAP_API,
+# RELAY_HTTP_URL, SOLVER_JOURNAL_PATH, the `solver-config` receipt and the `solver-journal`
+# sqlite). m1 declares no `e2e` service and adds none (Q9.5).
+if [[ "${SOLVER_VERIFY_SETTLEMENT:-true}" != "true" ]]; then
+  echo
+  log "solver: settlement"
+  warn "SOLVER_VERIFY_SETTLEMENT is not true — the settlement claim is NOT made by this run"
+  info "the relay's quote and refusal assertions above still hold; settlement does not"
+elif ! service_present faucet; then
+  echo
+  log "solver: settlement"
+  warn "the issuer profile is not up, so the taker cannot be funded and settlement is not asserted"
+  info "bring it up with: ./up.sh --with offerfiles --with issuer --with solver"
+elif [[ "$SEEDED" != "yes" ]]; then
+  echo
+  log "solver: settlement"
+  warn "the seeding one-shots were skipped, so there is no maker offer to settle against"
+else
+  echo
+  log "solver: settlement (the canonical 18-assertion driver, through the relay)"
+
+  # ── 1. WAIT FOR THE KERNEL'S PROJECTION, THEN DRIVE ──────────────────────
+  #
+  # A job dispatched while the kernel's backend projection is mid-sync is refused
+  # TERMINALLY: the solver asks `POST /v1/offers/files`, the kernel answers 503, and the
+  # solver turns that into `exact_files_unavailable` with no retry (organizer issues/00022,
+  # measured in phase F after exactly this sequence of health sampling and minting). The
+  # operator-side rule recorded with that issue is "poll `backend.isCurrent`, then drive",
+  # and this is that rule in the harness rather than in a human's head.
+  SETTLE_SYNC_BUDGET_S="${SOLVER_SETTLEMENT_SYNC_BUDGET_S:-240}"
+  SETTLE_SYNC_WAITED=0
+  SETTLE_FIELDS=""
+  if service_present solver-frontend; then
+    while :; do
+      SETTLE_FIELDS="$(monitor_fields || true)"
+      [[ "$SETTLE_FIELDS" == *"backendCurrent=true"* && "$SETTLE_FIELDS" == *"relayConnected=true"* ]] && break
+      (( SETTLE_SYNC_WAITED < SETTLE_SYNC_BUDGET_S )) || break
+      sleep 5
+      SETTLE_SYNC_WAITED=$(( SETTLE_SYNC_WAITED + 5 ))
+    done
+    if [[ "$SETTLE_FIELDS" == *"backendCurrent=true"* ]]; then
+      ok "the solver's kernel projection is CURRENT after ${SETTLE_SYNC_WAITED}s (budget ${SETTLE_SYNC_BUDGET_S}s) — safe to dispatch an intent"
+    else
+      # NOT a failure of its own: the driver is still run, and its own error message is the
+      # honest report if the projection never caught up. Failing here would hide that.
+      warn "the projection is still not current after ${SETTLE_SYNC_WAITED}s ($(printf '%s' "$SETTLE_FIELDS" | grep -m1 backendReason= || true)) — driving anyway; a terminal exact_files_unavailable below is issues/00022, not a settlement defect"
+    fi
+  else
+    info "no monitor in this profile set, so the projection cannot be polled — driving directly"
+  fi
+
+  # ── 2. FUND THE TAKER, FROM THE ISSUER ───────────────────────────────────
+  #
+  # `E2E_SKIP_PROVISION=true` and the issuer funds the taker instead, and that is the CORRECT
+  # setting on this stack rather than a shortcut (phase F measured it): the driver's own
+  # `fundTakerNight` transfers unshielded NIGHT out of its MAKER_SEED wallet, and every one of
+  # the maker's NIGHT UTXOs is REGISTERED FOR DUST GENERATION — that is how it pays for its
+  # own offer's proving fees — and a registered UTXO is not available as ordinary transfer
+  # input. Upstream's deployment runs this driver against a genesis wallet with unregistered
+  # NIGHT to spare; this stack gives every role a dedicated wallet with exactly what it needs.
+  #
+  # TWICE the offer's want amount: the driver needs OFFER_WANT per case plus headroom, and
+  # `issuer-fund` is exact and idempotent per receipt.
+  # The two seeds, from the SAME knobs compose gives the one-shots — `MAKER_OFFER_SEED` is the
+  # wallet that OWNS the live offer (compose/solver.yml passes it to `maker-offer` as
+  # MAKER_SEED) and it must be passed explicitly: the `solver` service carries SOLVER_SEED, so
+  # the driver's own fallback chain would land on GENESIS-1 and drive the wrong wallet.
+  SETTLE_MAKER_SEED="${MAKER_OFFER_SEED:-${MAKER_SEED:-0000000000000000000000000000000000000000000000000000000000000031}}"
+  SETTLE_TAKER_SEED="${TAKER_SEED:-0000000000000000000000000000000000000000000000000000000000000032}"
+  SETTLE_FUND=$(( WANT_AMOUNT * 2 ))
+  SETTLE_FUND_OUT="$(mktemp)"
+  SETTLE_FUND_RC=0
+  dc run --rm -T issuer-fund "$WANT_NAME" "$SETTLE_FUND" "$SETTLE_TAKER_SEED" \
+    >"$SETTLE_FUND_OUT" 2>&1 || SETTLE_FUND_RC=$?
+  SETTLE_FUND_RESULT="$(grep -m1 '^ISSUER_FUND_RESULT ' "$SETTLE_FUND_OUT" || true)"
+  if (( SETTLE_FUND_RC == 0 )) && [[ -n "$SETTLE_FUND_RESULT" ]]; then
+    ok "the taker was funded with ${SETTLE_FUND} base units of ${WANT_NAME} by the issuer"
+    info "  ${SETTLE_FUND_RESULT}"
+  else
+    fail "issuer-fund could not credit the taker with ${WANT_NAME} (exit ${SETTLE_FUND_RC}) — settlement cannot be asserted"
+    sed 's/^/      /' "$SETTLE_FUND_OUT" | tail -20 >&2 || true
+  fi
+  rm -f "$SETTLE_FUND_OUT"
+
+  # ── 3. RUN THE DRIVER ────────────────────────────────────────────────────
+  if [[ -n "$SETTLE_FUND_RESULT" ]]; then
+    SETTLE_LOG="$(mktemp)"
+    SETTLE_RC=0
+    # `--no-deps`: the stack is already up and this must not restart anything.
+    # `E2E_REQUIRE_UNFUNDED_SOLVER` is deliberately UNSET — this stack's solver IS funded
+    # (`solver-inventory` mints both legs), so the capital-free premise is not this claim.
+    dc run --rm --no-deps -T \
+      -e "E2E_CASES=${SOLVER_SETTLEMENT_CASES:-A}" \
+      -e "E2E_SKIP_PROVISION=true" \
+      -e "E2E_TOKEN_OUT=${GIVE_TOKEN}" \
+      -e "E2E_TOKEN_IN=${WANT_TOKEN}" \
+      -e "E2E_OFFER_GIVE_AMOUNT=${GIVE_AMOUNT}" \
+      -e "E2E_OFFER_WANT_AMOUNT=${WANT_AMOUNT}" \
+      -e "MAKER_SEED=${SETTLE_MAKER_SEED}" \
+      -e "TAKER_SEED=${SETTLE_TAKER_SEED}" \
+      --entrypoint bun solver run deploy/scripts/e2e.ts >"$SETTLE_LOG" 2>&1 || SETTLE_RC=$?
+    # `|| true` on every count, and each was exercised on an empty file first.
+    #
+    # THE PATTERN IS `PASS` FOLLOWED BY TWO SPACES, and it is not cosmetic. The driver's
+    # assert() prints `  PASS  <what>` through a logger that prefixes `[e2e] <ISO timestamp> `,
+    # so the marker is never at the start of a line — a `^PASS ` anchor counts ZERO on a run
+    # that passed all eighteen, which is exactly what the phase-G gate reported before this was
+    # fixed (`0 PASS / 0 FAIL` beside an OK). Two trailing spaces also separate an assertion
+    # line from the SUMMARY's `case A PASS — …` and from the `FAILED — N assertion(s):` header,
+    # neither of which is an assertion.
+    SETTLE_PASS="$(grep -c 'PASS  ' "$SETTLE_LOG" || true)"
+    SETTLE_FAIL="$(grep -c 'FAIL  ' "$SETTLE_LOG" || true)"
+    SETTLE_TX="$(grep -oE 'txId 0x[0-9a-f]+' "$SETTLE_LOG" | head -1 || true)"
+    if (( SETTLE_RC == 0 )) && grep -q 'ALL ASSERTIONS PASSED' "$SETTLE_LOG"; then
+      if (( SETTLE_PASS < 1 )); then
+        # `ALL ASSERTIONS PASSED` with nothing counted means the driver's output shape moved
+        # under this parser. Reported as a real failure rather than trusted, because a
+        # settlement claim resting on one grep of one line is not a measurement.
+        fail "the driver printed ALL ASSERTIONS PASSED but this parser counted ZERO assertions — its output shape changed; the settlement claim is NOT made"
+        tail -40 "$SETTLE_LOG" | sed 's/^/      /' >&2 || true
+      else
+        ok "the canonical settlement driver passed: ${SETTLE_PASS} assertion(s), 0 FAIL${SETTLE_TX:+ (}${SETTLE_TX}${SETTLE_TX:+)}"
+        # The assertions themselves, so the gate's own output carries the claim rather than
+        # pointing at a log the reader does not have.
+        grep 'PASS  ' "$SETTLE_LOG" | sed -e 's/^\[e2e\] [^ ]* *//' -e 's/^/      /' || true
+      fi
+    else
+      fail "the canonical settlement driver FAILED (exit ${SETTLE_RC}, ${SETTLE_PASS:-0} PASS / ${SETTLE_FAIL:-0} FAIL)"
+      grep -E '(PASS|FAIL)  ' "$SETTLE_LOG" | sed 's/^/      /' >&2 || true
+      tail -40 "$SETTLE_LOG" | sed 's/^/      /' >&2 || true
+      info "the offer this consumes is re-seeded automatically on the next run of this section"
+    fi
+    rm -f "$SETTLE_LOG"
   fi
 fi
 

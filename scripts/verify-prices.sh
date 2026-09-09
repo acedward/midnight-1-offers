@@ -27,13 +27,14 @@
 #                   service are GRADED and non-fatal by design (one bad id fails one id; a 429
 #                   stops the cycle keeping what it wrote), so the place a partial failure
 #                   shows up is here — not in an exit code and not in a crash.
-#   exactness       WBTC's and WETH's PER-BASE-UNIT price still equals their asset's COIN price
+#   exactness       the bitcoin- and ethereum-priced tokens' PER-BASE-UNIT price still equals
+#                   their asset's COIN price
 #                   divided by 10^decimals, EXACTLY, as decimal strings — now on FED values
 #                   rather than the seeds verify-kernel.sh checks. This is the one assertion
 #                   that could plausibly break on real data: the seeds are short decimals,
 #                   CoinGecko's are not (e.g. 79518 vs 2455.89 vs 0.999818), and a rounding or
 #                   float bug on the kernel's side would surface here first.
-#   provenance      GET /v1/quote for the poster's WBTC -> WETH pair reports `from_source` and
+#   provenance      GET /v1/quote for the poster's own pair reports `from_source` and
 #                   `to_source` both `feed`, a non-null `prices_updated_at`, and a
 #                   `market_rate` that equals the two fed per-base-unit prices' ratio in the
 #                   same double arithmetic the kernel uses. A refresh that moved `asset_prices`
@@ -95,16 +96,22 @@ SEEDED_ASSETS="bitcoin ethereum usd-coin midnight-3 usdm-2"
 # THIS IS NOT REDUNDANT WITH `known_tokens.asset_id`, AND ASSUMING IT WAS COST A GATE RUN.
 # `asset_id` on a `known_tokens` row is an OVERRIDE, not the mapping: the seeded rows carry it
 # (NIGHT/SNIGHT → midnight-3, USDC → usd-coin, USDM → usdm-2, all from 000-init.sql), but a
-# colour registered through `POST /v1/known-tokens` — which is how WBTC and WETH get here,
+# colour registered through `POST /v1/known-tokens` — which is how a name-mapped colour gets here,
 # their colours being derived from the deployed contract address — leaves it **NULL**, and the
 # kernel resolves those by NAME at read time. Measured on a live stack: rows 8 and 9 are
-# `"name":"WBTC"/"WETH"` with `"asset_id":null`, while `GET /v1/prices` answers for both.
+# a NAME with `"asset_id":null`, while `GET /v1/prices` answers for it anyway. The issuer's six
+# rows are NOT in that position: issuer-registrar writes an explicit asset_id for each of them,
+# so they resolve through the first branch and the name map below is a fallback for anything
+# else a stack registers by hand.
 # So a colour lookup keyed on `asset_id` alone finds three of the five assets and misses
 # exactly the two this section needs most.
 #
 # Precedence below mirrors the kernel's (API.md: "`known_tokens.asset_id` overrides the map"):
 # an explicit `asset_id` wins, and the name map is the fallback.
-ASSET_NAME_MAP="bitcoin:WBTC,WSBTC,BTC ethereum:WETH,WSETH,ETH usd-coin:USDC midnight-3:NIGHT,SNIGHT usdm-2:USDM"
+# The issuer's six names are FIRST in each list since 00020 PR C — they are what this stack
+# actually registers — with the kernel's older built-in names kept behind them so a hand-
+# registered row still resolves. (The map is only consulted when a row carries no asset_id.)
+ASSET_NAME_MAP="bitcoin:TWBTC,UTWBTC,WBTC,WSBTC,BTC ethereum:TWETH,WETH,WSETH,ETH usd-coin:TWUSDC,UTWUSDC,USDC midnight-3:NIGHT,SNIGHT usdm-2:TWUSDM,USDM"
 
 FAILURES=0
 fail() { err "$*"; FAILURES=$(( FAILURES + 1 )); }
@@ -288,39 +295,42 @@ fi
 # holding only the assets that EXPLAIN a requested colour — there is no unfiltered form. So to
 # see all five assets, all five have to be asked for through a colour.
 #
-# Three of the five are seeded in known_tokens at fixed colours (NIGHT -> midnight-3,
-# USDC -> usd-coin, USDM -> usdm-2). The other two are faucet presets whose colours DERIVE from
-# the deployed contract address, so they cannot be seeded — WBTC -> bitcoin and
-# WETH -> ethereum are registered by images/offerfiles-kernel/faucet-probe.ts, the same
-# idempotent probe verify-kernel.sh uses. They are looked up BY ASSET rather than by name, so a
-# stack that prices bitcoin under a different name still resolves.
+# WHERE THE FIVE COLOURS COME FROM AT THIS PIN (00020 PR C). ONE of the five is seeded in
+# `known_tokens` at a fixed colour — NIGHT -> midnight-3. The other four come from the `issuer`
+# profile: `issuer-registrar` writes each of the six issued tokens into `known_tokens` with its
+# real `asset_id`, so TWBTC -> bitcoin, TWETH -> ethereum, TWUSDC/UTWUSDC -> usd-coin and
+# TWUSDM -> usdm-2 are all EXPLICIT rows rather than name-map inferences.
+#
+# THAT REPLACED A PROBE. Up to `KERNEL_REF=a608fa6…`, bitcoin and ethereum were covered by the
+# faucet presets WBTC/WETH — colours derived from the deployed contract address, so unseedable —
+# and this script ran `images/offerfiles-kernel/faucet-probe.ts` to register them when they were
+# missing. Kernel #69 deleted the contract, the presets and the probe; `USDC` and `USDM` were
+# deleted from the seed in the same commit. The lookup below is unchanged and did not need to
+# be: it has always resolved BY ASSET, taking an explicit `asset_id` first and falling back to
+# the kernel's name map, so the issuer's rows resolve through the branch that was already there.
+#
+# WHAT THIS MEANS FOR A STACK WITHOUT THE `issuer` PROFILE: four of the five assets have no
+# colour to ask about, and the block below says so by name instead of registering anything.
 echo
 log "prices: the colours that cover all five assets"
 KNOWN="$(curl -fsS --max-time 10 "$API/v1/known-tokens" 2>/dev/null || true)"
 if [[ -z "$KNOWN" ]]; then
   fail "GET /v1/known-tokens did not answer — cannot map the five assets to colours"
 fi
-# The probe is only needed when the two derived presets are not registered yet: verify.sh runs
-# the `kernel` section (which registers them) before this one, and the poster registers them at
-# startup too — but this script must also work when run on its own.
-#
-# Tested BY NAME, not by asset_id: `POST /v1/known-tokens` leaves `asset_id` NULL and the
-# kernel maps those rows by name (see ASSET_NAME_MAP above). An asset_id test here would arm
-# the probe on every run — harmless, but it would also lie about why.
-if [[ -n "$KNOWN" ]] && { ! printf '%s' "$KNOWN" | grep -q '"name":"WBTC"' \
-                       || ! printf '%s' "$KNOWN" | grep -q '"name":"WETH"'; }; then
-  info "WBTC/WETH are not registered yet — running the faucet probe to register them"
-  KADDR="$(curl -fsS --max-time 10 "$API/v1/midnight/config" 2>/dev/null \
-           | grep -oE '"contractAddress"[[:space:]]*:[[:space:]]*"[0-9a-fA-F]+"' \
-           | grep -oE '[0-9a-fA-F]{16,}' | head -1 || true)"
-  if [[ -z "$KADDR" ]]; then
-    fail "/v1/midnight/config carries no contract address, so the faucet presets cannot be derived"
+# NOTHING IS REGISTERED HERE ANY MORE. This script used to arm the faucet probe when WBTC/WETH
+# were missing; that probe and the presets it registered are gone with the contract (kernel
+# #69). The four non-NIGHT assets are now covered by the issuer's own rows, written by
+# `issuer-registrar` during bring-up — so if they are missing, the answer is to look at that
+# one-shot rather than to have this script paper over it.
+if [[ -n "$KNOWN" ]] && ! printf '%s' "$KNOWN" | grep -q '"name":"TWBTC"'; then
+  if service_present faucet; then
+    fail "the issuer profile is up but TWBTC is not in the kernel registry — issuer-registrar
+          is what writes the six rows (with their asset ids), and up.sh treats its failure as
+          fatal. Check it: docker compose logs issuer-registrar"
   else
-    # Mints nothing, holds no wallet, signs nothing: a derivation plus two idempotent registry
-    # POSTs (409 on the second run is the normal answer).
-    dc exec -T -e "FAUCET_PROBE_CONTRACT=${KADDR}" -e 'KERNEL_API_URL=http://127.0.0.1:9999' \
-      kernel bun run /usr/local/lib/offerfiles/faucet-probe.ts >/dev/null 2>&1 || true
-    KNOWN="$(curl -fsS --max-time 10 "$API/v1/known-tokens" 2>/dev/null || true)"
+    warn "the issuer profile is not up, so bitcoin/ethereum/usd-coin/usdm-2 have no colour on"
+    info "this stack — only NIGHT (midnight-3) is seeded. Four of the five assets below cannot"
+    info "be asked about. Bring it up with: ./up.sh --with offerfiles --with issuer --with prices"
   fi
 fi
 
@@ -338,8 +348,14 @@ asset_names() {
 }
 
 COLOURS=""
-WBTC_COLOUR=""
-WETH_COLOUR=""
+# The BITCOIN and ETHEREUM colours, whatever this stack happens to call them, and the NAMES
+# they are registered under. At this pin those names are the issuer's TWBTC and TWETH; up to
+# `KERNEL_REF=a608fa6…` they were the faucet presets WBTC and WETH, which is why these
+# variables were called WBTC_COLOUR/WETH_COLOUR. Named by ASSET now, because the asset is the
+# thing that stays true across a re-pin — and the display name is carried alongside so every
+# message below names what the stack actually registered.
+BTC_COLOUR=""; BTC_NAME=""
+ETH_COLOUR=""; ETH_NAME=""
 for asset in $SEEDED_ASSETS; do
   # 1. an explicit `asset_id` on the row wins, exactly as it does in the kernel…
   ROW="$(jrec "$KNOWN" "\"asset_id\":\"${asset}\"")"
@@ -358,15 +374,17 @@ for asset in $SEEDED_ASSETS; do
   COLOUR="$(jstr "$ROW" 'token_color')"
   NAME="$(jstr "$ROW" 'name')"
   if [[ -z "$COLOUR" ]]; then
-    fail "no registered colour maps to '${asset}', so this section cannot ask GET /v1/prices about it
-          (the kernel seeds NIGHT/SNIGHT/USDC/USDM with an explicit asset_id, and the faucet probe
-          registers WBTC/WETH by name — one of those did not happen)"
+    fail "no registered colour maps to '${asset}', so this section cannot ask GET /v1/prices about it.
+          At this pin the kernel seeds only NIGHT/SNIGHT with an explicit asset_id; bitcoin,
+          ethereum, usd-coin and usdm-2 are covered by the ISSUER's six rows, which
+          issuer-registrar writes with their asset ids during bring-up. So either the \`issuer\`
+          profile is not up, or that one-shot did not run: docker compose logs issuer-registrar"
     continue
   fi
   info "${asset} <- ${NAME:-?} ${COLOUR:0:16}… (via ${HOW})"
   COLOURS="${COLOURS:+${COLOURS},}${COLOUR}"
-  [[ "$asset" == "bitcoin" ]]  && WBTC_COLOUR="$COLOUR"
-  [[ "$asset" == "ethereum" ]] && WETH_COLOUR="$COLOUR"
+  if [[ "$asset" == "bitcoin" ]];  then BTC_COLOUR="$COLOUR"; BTC_NAME="${NAME:-bitcoin}"; fi
+  if [[ "$asset" == "ethereum" ]]; then ETH_COLOUR="$COLOUR"; ETH_NAME="${NAME:-ethereum}"; fi
 done
 
 # ── every asset reads `feed`, and recently ──────────────────────────────────
@@ -459,13 +477,13 @@ if [[ -n "$PRICES" ]]; then
   log "prices: per-base-unit exactness on fed values"
   # COLON-DELIMITED, NOT a `read` over a here-doc, and that is a bug this section was written
   # with and then measured out of it. With `read -r P_NAME P_COLOUR P_ASSET` over
-  # `WBTC ${WBTC_COLOUR} bitcoin`, an EMPTY colour makes default IFS collapse the double space
+  # `<name> ${BTC_COLOUR} bitcoin`, an EMPTY colour makes default IFS collapse the double space
   # and every field shifts left — P_COLOUR becomes "bitcoin" and the row is looked up under a
   # colour that cannot exist, so the failure blames the wrong thing. The empty-state harness
   # (00011 C.8's rule) caught it before the live gate; a `for` over one word per preset cannot
   # have the problem at all. A missing colour has already been reported by name in the
   # colour-resolution block above, so here it is skipped rather than re-failed.
-  for P_SPEC in "WBTC:${WBTC_COLOUR}:bitcoin" "WETH:${WETH_COLOUR}:ethereum"; do
+  for P_SPEC in "${BTC_NAME:-BTC}:${BTC_COLOUR}:bitcoin" "${ETH_NAME:-ETH}:${ETH_COLOUR}:ethereum"; do
     P_NAME="${P_SPEC%%:*}"
     P_REST="${P_SPEC#*:}"
     P_COLOUR="${P_REST%%:*}"
@@ -507,18 +525,23 @@ fi
 # `token_prices`. A refresh that landed in one and not the other would be invisible in the
 # section above and would show up as "the SPA still quotes yesterday's rate".
 #
-# The pair is the poster's own WBTC -> WETH, which is what the SPA's Market view and
-# verify-poster.sh's sponsorship assertion both use.
+# The pair is the poster's own — the bitcoin-priced token against the ethereum-priced one,
+# TWBTC -> TWETH at this pin — which is what the SPA's Market view and verify-poster.sh's
+# sponsorship assertion both use.
+#
+# `from_amount=1000000` is BASE UNITS, and it is the poster's own OFFER_POSTER_GIVE_AMOUNT
+# rather than "one coin": TWBTC has 8 decimals, so this is 0.01 whole coins, and reading it as a
+# coin count would be wrong by a factor of a hundred.
 echo
-log "prices: quote provenance (WBTC -> WETH)"
-if [[ -z "$WBTC_COLOUR" || -z "$WETH_COLOUR" ]]; then
-  fail "no WBTC/WETH colours resolved, so the quote's provenance cannot be checked"
+log "prices: quote provenance (${BTC_NAME:-bitcoin} -> ${ETH_NAME:-ethereum})"
+if [[ -z "$BTC_COLOUR" || -z "$ETH_COLOUR" ]]; then
+  fail "no bitcoin/ethereum colours resolved, so the quote's provenance cannot be checked"
 else
   QUOTE="$(curl -fsS --max-time 15 \
-    "$API/v1/quote?from_token=${WBTC_COLOUR}&to_token=${WETH_COLOUR}&from_amount=1000000" \
+    "$API/v1/quote?from_token=${BTC_COLOUR}&to_token=${ETH_COLOUR}&from_amount=1000000" \
     2>/dev/null || true)"
   if [[ -z "$QUOTE" ]]; then
-    fail "GET /v1/quote for WBTC -> WETH did not answer"
+    fail "GET /v1/quote for ${BTC_NAME:-bitcoin} -> ${ETH_NAME:-ethereum} did not answer"
   else
     Q_FROM="$(jstr "$QUOTE" 'from_source')"
     Q_TO="$(jstr "$QUOTE" 'to_source')"
@@ -544,8 +567,8 @@ else
     # arithmetic and a bash-side integer comparison of a ratio would be meaningless. The
     # tolerance is relative and tiny: this asserts "the kernel divided the two prices this
     # refresh wrote", not an independently computed rate.
-    W_UNIT="$(jstr "$(jrec "$PRICES" "\"token_color\":\"${WBTC_COLOUR}\"")" 'price_usd')"
-    E_UNIT="$(jstr "$(jrec "$PRICES" "\"token_color\":\"${WETH_COLOUR}\"")" 'price_usd')"
+    W_UNIT="$(jstr "$(jrec "$PRICES" "\"token_color\":\"${BTC_COLOUR}\"")" 'price_usd')"
+    E_UNIT="$(jstr "$(jrec "$PRICES" "\"token_color\":\"${ETH_COLOUR}\"")" 'price_usd')"
     if [[ -z "$W_UNIT" || -z "$E_UNIT" || -z "$Q_RATE" ]]; then
       fail "cannot cross-check market_rate: wbtc='${W_UNIT:-none}' weth='${E_UNIT:-none}' market_rate='${Q_RATE:-none}'"
     else
@@ -557,7 +580,7 @@ else
         console.log((ok ? "OK " : "BAD ") + expected);
       ' "$W_UNIT" "$E_UNIT" "$Q_RATE" 2>/dev/null || true)"
       case "$RATE_CHECK" in
-        OK*)  ok "market_rate ${Q_RATE} == fed WBTC ${W_UNIT} / fed WETH ${E_UNIT} (${RATE_CHECK#OK }); 1 WBTC quotes ${Q_SUGGEST} WETH base units" ;;
+        OK*)  ok "market_rate ${Q_RATE} == fed ${BTC_NAME} ${W_UNIT} / fed ${ETH_NAME} ${E_UNIT} (${RATE_CHECK#OK }); 1000000 ${BTC_NAME} base units quote ${Q_SUGGEST} ${ETH_NAME} base units" ;;
         BAD*) fail "market_rate is ${Q_RATE} but the two fed prices give ${RATE_CHECK#BAD } (${W_UNIT} / ${E_UNIT})" ;;
         *)    fail "could not compute the expected market_rate inside the price-feed container" ;;
       esac

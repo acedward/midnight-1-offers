@@ -27,7 +27,7 @@
 // `finalizeRecipe` → `submitTransaction`, then wait for the kernel to report the offer
 // `consumed` (its nullifier spent on chain).
 
-import { registerNightForDust } from "@effectstream/midnight-contracts";
+import { registerNightForDust, waitForDustFunds } from "@effectstream/midnight-contracts";
 import { midnightNetworkConfig as net } from "@effectstream/midnight-contracts/midnight-env";
 import { OfferFiles } from "@effectstream/mip-zswap-offer/mip5";
 import { Transaction } from "@midnight-ntwrk/ledger-v8";
@@ -66,6 +66,9 @@ const NIGHT_UTXO_COUNT = 2;
  *  accounting has not yet seen the chain notification for the previous one, and a transaction
  *  built against that state is rejected outright (`1010: Custom error: 170`). */
 const SUBMIT_SETTLE_MS = 8_000;
+/** How long to wait for the taker's DUST registration to land before building the settlement.
+ *  The settlement is the taker's FIRST fee-paying transaction at this pin. */
+const DUST_WAIT_MS = Number(process.env["TAKE_DUST_WAIT_MS"] ?? "300000");
 const STATUS_TIMEOUT_MS = Number(process.env["TAKE_STATUS_TIMEOUT_MS"] ?? "300000");
 const BALANCE_TIMEOUT_MS = Number(process.env["TAKE_BALANCE_TIMEOUT_MS"] ?? "300000");
 
@@ -246,7 +249,34 @@ async function main(): Promise<void> {
   await fundTakerNight();
   await registerNightForDust(taker as any);
   log("taker registered NIGHT for DUST");
+
+  // ── WAIT FOR THE DUST, UNCONDITIONALLY (00020 PR C) ───────────────────────
+  // This barrier used to be IMPLICIT, and in a branch that could be skipped: `registerNight-
+  // ForDust` submits a transaction, and the only thing that separated it from the settlement
+  // below was the `sleep(SUBMIT_SETTLE_MS)` at the END of `fundTakerWantToken()` — which
+  // returns EARLY when the taker already holds the demanded token.
+  //
+  // Before this pin the taker never did hold it, so the branch always ran and the barrier
+  // always happened by accident. Since 00020 PR C `scripts/verify-shielded-night.sh` credits
+  // the taker through `issuer-fund` BEFORE this driver starts (kernel #69 deleted the mint,
+  // and genesis-1 holds no issued token), so the early return became the NORMAL path and the
+  // settlement was built immediately after the registration. MEASURED: it is rejected outright
+  // with `1010: Invalid Transaction: Custom error: 170` — the SDK's dust-spend accounting has
+  // not seen the registration's chain notification yet.
+  //
+  // So the wait is explicit, and it is here rather than inside a branch.
+  const dust = await waitForDustFunds(taker.wallet as any, {
+    timeoutMs: DUST_WAIT_MS,
+    waitNonZero: true,
+  });
+  log(`taker DUST balance: ${dust}`);
+
   await fundTakerWantToken();
+
+  // One undeployed block between the LAST submitted transaction and the settlement, whichever
+  // branch above produced it. `fundTakerWantToken()` already sleeps when it transfers; this
+  // covers the path where it did not.
+  await sleep(SUBMIT_SETTLE_MS);
 
   const snightBefore = (await shieldedBalances(taker))[SNIGHT_COLOR] ?? 0n;
   const wantBefore = (await shieldedBalances(taker))[WANT_TOKEN] ?? 0n;

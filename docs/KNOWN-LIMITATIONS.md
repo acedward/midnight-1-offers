@@ -1,10 +1,66 @@
 # Known limitations
 
-> **Scope.** This file records the limitations of the **`offerfiles`** (one entry, added by the
-> `a608fa6` re-pin), **`solver`**, **`poster`**, **`prices`** and **`shielded-night`** profiles.
-> The remaining `offerfiles` entries land with 00005 P6.
+> **Scope.** This file records the limitations of the **`offerfiles`**, **`frontend`**,
+> **`solver`**, **`poster`**, **`prices`**, **`shielded-night`** and **`issuer`** profiles. The
+> two SPA entries at the top sit under `offerfiles` because both were caused by a KERNEL re-pin;
+> the `frontend` profile's own limitation is the second of them. The remaining `offerfiles`
+> entries land with 00005 P6.
 
 ## `offerfiles`
+
+### ~~The SPA's Faucet tab is DEAD at `KERNEL_REF=e3b9388…`~~ — **RESOLVED in 00020 PR D**
+
+**Kept as history, because it explains why the page looks different.** Between 00020 PR C and
+PR D the stack ran a SPA built before effectstream #922, and its Faucet tab was dead: kernel
+[#69](https://github.com/effectstream/zswap-offerfiles-kernel/pull/69) deleted
+`packages/node/zk-assets.ts`, so `GET /keys/*` and `GET /zkir/*` stopped existing, and that tab
+proved its mint IN THE BROWSER against exactly those routes.
+
+**`FRONTEND_REF=400880ce…` removes the tab rather than fixing it**, which is the right answer:
+effectstream [#922](https://github.com/effectstream/effectstream/pull/922) deleted the whole
+contract lane from the template — there is no in-page mint left to break — and
+[#920](https://github.com/effectstream/effectstream/pull/920) put a Faucet **LINK** in its place.
+This repository points that link at THIS stack's own faucet site
+(`${FAUCET_HOST_PORT}/?network=undeployed`, the `issuer` profile), which mints the six issued
+tokens through a connected Lace wallet with the wallet doing the proving.
+
+`scripts/verify-frontend.sh` still asserts the kernel's ZK routes are **gone** — a 200 would
+mean `KERNEL_REF` had moved backwards onto a line these images no longer build for — and now
+also asserts that the served bundle carries this stack's own faucet URL.
+
+**What did NOT change:** `issuer-fund` is still the headless minting path, and pressing a faucet
+button in a browser is still the owner's hand test (see the `issuer` section below). The mint
+moved between pages; it did not become automatable.
+
+### The SPA's faucet link is BAKED INTO THE IMAGE, so a port-block change needs `--build` (00020 PR D)
+
+`src/config.ts` at `FRONTEND_REF=400880ce…` reads `VITE_FAUCET_URL` and
+`VITE_MIDNIGHT_NETWORK_ID` from `import.meta.env` and exposes **no `window.*` override for
+either** — unlike the six endpoint URLs, which `images/zswap-da/entrypoint.sh` writes into
+`/config.js` at container start and which therefore work on any port block with one image.
+
+So the faucet URL is compiled in. `./up.sh` **without** `--build`, after `FAUCET_HOST_PORT`
+changed, serves a link to the previous stack's faucet port. It is caught rather than left to be
+discovered: `./verify.sh`'s `frontend` section asserts the SERVED bundle carries exactly the
+`FRONTEND_FAUCET_URL` this stack's env file names, so a stale image FAILS THE GATE.
+
+The clean fix is upstream — a `window.FAUCET_URL` beside `window.API_BASE` — and it is recorded
+as a follow-up (00020 Q4, option B) rather than patched into the built bundle at container
+start, which would be editing minified third-party bytes whose failure mode is a silent no-op.
+
+### There is no `mints` counter any more, and `insufficient_inventory` is a normal state
+
+Two field names people look for are gone with the mint they described: `/health`'s `mints`
+(replaced by `inventoryAdoptions` + `reoffers`) and the journal's `contractAddress` (the journal
+is keyed by NETWORK ID + GIVE-TOKEN ID now). See the `poster` section below for the budget that
+`insufficient_inventory` reports.
+
+### HISTORY — the entry below describes the pin BEFORE `e3b9388`
+
+Kernel #69 deleted the mint, the contract, `offerfiles-deploy` and `offerfiles-token-names`, so
+none of the behaviour described here happens on the current pin. It is kept because a reader
+running an older stack forward will still see it in that stack's logs, and because it records
+why the m1 names were authoritative by construction.
 
 ### The kernel's own mint logs three failed name registrations on every fresh stack, and that is correct
 
@@ -46,6 +102,85 @@ fails the bring-up naming both names, with the registry dumped. `./verify.sh`'s 
 asserts the same property from the outside and fails on **any** `TESTTOKEN*` row. See
 `docs/OPERATIONS.md`, "The dev-token names are guarded now".
 
+## `issuer`
+
+### The faucet SITE cannot be exercised headlessly — the browser mint is the owner's hand test
+
+The site mints through a connected dApp-connector 4.x wallet (Lace) and **the wallet does the
+proving**: it balances, proves and submits the transaction the page composes. There is no server,
+no API and no key in the page, so there is nothing for a script to drive. That is upstream's
+design and it is the right one for a public faucet.
+
+The consequence for this stack is a split that is worth stating rather than discovering:
+`./verify.sh` proves the site is SERVED correctly — the SPA shell, the registry with its
+`Access-Control-Allow-Origin: *` and `max-age=300` headers and a matching revision, the v1
+proving artifacts as binary bytes, and a real 404 for a missing artifact — and proves MINTING
+through `issuer-fund`, which is the lane every automated consumer uses anyway. **Pressing a faucet
+button in a browser is the owner's hand test**, and `docs/OPERATIONS.md` carries the steps.
+
+### An amount is only unambiguous in BASE UNITS, and three of the six tokens are not 6 decimals
+
+`TWBTC` and `UTWBTC` are 8 decimals, `TWETH` is **18**, the other three are 6. There is therefore
+no "one coin" this stack can default to, and `issuer-fund` takes base units and refuses anything
+that is not plain decimal digits. `TWETH`'s whole coin, `1000000000000000000`, is past
+`Number.MAX_SAFE_INTEGER` by two orders of magnitude — every amount in the issuer's own code and
+in `scripts/verify-issuer.sh` is handled as a `bigint` or as a decimal STRING, never as a number,
+and comparisons are string equality.
+
+This ends the whole-coin line's "6 decimals everywhere" simplification (kernel #63) for these six
+colours. `DEVA`/`DEVB`/`DEVU` are still 6, and until phase C retires the kernel's faucet contract
+both sets coexist — so a script that assumed 6 decimals is not yet WRONG, it is merely no longer
+right for every token in the registry.
+
+### Two facades on one seed: the caller must fund a wallet BEFORE the service that owns it starts
+
+`issuer-fund` opens a wallet facade on the issuer's seed and one on the RECIPIENT's, and two
+facades on one seed against one Midnight node force each other's connection down with no error
+naming the cause (`wallets/wallets.json`). The issuer's own side is enforced — a `flock` on the
+`issuer-state` volume serialises every issuer container, and the command refuses to mint to the
+issuer's own seed — but the recipient's is not, and cannot be from inside this profile.
+
+In practice this is not a constraint: every provisioning one-shot in the stack is already gated by
+compose on `service_completed_successfully` before the long-lived service that holds that wallet
+starts. It matters when an operator funds a wallet BY HAND on a running stack: stop the service
+that owns it first, or fund a wallet nothing is holding.
+
+An address-only mode (mint to a shielded address with no recipient facade, which upstream's own
+site does) would remove the constraint entirely and is a plausible follow-up — but it cannot read
+the balance back, which is the assertion this helper exists to make.
+
+### A registry that outlives its chain is REFUSED, not repaired
+
+`./down.sh -v` wipes the chain and both issuer volumes together, so the ordinary reset is clean.
+If a registry survives a chain reset — you wiped only the node volume — the deploy runner sees a
+different stack identity, marks the file `stale` and stops with an instruction rather than
+redeploying. That is deliberate: replacing it discards six contracts' worth of identity and turns
+every coin already minted into a different, unspendable token. `ISSUER_REDEPLOY_STALE=1` is the
+operator's confirmation; `docs/OPERATIONS.md` has the procedure.
+
+### The kernel's `canonical_token_registry_state` marker is left holding the Preprod colours
+
+This is about the kernel pin phase C moves to, and is recorded now because the registrar is
+already written for it. Kernel #69 adds an importer-ownership table beside the seed, recording the
+colour a canonical PUBLIC import last committed for each of the six names. `issuer-registrar`
+deliberately does not touch it, for two reasons: the column carries
+`CHECK (network IN ('preview','preprod','stagenet'))`, so there is **no legal row** for an
+`undeployed` colour; and leaving the Preprod marker in place is the honest state — an explicit
+`TOKEN_REGISTRY_NETWORK=preprod` import on a locally-issued stack then refuses with *"managed token
+TWBTC no longer matches canonical registry provenance"* and is skipped (non-fatal), which is
+exactly right, because a database cannot hold both the public Preprod colours and this stack's own.
+Deleting the marker rows would not change that outcome and would destroy a record this profile does
+not own. On `undeployed` the import is skipped before any of it: `fetchRegistry()` throws
+*"undeployed is a local network with no public canonical registry"*.
+
+### `./verify.sh`'s issuer section leaves a coin behind, and mints one every run
+
+The section funds `e2e-taker` with one whole `TWBTC` and reads the balance back; the coin stays in
+that wallet. It is the last section `verify.sh` runs for exactly that reason — after every section
+that makes assertions about that wallet — and the assertion is on the DELTA, so repeated runs
+accumulate without failing. On a stack where `./verify.sh` has run three times, `e2e-taker` holds
+three whole `TWBTC`.
+
 ## `solver`
 
 ### The monitor's relay panel is empty until the solver publishes a ladder
@@ -62,6 +197,54 @@ before failing.
 The same is true, permanently, of a stack brought up with `MAKER_OFFER_ENABLED=false` or
 `SOLVER_PROVISION_ENABLED=false`: the ladder is derived from the book, so with nothing to quote
 an empty publication is honest and the panel stays empty.
+
+### The intents UI's token labels and DECIMALS are baked — `up.sh` now does the second pass for you (00020 PR F, automated in phase G)
+
+The relay's `GET /tokens` carries raw 64-hex colours and nothing else, so the browser UI takes a
+token's label and its decimals from a config block baked into `index.html` **at build time** —
+upstream's design, not this repository's choice. This stack's colours, meanwhile, derive from the
+contracts the `issuer` profile deploys, so they do not exist until `issuer-deploy` has run,
+minutes after the image is built. A build-time knob and a per-chain value cannot be reconciled in
+one pass.
+
+**Since 00020 phase G `./up.sh` does the second pass itself**, as a third cross-profile step
+beside the sNight token-name and `issuer-registrar` ones and for the same structural reason: the
+value is only knowable there. When `issuer` and `solver` are both up it reads the list through
+`scripts/issuer-token-names.sh --value-only`, rebuilds the one vite layer and recreates the one
+container, and it prints which it did:
+
+```
+OK   the intents UI already carries this chain's six token labels and decimals
+… or …
+==> baking this chain's six token labels and decimals into the intents UI
+OK   the intents UI now names all six colours with their own decimals
+```
+
+It is **conditional** — the served page is asked whether it already carries the first colour, so
+a second `./up.sh` on the same chain costs one HTTP GET — and **non-fatal**, because a failure
+leaves the UI exactly as this section used to describe rather than leaving the KERNEL holding
+wrong colours (which is why `issuer-registrar` IS fatal). By hand, if you need it:
+
+```sh
+./scripts/issuer-token-names.sh >> .env     # INTENTS_UI_TOKEN_NAMES=TWBTC=…:8:twBTC,…
+./up.sh --with offerfiles --with issuer --with solver --build
+```
+
+**WHY IT WAS WORTH AUTOMATING: without it the UI is not merely ugly, it is wrong about amounts.**
+With no entry for a colour the page shows its last 8 hex characters — cosmetic — but it also
+assumes **six** decimals, which is right for TWUSDC/TWUSDM/UTWUSDC, wrong for TWBTC and UTWBTC
+(8) and wrong by twelve orders of magnitude for TWETH (18). Nothing warns: the page renders a
+plausible number. Measured in a real browser on the phase-G gate before the fix — the served
+config block held exactly ONE key (`NETWORK_ID`) and the swap buttons read the raw hex tails
+`…930d2352` / `…37754369`. That is why the generator always emits the decimals, why the image
+REFUSES a malformed or empty field instead of falling back, and why `./verify.sh`'s solver
+section now asserts all six decimals **out of the served bytes** against the registry's own
+values — a stack that skipped the pass cannot pass the gate quietly.
+
+The value is stable for the life of a chain: it is re-derived after a `./down.sh -v`, not after a
+restart. An upstream `window.*`-style runtime override would remove the rebuild entirely and
+leave only a `/config.js` write; that is the same follow-up Q4 records for the SPA's faucet URL,
+one repository over.
 
 ### The seeded maker offer does not survive a long run, and `./verify.sh` re-seeds
 
@@ -102,15 +285,143 @@ it up".
 
 ## `poster`
 
+### A POSTER STARTED BY HAND ON A FRESH CHAIN CAN STILL POST A MISPRICED OFFER (00025)
+
+`./up.sh` closes this for the path it controls: `offer-poster` is held out of the initial
+`docker compose up` and started only after `issuer-registrar` has bound this stack's colours and
+`GET /v1/known-tokens` shows a non-null `asset_id` for both of the poster's legs (see
+`docs/OPERATIONS.md`, "The poster is the LAST service `./up.sh` starts"). **Nothing enforces that
+outside `./up.sh`.**
+
+These start a poster that `./up.sh` is not ordering, and on a chain whose colours are not yet
+bound each of them can post an offer priced from the kernel's fabricated **$1 per BASE UNIT**
+demo answer (`market_rate: 1`) which the same quote still reports as `sponsored: true`:
+
+```sh
+docker compose up -d offer-poster              # bypasses up.sh entirely
+docker compose start offer-poster              # ditto
+./down.sh && ./up.sh                           # SAFE — the ordering is up.sh's
+docker compose restart offer-poster            # SAFE on a bound chain: nothing to re-bind
+```
+
+**Why it is not closed here.** The real fix is upstream and there are two of them, both recorded
+and both out of scope by the owner's decision of 2026-09-09 ("start this poster service at the
+end; this will make it safe. This will fix the issue for now"):
+
+* `issues/00024` **K1** — the kernel's `GET /v1/quote` must not fabricate a price at all. With
+  any leg unknown or `fallback` it should answer `sponsored: false`, `source: "unpriced"`,
+  `market_rate: null` (or the `422 UNPRICED_TOKEN` its own batcher already uses), which is what
+  the route's own comment asks for.
+* `issues/00023` **option A** — the poster refuses to post while either leg is `demo-fallback`,
+  behind an `OFFER_POSTER_REQUIRE_FED_PRICES` knob so a deliberately unpriced devnet can still
+  trade. That is the one fix that also covers the by-hand case.
+
+**How the gate notices.** A poster started outside `./up.sh` leaves no `.colours-bound` receipt
+on the `poster-state` volume — `./up.sh` writes it after confirming both colours are priced and
+before starting the poster — so `./verify.sh --poster` fails naming its absence rather than
+quietly passing. That is a claim about *how* the poster was started, and it holds even on a chain
+whose colours are bound by the time verify runs.
+
+**What protects you meanwhile.** The condition is loud rather than silent, in four places: the
+poster logs `quote: give leg is priced from "demo-fallback" — not market data; register the
+colour's name` on every affected leg of every affected tick; `./verify.sh --poster`'s
+`first offer priced` block fails on a single such line in the whole log, on a single journal
+offer recorded at `market_rate 1`, and on an oldest live offer whose implied rate is outside the
+sponsorship band; `./verify.sh --solver` fails on any published ladder rung on the poster's pair
+priced outside `SOLVER_RUNG_BAND` of the kernel's reference; and the monitor's market header
+renders it honestly (`MID VS REFERENCE −100.0%`), which is how `issues/00023` was found.
+
+**And the batcher could refuse them outright.** `BATCHER_SPONSOR_POLICY=enforce` with
+`BATCHER_SPONSOR_UNPRICED=reject` makes the batcher answer `422 UNPRICED_TOKEN` for exactly this
+class of offer — its sponsorship gate is honest where the quote route is not. The shipped
+defaults are `warn`/`allow`, which is upstream's rollout choice so that devnets with legitimately
+unpriced colours keep trading; on a stack where every tradeable colour is priced, flipping them
+is a reasonable local hardening. It is a deployment decision, so it is documented rather than
+changed.
+
+### THE BOOK IS BOUNDED BY PRE-MINTED INVENTORY (00020 PR C)
+
+The poster does not mint. Kernel #69 deleted the faucet circuit, and `selectInventoryCoin()`
+replaced it: every tick either re-offers a coin that came back, or adopts one unjournaled
+spendable coin whose value **equals** `OFFER_POSTER_GIVE_AMOUNT` — not one worth at least that
+much. `poster-inventory` pre-mints `POSTER_PREMINT_COUNT` such coins through the `issuer`
+profile before the poster starts.
+
+**So the book grows to `POSTER_PREMINT_COUNT` offers and then stops.** At one offer per 60 s
+tick, the default of 12 is twelve minutes of growth. After that, every tick with nothing to
+re-offer answers:
+
+```json
+{"state":"degraded","lastMode":"degraded","lastFailure":"insufficient_inventory","freeCoins":0}
+```
+
+**That is a 200, and it is correct.** A poster with no inventory is not a poster a restart would
+fix, so it stays up, keeps re-offering coins as they are released, and reports the condition
+rather than dying. `./verify.sh --poster` treats it as expected only AFTER the budgeted count
+has been produced; before that it diagnoses it as a pre-mint that did not land, which is a real
+defect and usually the same one: `POSTER_PREMINT_COUNT` coins minted at a size that is not
+`OFFER_POSTER_GIVE_AMOUNT`. Compose reads both from the same variable, so that needs an
+override to happen.
+
+**The refill needs no restart:**
+
+```sh
+docker compose run --rm issuer-fund TWBTC 1000000 \
+  0000000000000000000000000000000000000000000000000000000000000041 10
+```
+
+**Why the default is 12 and not 50.** Each coin is its own proving transaction. Measured on this
+stack: ≈ 9 s of fixed cost plus ≈ 23 s per coin, linear (5 coins finalised at 20/44/68/92/116 s;
+3 at 23/42/66 s). Fifty coins is **19 minutes added to every bring-up**; twelve is about five.
+Raise it for a long-running demo and pay the time once, or refill a running stack.
+
+**What would remove the limitation** — and is deliberately NOT done here: a feeder loop that
+tops the wallet up whenever free coins fall below a threshold. It is a second long-lived process
+with its own failure modes and its own wallet facade, for a devnet demo whose book only has to
+be non-empty. Recorded as an additive follow-up in the project's questions file (Q3, option B).
+
+### A posted offer stops being SPONSORED as the reference price moves away from it
+
+`sponsored` is `to_amount <= suggested_to_amount` (`packages/node/market-mock.ts`), and
+`suggested` is recomputed from **today's** reference prices with `SPONSOR_DISCOUNT_BPS` already
+applied. An offer's want leg is FIXED when it is posted. So any move in the give token's price
+against the want token's, after the post, flips a perfectly good offer to `sponsored: false`
+without anything being wrong.
+
+**Kernel #69 made this much more visible here.** The poster used to mint a fresh coin every
+tick, so the newest live offer was never older than ~60 s and the reference had no time to move.
+It cannot mint now: once the `POSTER_PREMINT_COUNT` pre-minted coins are all live it reports
+`insufficient_inventory` and posts nothing new — so on a long-running stack the newest live
+offer can be tens of minutes old, and the `prices` profile is refreshing CoinGecko underneath it.
+
+**Measured on this project's own gate:** the same assertion read `sponsored=true` on the first
+`./verify.sh`, and `false` two price refreshes later on an offer asking **0.0453 %** above the
+by-then-current suggestion.
+
+`./verify.sh --poster` therefore asserts the property that is actually the poster's job —
+**its own quote snapshot in the journal says the offer was sponsorable when it was built** — and
+REPORTS the live reading with the drift. Refill the poster to get a fresh offer:
+
+```sh
+docker compose run --rm issuer-fund TWBTC 1000000 \
+  0000000000000000000000000000000000000000000000000000000000000041 5
+```
+
+### A configured size RANGE is a filter now, not a draw
+
+`OFFER_POSTER_GIVE_MIN`/`_GIVE_MAX` used to draw a log-uniform size per fresh mint. At this pin
+they are an inclusive BASE-UNIT filter over coins the wallet ALREADY HOLDS, and
+`OFFER_POSTER_SIZE_SEED` is deleted. So a spread of offer sizes needs a WALLET with a spread —
+several `issuer-fund` calls at different sizes — and `poster-inventory` mints exactly one size.
+
 ### The first offer takes minutes, and nothing can make it faster
 
 Before the poster's health server even binds, it has to sync a wallet, register its NIGHT for
-DUST, wait (bounded) for that dust to appear, and join the offer-files contract; then the first
-tick mints a coin, which is a proving transaction (~30 s), waits for the coin to become visible,
-and only then builds and posts the offer. That is why the container healthcheck has a 15-minute
+DUST and wait (bounded) for that dust to appear; then the first tick adopts a coin, builds and
+proves the offer (~30 s) and posts it. That is why the container healthcheck has a 15-minute
 `start_period` and why `./verify.sh`'s poster section carries `POSTER_VERIFY_BUDGET_S` (420 s by
 default) instead of a fixed wait. On a loaded host, raise it rather than reading a red section
-as a defect.
+as a defect. The pre-mint is ahead of all of it — about five minutes at the default count.
 
 ### The kernel does not serve a freshly accepted offer for 5–20 s, and the poster's journal says `live` anyway
 
@@ -139,12 +450,16 @@ sound, and the section's own on-chain take passed in the same run.
 ### `degraded` answers **200**, on purpose
 
 `GET /health` returns 200 while the poster is `starting` and while it is `degraded`; a 503
-arrives only after `HEALTH_STALE_TICKS` consecutive FAILED ticks. `degraded` almost always means
-`insufficient_dust`, i.e. the wallet has no NIGHT — and restarting a poster does not produce
-NIGHT, so failing the healthcheck would only produce a restart loop that hides the cause.
+arrives only after `HEALTH_STALE_TICKS` consecutive FAILED ticks. `degraded` means either
+`insufficient_inventory` (no coin matches the give size — see the budget entry above) or
+`insufficient_dust` (the wallet has no NIGHT), and restarting a poster produces neither a coin
+nor NIGHT, so failing the healthcheck would only produce a restart loop that hides the cause.
 
 The consequence is that **a healthy poster container is not evidence that anything was ever
-posted.** Only the mint and live-offer counters are, which is what `./verify.sh` asserts.
+posted.** Only `inventoryAdoptions + reoffers` and `liveOffers` are, which is what `./verify.sh`
+asserts — and separately `freeCoins + inventoryAdoptions >= POSTER_PREMINT_COUNT`, because a
+poster given ONE coin posts it, re-offers it for ever, and satisfies the first check while the
+book never grows.
 
 ### One poster per stack, and one seed for it alone
 
@@ -231,6 +546,56 @@ live market price to a literal would be a gate that fails every morning.
 
 ## `shielded-night`
 
+### The page offers three networks this stack cannot serve, and one of them is a different protocol
+
+`SHIELDED_NIGHT_REF=2bb32838a…` (00020 PR E) builds upstream's own multinetwork page, whose
+network menu carries **Preview**, **Preprod**, **Stagenet** and **Local (undeployed)**. Only the
+last has anything to do with this stack: it is the only one `/config.js` injects an address for,
+and the only one whose contract this stack deploys. The other three talk to public networks
+through your wallet, and since upstream
+[#13](https://github.com/effectstream/shielded-night/pull/13) an unset address is presented as
+*unavailable* rather than hidden, so they stay visible even where they cannot work.
+
+**Stagenet is the one worth naming**, because it is not merely a different chain — it is a
+different protocol family. `frontend/src/lib/networks.ts` marks it `midnight-2.x`, so selecting
+it makes the page load `frontend/protocols/v2/src/adapter`, which runs on `@midnightntwrk/ledger-v9`
+and `compact-runtime 0.19.0` against the Midnight-2.x contract at `contracts/v2`. **Nothing in
+this repository is on that line**: the core is node 1.0.1 / indexer 4.3.3 / proof-server 8.1.0,
+i.e. ledger-v8, and the 2.x stack lives in the sibling `midnight-2-offers`. Upstream's committed
+`frontend/.env` carries a real Stagenet address, so the menu entry is live — against upstream's
+own deployment, not one of ours.
+
+**This image adds a network; it does not remove one.** Removing the three public entries would
+mean patching upstream, and this image patches nothing at all (see
+`images/shielded-night/PROVENANCE.md`). What is asserted instead is the one thing this stack's
+correctness depends on: that `undeployed` is still `midnight-1.x`, checked in the pinned source
+at build time and again in the SERVED javascript by `scripts/verify-shielded-night.sh`.
+
+### The v2 proving-asset tree is served but never locally verified
+
+`frontend/vite.config.ts` copies BOTH managed trees into `dist` unconditionally, so this image
+serves `/contract/v2/shielded-night/` alongside the `/contract/v1/shielded-night/` the page
+actually fetches. The v1 tree is recompiled in the image with compactc 0.31.1 and required to be
+**byte-identical** to the committed artifacts — the dApp's verifiability claim. **The v2 tree is
+not**: it would need a second Compact toolchain (0.34.0) pinned by release-asset SHA-256, to prove
+artifacts for a protocol family nothing on `undeployed` can select, in a repository that just went
+from four Compact compilers to two. Its byte-exactness is upstream's own
+`reproducible-build-v2` CI job. Recorded with the option table as question Q11 of project 00020.
+
+The bytes are still immutable: the `source` stage fetches the whole tree at a 40-hex commit and
+nothing in the build writes under `contracts/`. What the build asserts locally is that the tree
+was EMITTED with its 11 keys and that it is a DIFFERENT tree from v1 — because a vite copy target
+silently dropped or misdirected by a re-pin is the failure that can actually happen here.
+
+> **And a trap for anyone checking that by hand.** At this pin every one of the 11 verifier keys,
+> every prover key and every `bzkir` is **byte-identical between the v1 and v2 trees**, despite
+> different sources and different compilers: the two contracts compile to the same constraint
+> system, and ZK keys depend on that and the SRS rather than on the emitted bindings. `cmp` on a
+> key therefore proves nothing about which tree you are looking at. `contract/index.js` differs
+> (124 373 vs 128 904 bytes), and only 0.34.0 emits `compiler/contract-manifest.json`. The
+> image's assertion was written on a key first, and it **failed a correct tree** — that is how
+> this was found.
+
 ### The browser flow needs the DEFAULT port block
 
 Lace resolves the `undeployed` network to fixed endpoints — `127.0.0.1:9944` (node),
@@ -308,7 +673,19 @@ directly) TOO SOON after the stack finishes coming up, and the round trip can be
 chain with `1010: Invalid Transaction: Custom error: 196`
 (`DustDoubleSpend(DustNullifier(...))`, visible in `docker compose … logs node`) — a real
 on-chain rejection, not a flaky test, and it reproduces deterministically until enough time
-passes for `genesis-2`'s DUST to settle after the deploy. A few minutes' gap (which a
+passes for `genesis-2`'s DUST to settle after the deploy.
+
+**The same condition has a second presentation, and on node 1.0.1 it is the one you will see.**
+Measured on the 00020 PR A gate (node 1.0.1, 2026-09-08): the rejection came back as
+`1010: Invalid Transaction: Custom error: **170**`, and the node's own log named the reason —
+`🚫 Rejected transaction … Malformed(InvalidDustSpendProof)` — three times, once per absorbed
+retry. So do not grep only for `196`: **grep the node log for `Dust`**, which catches both
+`DustDoubleSpend(DustNullifier(...))` and `Malformed(InvalidDustSpendProof)`. Naming the reason
+in the log at all is new in 1.0.1
+([#961](https://github.com/midnightntwrk/midnight-node/pull/961), "add warning log when a
+transaction is malformed"); on 1.0.0 the same rejection was silent about *why*. The remedy is
+unchanged, and on that gate the image's own retry absorbed it: both round trips passed
+`(retry x1)` and `./verify.sh` was green on its first invocation after a ten-minute gap. A few minutes' gap (which a
 bring-up that also builds the `frontend` profile gets for free) is enough; retrying the SAME
 `./verify.sh` invocation after a short pause resolves it. This is a property of chaining two
 DUST-spending actions on one wallet in quick succession — upstream's own test suite, and this

@@ -60,8 +60,11 @@ When `up.sh` returns, these are live (default ports; every one is overridable in
 
 With `poster` up the book fills itself: one sponsored, takeable offer a minute, so the SPA has
 something real to trade against without a second human. `./verify.sh` drives every profile
-that is up end to end (wrap → post → take → unwrap, with exact balances) and prints one
-section per profile; `./down.sh` stops and keeps the chain, `./down.sh -v` wipes every volume.
+that is up end to end (wrap → post → take → unwrap, with exact balances, and — with `solver`
+up — a real INTENT settled through the relay with the taker's balances asserted to the unit)
+and prints one section per profile, plus a `one-shots` section that asserts every service which
+runs once and exits really exited 0 and left its receipt on its volume;
+`./down.sh` stops and keeps the chain, `./down.sh -v` wipes every volume.
 Wallets, seeds and how to import them into Lace: [`docs/WALLETS.md`](docs/WALLETS.md).
 What each service does in detail: [`docs/COMPONENTS.md`](docs/COMPONENTS.md). Operating it,
 upgrading a pin, two stacks at once: [`docs/OPERATIONS.md`](docs/OPERATIONS.md).
@@ -69,7 +72,7 @@ upgrading a pin, two stacks at once: [`docs/OPERATIONS.md`](docs/OPERATIONS.md).
 ## Profiles
 
 A profile **is** a compose fragment in `compose/`, named after the file. There are exactly
-seven, and `compose:` `profiles:` keys are never used anywhere in this repository — `up.sh`
+eight, and `compose:` `profiles:` keys are never used anywhere in this repository — `up.sh`
 never passes `--profile`, so a service carrying one would silently never start.
 
 Every box below is one compose service with its default host port; solid arrows are
@@ -142,12 +145,19 @@ you use with `docker compose … logs <service>`. Ports are the `.env.example` d
 | Profile | Services | Default endpoints |
 |---|---|---|
 | [`core`](compose/core.yml) — always | `node` · `indexer` · `proof-server` · `proof-warm` · `postgres` | node RPC `http://127.0.0.1:9944` · indexer `http://127.0.0.1:8088` · proof `http://127.0.0.1:6300` · postgres internal |
-| [`offerfiles`](compose/offerfiles.yml) | `celestia` · `offerfiles-deploy` · `kernel` · `batcher` · `offerfiles-token-names` | kernel API `http://127.0.0.1:9999` · batcher `http://127.0.0.1:3334` · Celestia DA RPC `http://127.0.0.1:26658` |
+| [`offerfiles`](compose/offerfiles.yml) | `celestia` · `kernel` · `batcher` | kernel API `http://127.0.0.1:9999` · batcher `http://127.0.0.1:3334` · Celestia DA RPC `http://127.0.0.1:26658` |
 | [`frontend`](compose/frontend.yml) | `frontend` | zswap-da SPA `http://127.0.0.1:10600` |
 | [`shielded-night`](compose/shielded-night.yml) — needs only `core` | `shielded-night-deploy` · `shielded-night` · `shielded-night-token-name` · `shielded-night-verify` | sNight dApp `http://127.0.0.1:10900` |
-| [`solver`](compose/solver.yml) — needs `RELAY_SOURCE_DIR` | `relay` · `solver-provision` · `maker-offer` · `solver` · `solver-frontend` · `intents-ui` | relay `http://127.0.0.1:13000` · relay WS `:19001` · monitor **`http://127.0.0.1:10800`** · intents UI `http://127.0.0.1:10700` · status listener `solver:9100` internal only |
-| [`poster`](compose/poster.yml) | `poster-provision` · `offer-poster` | health `http://127.0.0.1:19977/health` (+ `/metrics`, `/journal`) |
+| [`solver`](compose/solver.yml) — needs `RELAY_SOURCE_DIR` **and `issuer`** | `relay` · `solver-provision` · `solver-inventory` · `maker-provision` · `maker-inventory` · `maker-offer` · `solver` · `solver-frontend` · `intents-ui` | relay `http://127.0.0.1:13000` · relay WS `:19001` · monitor **`http://127.0.0.1:10800`** · intents UI `http://127.0.0.1:10700` · status listener `solver:9100` internal only |
+| [`poster`](compose/poster.yml) — needs **`issuer`** | `poster-provision` · `poster-inventory` · `offer-poster` | health `http://127.0.0.1:19977/health` (+ `/metrics`, `/journal`) |
 | [`prices`](compose/prices.yml) — opt-in, needs `COINGECKO_API_KEY` | `price-feed` | no port; writes `asset_prices`, read back via kernel `/v1/prices` |
+| [`issuer`](compose/issuer.yml) — needs only `core`; **required by `poster` and `solver`** | `issuer-deploy` · `faucet` · `issuer-registrar` · `issuer-fund` · `issuer-registry` · `issuer-tokens-env` | token faucet **`http://127.0.0.1:10500/?network=undeployed`** (the `?network=` is not optional); `docker compose run --rm issuer-fund <TOKEN> <base-units> <recipient-seed> [count]` for the headless lane |
+
+> **`poster` and `solver` REQUIRE `issuer` since 00020 PR C.** Kernel
+> [#69](https://github.com/effectstream/zswap-offerfiles-kernel/pull/69) removed the local faucet
+> contract, so their swap-token inventory is minted by the issuer. `./up.sh` adds the profile for
+> you and says so in one line; a hand-rolled `docker compose -f …` without it refuses to render,
+> naming `issuer-deploy`.
 
 What each profile actually does, service by service — the whole-coin line, the sponsorship
 gate, the exact-coin guarantee, the price feed's key rules, the sNight round trip — is in
@@ -181,22 +191,23 @@ fails when the block is stale.
 <!-- render-readme-pins:begin — GENERATED by scripts/render-readme-pins.py --write from compose/, images/, .env.example and config/artifact-decisions.json. Edit config/readme-components.json, not this block. -->
 | Component | Source | Pin | Pinned in |
 |---|---|---|---|
-| Midnight node `1.0.0` | [`midnightntwrk/midnight-node`](https://hub.docker.com/r/midnightntwrk/midnight-node) *(upstream image)*, `CFG_PRESET=dev` | index digest `ede01da35e98…` | `config/artifact-decisions.json` · `.env.example` |
+| Midnight node `1.0.1` | [`midnightntwrk/midnight-node`](https://hub.docker.com/r/midnightntwrk/midnight-node) *(upstream image)*, `CFG_PRESET=dev` | index digest `a340cdea456d…` | `config/artifact-decisions.json` · `.env.example` |
 | Indexer `4.3.3` | [`midnightntwrk/indexer-standalone`](https://hub.docker.com/r/midnightntwrk/indexer-standalone) *(upstream image)* | index digest `03afd079b00b…` | `config/artifact-decisions.json` · `.env.example` |
 | Proof server `8.1.0` (+ `proof-warm` pre-warm) | [`midnightntwrk/proof-server`](https://hub.docker.com/r/midnightntwrk/proof-server) *(upstream image)* | index digest `801bbc0340e9…` | `config/artifact-decisions.json` · `.env.example` |
 | Celestia app `6.4.10` / node `0.28.4` | [`effectstream/binaries@0.3.120`](https://github.com/effectstream/binaries/releases/tag/0.3.120), each archive byte-equal to the official celestiaorg release | SHA-256 per arch | `config/artifact-decisions.json` · `.env.example` · `compose/offerfiles.yml` · `images/celestia/Dockerfile` · `scripts/lib/common.sh` |
 | PostgreSQL + `pg_ivm 1.11` | `postgres` *(upstream image)* with `pg_ivm` compiled in | `PG_IVM_VERSION=1.11` | `.env.example` · `compose/core.yml` · `images/postgres/Dockerfile` |
-| **Offer-files kernel · batcher · COW solver · maker-offer · offer poster · price feed** (ONE image) | [`effectstream/zswap-offerfiles-kernel`](https://github.com/effectstream/zswap-offerfiles-kernel) `main`, the whole-coin line (6 decimals everywhere); compactc 0.30.0. The solver has no second pin and no `.solver-commit`. Since kernel [#68](https://github.com/effectstream/zswap-offerfiles-kernel/pull/68) the upstream mint also tries to register its own `TESTTOKEN*` names — it cannot reach a kernel from this stack's deploy one-shot, and `offerfiles-token-names` fails loudly rather than accept a foreign name for one of our colours. A `postgres` volume older than `c293ebd` needs `./down.sh -v` before this pin; `c293ebd` → this pin does not | [`a608fa67419c`](https://github.com/effectstream/zswap-offerfiles-kernel/commit/a608fa67419c16188e9405417ecdf34f3f7c47a1) | `.env.example` · `compose/offerfiles.yml` · `compose/solver.yml` · `images/offerfiles-kernel/Dockerfile` · `scripts/lib/common.sh` |
-| zswap-da SPA | [`effectstream/effectstream` `templates/zswap-da`](https://github.com/effectstream/effectstream/tree/58ab921be5513b77937a37be86bf724a41888302/templates/zswap-da), `midnight-1` head — v8-native, no ledger patch; compactc 0.31.0 | [`58ab921be551`](https://github.com/effectstream/effectstream/commit/58ab921be5513b77937a37be86bf724a41888302) | `.env.example` · `compose/frontend.yml` · `images/zswap-da/Dockerfile` · `scripts/lib/common.sh` |
-| Shielded NIGHT dApp | [`effectstream/shielded-night`](https://github.com/effectstream/shielded-night) `main` (the 1.x line); contract recompiled in-image with compactc 0.31.1, byte-identical to the committed artifacts | [`f7fcefa7921b`](https://github.com/effectstream/shielded-night/commit/f7fcefa7921bf2c3f634871f9ad3aa3a32251af0) | `.env.example` · `compose/shielded-night.yml` · `images/shielded-night/Dockerfile` · `scripts/lib/common.sh` |
-| Midnight Intents relay + intents UI | `shieldedtech/midnight-intents-swaps` — **PRIVATE**; you supply the clone via `RELAY_SOURCE_DIR`, `up.sh` verifies it sits at the pin with a clean tree before any build | `061f4d3258e2…` (`RELAY_REF`, verified before build) | `.env.example` · `compose/solver.yml` · `scripts/lib/common.sh` · `images/relay/` · `images/intents-ui/` |
+| **Offer-files kernel · batcher · COW solver · maker-offer · offer poster · price feed** (ONE image) | [`effectstream/zswap-offerfiles-kernel`](https://github.com/effectstream/zswap-offerfiles-kernel) `main`, the EXTERNAL-INVENTORY line since kernel [#69](https://github.com/effectstream/zswap-offerfiles-kernel/pull/69): the local faucet contract is deleted, so this image compiles NOTHING (no Compact stage, no `COMPACT_VERSION`) and every token comes from the `issuer` profile below. Per-token decimals, not 6 everywhere. The solver has no second pin and no `.solver-commit`. **BREAKING for an existing `postgres` volume** — `000-init.sql` reseeds `known_tokens` and adds `canonical_token_registry_state`, so `./down.sh -v` is the upgrade path | [`e3b9388d11df`](https://github.com/effectstream/zswap-offerfiles-kernel/commit/e3b9388d11dfe1a6c5554a4c8699250fe595e4ce) | `.env.example` · `compose/offerfiles.yml` · `compose/solver.yml` · `images/offerfiles-kernel/Dockerfile` · `scripts/lib/common.sh` |
+| zswap-da SPA | [`effectstream/effectstream` `templates/zswap-da`](https://github.com/effectstream/effectstream/tree/400880ceb6814738d1ae193dae18ad5128922edc/templates/zswap-da), `midnight-1` head — v8-native, no ledger patch. Since effectstream [#922](https://github.com/effectstream/effectstream/pull/922) it COMPILES NOTHING: the template's Compact source, build script and manifest are deleted with the kernel's contract, so this image has no Compact stage and no `COMPACT_VERSION`. [#920](https://github.com/effectstream/effectstream/pull/920) replaced the in-page Faucet tab with a LINK to this stack's own `issuer` faucet site (`VITE_FAUCET_URL`) and made `VITE_MIDNIGHT_NETWORK_ID=undeployed` a required build input | [`400880ceb681`](https://github.com/effectstream/effectstream/commit/400880ceb6814738d1ae193dae18ad5128922edc) | `.env.example` · `compose/frontend.yml` · `images/zswap-da/Dockerfile` · `scripts/lib/common.sh` |
+| Shielded NIGHT dApp | [`effectstream/shielded-night`](https://github.com/effectstream/shielded-night) `main` (the 1.x line); the v1 contract is recompiled in-image with compactc 0.31.1 and must be byte-identical to the committed artifacts. Since [#13](https://github.com/effectstream/shielded-night/pull/13) the page is multinetwork and picks its protocol from a `protocolFamily` per network — `undeployed` is `midnight-1.x`, so this stack runs the v1/ledger-v8 adapter out of `frontend/protocols/v1`; the Midnight-2.x lane (`contracts/v2`, compactc 0.34.0) is served but unreachable here. [#14](https://github.com/effectstream/shielded-night/pull/14) moved the served proving assets to `contract/v1/shielded-night`, resolved against the page origin | [`2bb32838a057`](https://github.com/effectstream/shielded-night/commit/2bb32838a0572019a49436c3743bae7d0299817a) | `.env.example` · `compose/shielded-night.yml` · `images/shielded-night/Dockerfile` · `scripts/lib/common.sh` |
+| **Token issuer** — `issuer-deploy` · faucet site · `issuer-registrar` · `issuer-fund` (ONE image, two targets) | [`effectstream/mint-test-tokens`](https://github.com/effectstream/mint-test-tokens) `main` (public, already on the 1.x line); the six v1 token contracts are deployed once per devnet on `undeployed`, and all three v1 contracts are recompiled in-image with compactc 0.31.1 and byte-compared against the committed artifacts. This is what replaces the kernel's removed local faucet: `TWBTC` (8 dec) `TWETH` (18) `TWUSDC` (6) `TWUSDM` (6) `UTWUSDC` (6, unshielded) `UTWBTC` (8, unshielded) | [`7ecad008b07a`](https://github.com/effectstream/mint-test-tokens/commit/7ecad008b07acb2a491d8291e05455cbd638910f) | `.env.example` · `compose/issuer.yml` · `images/issuer/Dockerfile` · `scripts/lib/common.sh` |
+| Midnight Intents relay + intents UI | `shieldedtech/midnight-intents-swaps` — **PRIVATE**; you supply the clone via `RELAY_SOURCE_DIR`, `up.sh` verifies it sits at the pin with a clean tree before any build. Since 00020 PR F the UI labels each token and scales its amounts from `TOKEN_<NAME>` + `METADATA_TOKEN_<NAME>_LABEL/_DECIMALS` baked at build time, which `scripts/issuer-token-names.sh` fills in from the issuer registry | `b32e0b100a57…` (`RELAY_REF`, verified before build) | `.env.example` · `compose/solver.yml` · `scripts/lib/common.sh` · `images/relay/` · `images/intents-ui/` |
 <!-- render-readme-pins:end -->
 
 ## Layout
 
 ```
-compose/     core.yml, offerfiles.yml, frontend.yml, shielded-night.yml, solver.yml,
-             poster.yml, prices.yml — one fragment per profile
+compose/     core.yml, offerfiles.yml, issuer.yml, frontend.yml, shielded-night.yml,
+             solver.yml, poster.yml, prices.yml — one fragment per profile, eight of them
 images/      build contexts for the locally built images — one directory per image
 scripts/     verify-*.sh gates, pick-ports.sh, ci-check.sh, lib/ (shared bash + python)
 config/      artifact-decisions.json — the frozen pin record; readme-components.json — the
@@ -237,7 +248,7 @@ it yourself and point `RELAY_SOURCE_DIR` at the workspace directory inside that 
 
 ```sh
 git clone git@github.com:shieldedtech/midnight-intents-swaps.git ./local/intents-swaps
-git -C ./local/intents-swaps checkout 061f4d3258e25b9f3a451b4b4358ed232349d96b
+git -C ./local/intents-swaps checkout b32e0b100a5715d1fbf89c155afe6c2236d3b013
 echo 'RELAY_SOURCE_DIR=./local/intents-swaps/phase1-native-swaps' >> .env
 ```
 

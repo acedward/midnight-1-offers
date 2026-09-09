@@ -5,6 +5,12 @@
 # Sections, in dependency order:
 #   core        node RPC + finality advancing, indexer GraphQL on BOTH served paths tracking
 #               the chain, proof-server accepting connections, postgres healthy
+#   one-shots   every service that RUNS ONCE AND EXITS exited 0 and left its receipt on its own
+#               volume — the provisioning lane (NIGHT from genesis, the issuer's inventory
+#               mints), the deploys, the proof-data pre-warm and the tokens.env handoff. Sixteen
+#               of this stack's 32 services are one-shots and ten of them used to be asserted
+#               only indirectly; see the header of scripts/verify-oneshots.sh for why an
+#               indirect assertion is not a coverage claim.
 #   celestia    the offerfiles profile's DA devnet: producing blocks, blob round trip
 #   kernel      /v1/health/sync current, the book endpoints, batcher health
 #   frontend    the zswap-da SPA serves its assets and a browser-reachable /config.js
@@ -46,6 +52,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$REPO_ROOT/scripts/lib/common.sh"
 
 CORE_ONLY=0
+ONESHOTS_MODE=auto
 CELESTIA_MODE=auto
 KERNEL_MODE=auto
 FRONTEND_MODE=auto
@@ -53,6 +60,7 @@ SHIELDED_NIGHT_MODE=auto
 SOLVER_MODE=auto
 POSTER_MODE=auto
 PRICES_MODE=auto
+ISSUER_MODE=auto
 
 usage() {
   cat <<'EOF'
@@ -61,6 +69,8 @@ Usage: ./verify.sh [options]
 Options:
   --core-only    only the node/indexer/proof-server/postgres checks; skip every optional
                  profile section
+  --one-shots    require the one-shots section (fail if no one-shot container exists)
+  --no-one-shots skip the one-shots section
   --celestia     require the celestia section (fail if the profile is not up)
   --no-celestia  skip the celestia section even if the profile is up
   --kernel       require the kernel section (fail if the service is not up)
@@ -77,6 +87,8 @@ Options:
                  SKIPPED, not passed, when the stack has no COINGECKO_API_KEY — "require the
                  section" is about the PROFILE being up, not about the key being set.
   --no-prices    skip the prices section even if the profile is up
+  --issuer       require the issuer section (fail if the profile is not up)
+  --no-issuer    skip the issuer section even if the profile is up
   -h, --help     this text
 
 Environment:
@@ -86,7 +98,9 @@ EOF
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --core-only)   CORE_ONLY=1; CELESTIA_MODE=off; KERNEL_MODE=off; FRONTEND_MODE=off; SHIELDED_NIGHT_MODE=off; SOLVER_MODE=off; POSTER_MODE=off; PRICES_MODE=off; shift ;;
+    --core-only)   CORE_ONLY=1; ONESHOTS_MODE=off; CELESTIA_MODE=off; KERNEL_MODE=off; FRONTEND_MODE=off; SHIELDED_NIGHT_MODE=off; SOLVER_MODE=off; POSTER_MODE=off; PRICES_MODE=off; ISSUER_MODE=off; shift ;;
+    --one-shots)    ONESHOTS_MODE=on;  shift ;;
+    --no-one-shots) ONESHOTS_MODE=off; shift ;;
     --celestia)    CELESTIA_MODE=on;  shift ;;
     --no-celestia) CELESTIA_MODE=off; shift ;;
     --kernel)      KERNEL_MODE=on;    shift ;;
@@ -101,6 +115,8 @@ while [[ $# -gt 0 ]]; do
     --no-poster)   POSTER_MODE=off;   shift ;;
     --prices)      PRICES_MODE=on;    shift ;;
     --no-prices)   PRICES_MODE=off;   shift ;;
+    --issuer)      ISSUER_MODE=on;    shift ;;
+    --no-issuer)   ISSUER_MODE=off;   shift ;;
     -h|--help) usage; exit 0 ;;
     *) err "unknown option: $1"; echo; usage; exit 2 ;;
   esac
@@ -321,6 +337,19 @@ if service_present indexer; then
   fi
 fi
 
+# ── the one-shots, before any profile section ────────────────────────────────
+#
+# FIRST among the optional sections, and the order is the point: every profile section below
+# rests on a one-shot having done its job (the poster on its pre-minted coins, the solver on
+# its ladder receipt, the page on its deployed contract). When one of them failed, the reader
+# should see THAT rather than the six downstream assertions it takes with it.
+#
+# The sentinel is `node`, i.e. "is there a stack at all": the section is profile-adaptive
+# internally and asserts exactly the one-shots this profile set actually declares.
+if (( ! CORE_ONLY )); then
+  run_section one-shots node "$ONESHOTS_MODE" scripts/verify-oneshots.sh "./up.sh"
+fi
+
 # ── optional profiles ────────────────────────────────────────────────────────
 if (( ! CORE_ONLY )); then
   run_section celestia celestia "$CELESTIA_MODE" scripts/verify-celestia.sh "./up.sh --with offerfiles"
@@ -338,6 +367,16 @@ if (( ! CORE_ONLY )); then
   # (compose/prices.yml says why), so "present" is all that can be read off the container —
   # whether the feed actually refreshed anything is the section's own first assertion.
   run_section prices   price-feed   "$PRICES_MODE" scripts/verify-prices.sh "./up.sh --with offerfiles --with prices"
+  # The sentinel is the FAUCET, not `issuer-deploy`: the one-shot exits, and a stack whose
+  # faucet is gone but whose exited one-shot lingers must not report a passing section. It is
+  # also the only long-lived service the fragment has — the registrar and the funding CLI are
+  # `replicas: 0` and are RUN by this section, not observed by it.
+  #
+  # LAST, on purpose. The section MINTS: it funds e2e-taker with one whole TWBTC and reads the
+  # balance back. Running it before the shielded-night and solver sections would leave a token
+  # in a wallet those sections make assertions about, which is exactly the kind of
+  # cross-section coupling `run_section` exists to avoid.
+  run_section issuer   faucet   "$ISSUER_MODE"   scripts/verify-issuer.sh   "./up.sh --with issuer"
 fi
 
 echo

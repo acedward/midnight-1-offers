@@ -14,9 +14,16 @@
 #               written at container start, so a 404 means the entrypoint never ran; and
 #               index.html must load it BEFORE the module bundle or the override is dead.
 #   zk assets   all 11 circuits' keys/<c>.prover, keys/<c>.verifier and zkir/<c>.bzkir answer
-#               with non-empty BYTES, and a circuit that does not exist answers 404 — because
-#               midnight-js's FetchZkConfigProvider only checks `response.ok`, so an SPA
-#               fallback would hand the prover an HTML document as a proving key.
+#               with non-empty BYTES from `contract/v1/shielded-night` — the path upstream #14
+#               made the page resolve against its own origin — and a circuit that does not
+#               exist answers 404 there, because midnight-js's FetchZkConfigProvider only
+#               checks `response.ok` and an SPA fallback would hand the prover an HTML document
+#               as a proving key. The pre-#14 `contract/compiled/` tree and the 2.x
+#               `contract/v2/` tree are checked too, one artifact each: both are emitted by
+#               vite and served by our nginx, and neither may be the SPA shell.
+#   protocol    the SERVED bundle carries `midnight-1.x` and `Local (undeployed)` — upstream #13
+#               made the page pick its adapter from a per-network `protocolFamily`, and this
+#               stack's whole correctness rests on `undeployed` being the v1/ledger-v8 one.
 #   on-chain    the DEPLOYED contract's verifier keys are byte-identical to those served ones,
 #               11 of 11, none missing and none extra (upstream's own verify-deployment.ts,
 #               run inside the compose network against this stack's indexer).
@@ -25,7 +32,7 @@
 #               atomic (one transaction each) and two-step — with EXACT balance assertions.
 #   book        ONLY when the `offerfiles` profile is up: the reason this dApp belongs in an
 #               OFFERS stack. Native NIGHT is wrapped into sNight, posted as a real MIP-0005
-#               offer file against one of the stack's minted demo colours, found in the
+#               offer file against one of the stack's ISSUED colours, found in the
 #               kernel's book on the sNight colour, taken and settled by a second wallet, and
 #               unwrapped by that wallet back into native NIGHT. Exact balances throughout.
 #
@@ -49,7 +56,14 @@ use_all_profiles
 BIND="${HOST_ADDR:-127.0.0.1}"
 SNPORT="${SHIELDED_NIGHT_HOST_PORT:-10900}"
 BASE="http://${BIND}:${SNPORT}"
-ARTIFACTS="${BASE}/contract/compiled/shielded-night"
+# SINCE upstream #14 the page fetches `<origin>/contract/v1/shielded-night` — the v1 adapter
+# builds its FetchZkConfigProvider base with contractAssetBaseUrl('v1', {origin, base}), and
+# `undeployed` is the `midnight-1.x` family in upstream's own network table. The pre-#14
+# `contract/compiled/` tree is still emitted (upstream keeps it for clients open across a
+# rollout) and is checked separately below, as is the v2 tree this stack cannot select.
+ARTIFACTS="${BASE}/contract/v1/shielded-night"
+ARTIFACTS_LEGACY="${BASE}/contract/compiled/shielded-night"
+ARTIFACTS_V2="${BASE}/contract/v2/shielded-night"
 
 # The 11 circuits of the ShieldedNight contract. Written out rather than discovered, because
 # "the page serves some keys" and "the page serves THIS contract" are different claims and only
@@ -69,7 +83,8 @@ fail() { err "$*"; FAILURES=$(( FAILURES + 1 )); }
 
 log "shielded-night: endpoints"
 info "page      ${BASE}"
-info "artifacts ${ARTIFACTS}/"
+info "artifacts ${ARTIFACTS}/  (upstream #14: the page resolves this against its own origin)"
+info "also served ${ARTIFACTS_LEGACY}/ (pre-#14) and ${ARTIFACTS_V2}/ (the 2.x lane, unreachable here)"
 
 # ── the static surface ───────────────────────────────────────────────────────
 echo
@@ -210,12 +225,92 @@ fi
 # THE NEGATIVE CONTROL, and it is the whole point of `try_files … =404` in nginx.conf. Without
 # it this URL answers 200 with the app shell and every check above would still pass while the
 # prover was being handed HTML.
-BOGUS_CODE="$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 \
-  "${ARTIFACTS}/keys/thisCircuitDoesNotExist.prover" 2>/dev/null || true)"
-if [[ "$BOGUS_CODE" == "404" ]]; then
-  ok "a missing artifact answers 404, not the SPA fallback"
+#
+# RUN ON ALL THREE served profile paths since upstream #14 (which moved the live one from
+# `contract/compiled` to `contract/v1`). nginx.conf covers them with ONE regex location, so a
+# single hole here would be a hole in all three — but the 404 is what proves that location
+# matched at all, and it is exactly what a prefix block for the OLD path alone would have failed
+# to give the NEW one. `|| true` on every capture: a curl failure must be reported by the
+# assertion, not kill the script under errexit.
+for label_base in "v1:${ARTIFACTS}" "legacy:${ARTIFACTS_LEGACY}" "v2:${ARTIFACTS_V2}"; do
+  BOGUS_LABEL="${label_base%%:*}"
+  BOGUS_BASE="${label_base#*:}"
+  BOGUS_CODE="$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 \
+    "${BOGUS_BASE}/keys/thisCircuitDoesNotExist.prover" 2>/dev/null || true)"
+  if [[ "$BOGUS_CODE" == "404" ]]; then
+    ok "a missing ${BOGUS_LABEL} artifact answers 404, not the SPA fallback"
+  else
+    fail "a missing ${BOGUS_LABEL} artifact answered HTTP ${BOGUS_CODE:-none}; it must be 404, never the app shell
+          (nginx.conf's ZK lane is a regex location over contract/(v1|v2|compiled)/)"
+  fi
+done
+
+# ── the two OTHER served trees, one artifact each ────────────────────────────
+#
+# Not 33 fetches apiece: neither is what the page proves against on this stack, and the point of
+# checking them at all is that they exist as BYTES rather than as the app shell. The legacy tree
+# is what a browser left open across a rollout still asks for; the v2 tree is emitted by the same
+# vite copy plugin and cannot be selected here (`undeployed` is `midnight-1.x`) — a missing one
+# would mean a copy target stopped running, which is a re-pin regression worth naming.
+for label_base in "the pre-#14 contract/compiled tree:${ARTIFACTS_LEGACY}" \
+                  "the 2.x contract/v2 tree:${ARTIFACTS_V2}"; do
+  EXTRA_LABEL="${label_base%%:*}"
+  EXTRA_BASE="${label_base#*:}"
+  if curl -fsS -o "$BODY" -D "$HEADERS" --max-time 60 \
+       "${EXTRA_BASE}/keys/convertToShielded.verifier" >/dev/null 2>&1 && [[ -s "$BODY" ]]; then
+    EXTRA_CTYPE="$(grep -i '^content-type:' "$HEADERS" | head -1 | tr -d '\r' | tr '[:upper:]' '[:lower:]' || true)"
+    case "$EXTRA_CTYPE" in
+      *text/html*) fail "${EXTRA_LABEL} answered text/html — that is the SPA fallback, not a ZK artifact" ;;
+      *)           ok "${EXTRA_LABEL} is served as non-empty binary" ;;
+    esac
+  else
+    fail "${EXTRA_LABEL} did not serve keys/convertToShielded.verifier as non-empty bytes — vite's copy target for it did not run, or nginx does not serve it"
+  fi
+done
+
+# ── the protocol the page will pick, read out of the SERVED bundle (upstream #13) ─
+#
+# THE CLAIM THIS STACK RESTS ON. Since #13 every network in the page's table carries a
+# `protocolFamily` and useShieldedNight.ts dynamic-imports the v1 adapter for `midnight-1.x` and
+# the v2 one otherwise. `undeployed` is `midnight-1.x` upstream — the image asserts that in the
+# SOURCE at build time — and this asserts the table was SHIPPED, which is a different claim: a
+# build that tree-shook or failed to emit it would serve a page with no local network to select
+# and nothing would say so until a person opened it.
+#
+# Both markers are string LITERALS, so minification preserves them verbatim. The bundle is found
+# from index.html rather than guessed, and every module chunk is searched — vite is free to split
+# the network table into any chunk it likes. `|| true` throughout: a missing asset is reported by
+# the assertion below.
+echo
+log "shielded-night: the protocol this page selects for undeployed"
+
+SN_ASSETS="$(printf '%s' "$HTML" \
+  | grep -o 'src="/assets/[^"]*\.js"' \
+  | sed -e 's/^src="//' -e 's/"$//' | sort -u || true)"
+SN_ASSET_COUNT="$(printf '%s\n' "$SN_ASSETS" | grep -c . || true)"
+SN_FAMILY_FOUND=0
+SN_LABEL_FOUND=0
+if [[ "${SN_ASSET_COUNT:-0}" -eq 0 ]]; then
+  fail "index.html references no /assets/*.js — the served page is not the built SPA"
 else
-  fail "a missing artifact answered HTTP ${BOGUS_CODE:-none}; it must be 404, never the app shell"
+  # The entry chunk lazily imports the adapters, so the markers may live in ANY chunk; the entry
+  # alone is not enough and a fixed name would break at the next hash change.
+  for asset in $SN_ASSETS; do
+    CHUNK="$(curl -fsS --max-time 60 "${BASE}${asset}" 2>/dev/null || true)"
+    case "$CHUNK" in *"midnight-1.x"*) SN_FAMILY_FOUND=1 ;; esac
+    case "$CHUNK" in *"Local (undeployed)"*) SN_LABEL_FOUND=1 ;; esac
+  done
+  info "searched ${SN_ASSET_COUNT} served javascript asset(s)"
+  if (( SN_FAMILY_FOUND )); then
+    ok "the served bundle carries the midnight-1.x protocol family — the v1/ledger-v8 adapter this stack needs"
+  else
+    fail "no served javascript asset carries 'midnight-1.x'; the page cannot select the v1 adapter for undeployed"
+  fi
+  if (( SN_LABEL_FOUND )); then
+    ok "the served bundle offers this stack's own network, 'Local (undeployed)'"
+  else
+    fail "no served javascript asset carries the 'Local (undeployed)' network label"
+  fi
 fi
 
 # ── the on-chain verifier keys ───────────────────────────────────────────────
@@ -259,7 +354,7 @@ fi
 #   1. wrap    N NIGHT -> N sNight on the maker wallet, against THIS stack's deployed contract
 #   2. offer   a real MIP-0005 offer file GIVING that sNight and WANTING a minted demo colour,
 #              posted through POST /v1/offers exactly as the repository's own maker-offer
-#              one-shot posts its DEVA/DEVB offer (same script, same code path, same wallet
+#              one-shot posts its own offer (same script, same code path, same wallet
 #              plumbing) — only the two colours and the seed differ
 #   3. book    GET /v1/offers?token=<sNight colour>&direction=GIVING lists it, with the sNight
 #              colour as its GIVING leg and both amounts exact
@@ -459,22 +554,56 @@ else
     fi
   fi
 
-  # ── the minted demo colour the offer will ask for ──────────────────────────
-  # Read off the offerfiles-deploy volume through the kernel container, which mounts it
-  # read-only. The colours derive from the OFFER-FILES contract address, so they are different
-  # on every fresh stack and cannot be written down anywhere.
+  # ── the ISSUED colour the offer will ask for (00020 PR C) ──────────────────
+  #
+  # It used to be a KEY into `minted-tokens.json` on the `offerfiles-deploy` volume
+  # (`SNIGHT_BOOK_WANT_KEY=shieldedA` = DEVA). Kernel #69 deleted the mint, the file and the
+  # volume, so the want leg is one of the ISSUER's six, named by `SNIGHT_BOOK_WANT_TOKEN` and
+  # resolved through the same host-side reader every other verify script uses.
+  #
+  # AND THE TAKER HAS TO BE GIVEN SOME. `take-snight-offer.ts` funds the taker's want side by
+  # TRANSFER from `SNIGHT_BOOK_FUNDER_SEED` (genesis-1) — which worked while the demo colours
+  # were minted TO that wallet, and cannot now: genesis-1 holds no issued token and nothing but
+  # the issuer can make one. So `issuer-fund` credits the TAKER directly, here, before the
+  # driver runs; the driver's own transfer then sees a sufficient balance and is a no-op.
   WANT_TOKEN=""
   if (( ! BOOK_FAILED )); then
-    MINTED="$(dc exec -T kernel cat /srv/offerfiles-deploy/minted-tokens.json 2>/dev/null || true)"
-    WANT_TOKEN="$(printf '%s' "$MINTED" \
-      | grep -o "\"${SNIGHT_BOOK_WANT_KEY}\"[[:space:]]*:[[:space:]]*\"[0-9a-f]*\"" \
-      | head -1 | sed -e 's/.*:[[:space:]]*"//' -e 's/"$//' || true)"
-    if [[ "${#WANT_TOKEN}" -ne 64 ]]; then
-      fail "no ${SNIGHT_BOOK_WANT_KEY} colour on the offerfiles-deploy volume — the mint step did not publish one"
+    if ! service_present faucet; then
+      fail "the book chain needs the \`issuer\` profile: its want leg is an issued token
+            (SNIGHT_BOOK_WANT_TOKEN=${SNIGHT_BOOK_WANT_TOKEN}) and only the issuer can mint one.
+            ./up.sh --with offerfiles --with issuer --with shielded-night"
       BOOK_FAILED=1
     else
-      ok "the offer will ask for ${SNIGHT_BOOK_WANT_KEY} (${WANT_TOKEN:0:16}…), a colour this stack minted"
+      WANT_TOKEN="$(issuer_token_id "$SNIGHT_BOOK_WANT_TOKEN" || true)"
+      if [[ "${#WANT_TOKEN}" -ne 64 ]]; then
+        fail "the issuer registry has no token called '${SNIGHT_BOOK_WANT_TOKEN}' — this stack
+              issues TWBTC TWETH TWUSDC TWUSDM UTWUSDC UTWBTC, and the want leg must be a
+              SHIELDED one (the offer is a shielded-to-shielded swap)"
+        BOOK_FAILED=1
+      else
+        ok "the offer will ask for ${SNIGHT_BOOK_WANT_TOKEN} (${WANT_TOKEN:0:16}…), a colour this stack issued"
+      fi
     fi
+  fi
+
+  # The taker's want-side stock. Twice the want leg, so the balancer has room for a change
+  # output; `issuer-fund` reads the balance back and refuses unless it moved by exactly this.
+  if (( ! BOOK_FAILED )); then
+    SNIGHT_TAKER_FUND="${SNIGHT_BOOK_TAKER_FUND:-$(( SNIGHT_BOOK_WANT_AMOUNT * 2 ))}"
+    SNIGHT_FUND_OUT="$(mktemp)"
+    SNIGHT_FUND_RC=0
+    dc run --rm issuer-fund "$SNIGHT_BOOK_WANT_TOKEN" "$SNIGHT_TAKER_FUND" "$SNIGHT_BOOK_TAKER_SEED" \
+      >"$SNIGHT_FUND_OUT" 2>&1 || SNIGHT_FUND_RC=$?
+    if (( SNIGHT_FUND_RC != 0 )) || ! grep -q '^ISSUER_FUND_RESULT ' "$SNIGHT_FUND_OUT"; then
+      sed 's/^/      /' "$SNIGHT_FUND_OUT" >&2
+      fail "could not give the taker ${SNIGHT_TAKER_FUND} base units of ${SNIGHT_BOOK_WANT_TOKEN}
+            — it cannot pay for the offer. The manual form is:
+            docker compose run --rm issuer-fund ${SNIGHT_BOOK_WANT_TOKEN} ${SNIGHT_TAKER_FUND} <taker-seed>"
+      BOOK_FAILED=1
+    else
+      ok "the taker holds ${SNIGHT_TAKER_FUND} base units of ${SNIGHT_BOOK_WANT_TOKEN} (minted by the issuer)"
+    fi
+    rm -f "$SNIGHT_FUND_OUT"
   fi
 
   # ── 1. wrap ────────────────────────────────────────────────────────────────
@@ -509,7 +638,7 @@ else
   # definition already carries the endpoints, the storage password and the minted-colours
   # volume. No compose service is added: one that existed would be started by every `up.sh`.
   if (( ! BOOK_FAILED )); then
-    if run_book_step "step 2/5  post a real MIP-0005 offer file: give ${SNIGHT_BOOK_AMOUNT} sNight, want ${SNIGHT_BOOK_WANT_AMOUNT} ${SNIGHT_BOOK_WANT_KEY} (proving…)" \
+    if run_book_step "step 2/5  post a real MIP-0005 offer file: give ${SNIGHT_BOOK_AMOUNT} sNight, want ${SNIGHT_BOOK_WANT_AMOUNT} ${SNIGHT_BOOK_WANT_TOKEN} (proving…)" \
          dc run --rm --no-deps -T \
            -e "ZSWAP_API=http://kernel:9999" \
            -e "MAKER_SEED=${SHIELDED_NIGHT_DRIVER_SEED}" \
@@ -540,7 +669,7 @@ else
       BOOK_FAILED=1
     fi
     if printf '%s' "$BOOKED" | grep -Eq "\"token\":\"${WANT_TOKEN}\",\"amount\":\"?${SNIGHT_BOOK_WANT_AMOUNT}\"?[,}]"; then
-      ok "…and WANTING ${SNIGHT_BOOK_WANT_AMOUNT} of ${SNIGHT_BOOK_WANT_KEY} — native NIGHT is now tradable on this book"
+      ok "…and WANTING ${SNIGHT_BOOK_WANT_AMOUNT} of ${SNIGHT_BOOK_WANT_TOKEN} — native NIGHT is now tradable on this book"
     else
       fail "the listed offer does not want ${SNIGHT_BOOK_WANT_AMOUNT} of ${WANT_TOKEN}"
       BOOK_FAILED=1
@@ -553,7 +682,7 @@ else
   # balancing the maker's deliberately-unbalanced transaction and submitting it — no relay and
   # no solver are involved, which is the entire point of the format. The `solver` profile's
   # relay lane CANNOT carry this pair: the COW solver quotes from inventory it holds, its
-  # provisioning mints only the demo colours, and it has no lane to acquire sNight (which
+  # provisioning stocks only the issuer's colours, and it has no lane to acquire sNight (which
   # exists only by wrapping NIGHT through a contract that profile knows nothing about). So the
   # take is gated on `offerfiles`, like the rest of the chain, and what the solver profile
   # would add — a relay-brokered fill of this same offer — is reported as a SKIP.

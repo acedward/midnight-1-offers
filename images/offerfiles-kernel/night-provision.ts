@@ -1,54 +1,68 @@
-// poster-provision.ts — give the offer poster's DEDICATED wallet the one thing it cannot
-// get for itself: unshielded NIGHT.
+// night-provision.ts — give ONE named wallet the one thing it cannot get for itself:
+// unshielded NIGHT, as a few LARGE UTXOs, from genesis.
 //
-//   docker compose run --rm poster-provision      (compose/poster.yml, profile `poster`)
+//   M1_NIGHT_ROLE=poster M1_NIGHT_RECIPIENT_SEED=… bun run night-provision.ts
 //
-// Run by entrypoint-poster-provision.sh, ONCE per chain, behind a marker on the
-// `poster-state` volume and under a `flock` on the shared `genesis-lock` volume.
+// Run by entrypoint-night-provision.sh (services `poster-provision` and `maker-provision`)
+// and by images/cow-solver/entrypoint-solver-provision.sh, ONCE per chain per wallet, behind a
+// marker on the consuming profile's own volume and under a `flock` on the shared
+// `genesis-lock` volume.
 //
 // ── WHY THIS EXISTS AT ALL ───────────────────────────────────────────────────
 // Upstream's stance is "the operator transfers NIGHT by hand" (kernel `deploy/README.md`,
-// Funding). m1's contract is different and older than this profile: `./up.sh` on a clean
-// host with no `.env` must reach a WORKING stack, so every wallet a profile needs is funded
-// by a one-shot (`solver-provision`, `shielded-night-deploy`). This is the poster's.
+// Funding), and since kernel #69 that is the stance of `provision-solver-fees.ts` too: it
+// REFUSES to run unless the wallet already holds NIGHT ("SOLVER_SEED has no NIGHT. Prefund it
+// externally; this deployment cannot fund the wallet"). m1's contract is different and older
+// than any of these profiles: `./up.sh` on a clean host with no `.env` must reach a WORKING
+// stack, so every wallet a profile needs is funded by a one-shot. This is that one-shot, for
+// every wallet that needs it.
 //
-// ── WHY NOT UPSTREAM'S provision-solver-fees.ts (00011 Q16) ──────────────────
-// It is the worked example the kernel's own README points at, and it is the wrong tool here
-// for four independent reasons:
+// ── IT WAS poster-provision.ts, AND WHY IT IS GENERIC NOW (00020 PR C) ───────
+// Written for the poster in 00011 PR C, it is byte-for-byte the transfer the SOLVER and the
+// MAKER now need as well — the solver because upstream stopped funding it, and the maker
+// because it stopped being genesis-1 (the deleted faucet contract's mint credited exactly that
+// wallet, which is the only reason the maker ever WAS the genesis wallet; with tokens coming
+// from the issuer it gets its own roster seed …0031 instead). One script, three callers, one
+// set of numbers — rather than three copies drifting apart.
+//
+// ── WHY NOT UPSTREAM'S provision-solver-fees.ts FOR THIS HALF (00011 Q16) ────
+// It is the worked example the kernel's own README points at, and at `e3b9388…` it explicitly
+// no longer does this job at all — it VALIDATES prefunding and refuses when there is none. It
+// is also the wrong shape for the poster and the maker for reasons that predate #69:
 //
 //   1. it writes a solver LADDER CONFIG and a provisioning RECEIPT into /srv/solver-config,
 //      a volume that belongs to the `solver` profile — which `--with poster` alone must not
 //      have to mount;
-//   2. it reads `minted-tokens.json` to name colours for that ladder, which the poster does
-//      not use (its colours derive from faucet preset NAMES, offline);
-//   3. it EXITS 1 when the recipient wallet holds ANY shielded token. The poster's wallet
-//      holds exactly that by design — one faucet coin per un-offered tick — so re-running it
-//      on a healthy stack (a lost marker, an operator re-run) would fail on the stack's
-//      correct state;
-//   4. it names the recipient `SOLVER_SEED`. Putting the POSTER's seed into a variable called
+//   2. it requires two explicit swap-token IDs, which the poster's NIGHT funding has no
+//      business knowing;
+//   3. it names the recipient `SOLVER_SEED`. Putting the POSTER's seed into a variable called
 //      SOLVER_SEED is precisely the collision `poster-config.ts`'s COLLIDING_SEED_VARS check
 //      exists to catch.
 //
-// So the four-large-UTXO transfer — the only part the poster needs — is reimplemented here,
-// with the same two numbers and the same retry rationale as upstream's script.
+// So the four-large-UTXO transfer — the only part these wallets need — is here, with the same
+// two numbers and the same retry rationale as upstream's own funding paths. The solver's
+// entrypoint then runs upstream's check on top of it, which is the division of labour #69
+// asks for: this deployment supplies the inventory, upstream's script verifies it.
 //
 // ── WHY IT DOES NOT REGISTER DUST ────────────────────────────────────────────
-// Because the poster does that itself, and the kernel's README is explicit about it: "The
-// poster needs unshielded NIGHT, and nothing else — it registers that NIGHT for DUST itself
-// at startup and waits (bounded) for the dust to arrive". A second registration here would
-// spend and re-create the same UTXOs a minute before the poster does the same thing, for no
-// gain and one more proving round. NIGHT is the whole job.
+// Because each recipient wallet does that itself, and the kernel's README is explicit about the
+// poster: "The poster needs unshielded NIGHT, and nothing else — it registers that NIGHT for
+// DUST itself at startup and waits (bounded) for the dust to arrive". The solver's
+// registration is `provision-solver-fees.ts`'s `ensureSolverDustReady()`, run immediately
+// after this script by the same entrypoint. The maker's is `post-maker-offer.ts`'s own wallet
+// build. A registration here would spend and re-create the same UTXOs a minute before the
+// owner does the same thing, for no gain and one more proving round. NIGHT is the whole job.
 //
 // ── ONE FACADE PER SEED ──────────────────────────────────────────────────────
-// Two facades open on the poster's seed at once (this script and `offer-poster`) would force
-// each other's connection down, so compose gates the poster on this one-shot's
-// `service_completed_successfully`, and this process stops both wallets before it exits.
-// The GENESIS facade is the other half of the same rule — `solver-provision`, `maker-offer`
-// and the `offerfiles-deploy` mint all drive genesis-1 — which is what the entrypoint's
-// `flock` on the shared `genesis-lock` volume serialises.
+// Two facades open on the recipient's seed at once (this script and the service that owns the
+// wallet) would force each other's connection down, so compose gates that service on this
+// one-shot's `service_completed_successfully`, and this process stops both wallets before it
+// exits. The GENESIS facade is the other half of the same rule — `solver-provision`,
+// `poster-provision`, `maker-provision` and `issuer-deploy` all drive genesis-1 — which is
+// what the entrypoint's `flock` on the shared `genesis-lock` volume serialises.
 //
 // ── OUTPUT CONTRACT (read by the entrypoint's marker line; keep it stable) ───
-//   POSTER_PROVISION_RESULT posterNight=<base units> funded=<true|false> utxos=<n> each=<n>
+//   NIGHT_PROVISION_RESULT role=<name> night=<base units> funded=<true|false> utxos=<n> each=<n>
 //
 // DEVNET ONLY: it moves genesis NIGHT to a public dev seed on a throwaway chain.
 //
@@ -73,7 +87,8 @@ import {
 globalThis.WebSocket = WebSocket;
 setNetworkId(net.id as never);
 
-const TAG = "[poster-provision]";
+const ROLE = (process.env.M1_NIGHT_ROLE ?? "wallet").trim() || "wallet";
+const TAG = `[night-provision/${ROLE}]`;
 const log = (msg: string): void => console.error(`${TAG} ${msg}`);
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -83,7 +98,7 @@ const NIGHT = "0".repeat(64);
  *  usable immediately where many small ones are worthless for days. */
 const NIGHT_PER_UTXO = 5_000_000_000_000n;
 const NIGHT_UTXO_COUNT = 4;
-/** How long to wait for the funded UTXOs to become visible on the poster's own view. */
+/** How long to wait for the funded UTXOs to become visible on the RECIPIENT's own view. */
 const CONFIRM_TRIES = 36;
 const CONFIRM_INTERVAL_MS = 5_000;
 
@@ -96,30 +111,32 @@ function requiredSeed(name: string): string {
   return value;
 }
 
-const POSTER_SEED = requiredSeed("POSTER_SEED");
+const RECIPIENT_SEED = requiredSeed("M1_NIGHT_RECIPIENT_SEED");
 const GENESIS_SEED = requiredSeed("MIDNIGHT_GENESIS_SEED");
 
 // The collision the poster itself refuses to start on, checked HERE too — before any NIGHT
-// moves. Funding the genesis wallet from the genesis wallet would "succeed" and leave a
-// marker claiming a poster wallet was provisioned that does not exist.
-if (POSTER_SEED === GENESIS_SEED) {
-  log("POSTER_SEED is the GENESIS seed. One wallet facade per seed is an SDK rule, and the");
-  log("poster would refuse to start (exit 78) even if this succeeded. Give it its own seed —");
-  log("wallets/wallets.json records the roster and reserves …0041 for it.");
+// moves, and for every role rather than only the poster's. Funding the genesis wallet from
+// the genesis wallet would "succeed" and leave a marker claiming a wallet was provisioned
+// that does not exist.
+if (RECIPIENT_SEED === GENESIS_SEED) {
+  log(`the ${ROLE} seed IS the GENESIS seed. One wallet facade per seed is an SDK rule, and`);
+  log("the owning service would refuse to start (exit 78) even if this succeeded. Give it its");
+  log("own seed — wallets/wallets.json records the roster: …0021 solver, …0031 maker,");
+  log("…0041 poster, …0051 issuer.");
   process.exit(78);
 }
 
-let poster: any;
+let recipient: any;
 let genesis: any;
 let exitCode = 1;
 
 try {
-  poster = await buildWallet(POSTER_SEED);
-  await waitForSync(poster);
-  log(`poster wallet synced (seed …${POSTER_SEED.slice(-4)})`);
+  recipient = await buildWallet(RECIPIENT_SEED);
+  await waitForSync(recipient);
+  log(`${ROLE} wallet synced (seed …${RECIPIENT_SEED.slice(-4)})`);
 
-  const before = (await unshieldedBalances(poster))[NIGHT] ?? 0n;
-  log(`poster NIGHT before: ${before}`);
+  const before = (await unshieldedBalances(recipient))[NIGHT] ?? 0n;
+  log(`${ROLE} NIGHT before: ${before}`);
 
   let funded = false;
   if (before < NIGHT_PER_UTXO) {
@@ -133,7 +150,7 @@ try {
         throw new Error(`genesis holds ${available} NIGHT, needs ${needed}`);
       }
 
-      const receiver = unshieldedAddressObj(poster);
+      const receiver = unshieldedAddressObj(recipient);
       const outputs = Array.from({ length: NIGHT_UTXO_COUNT }, () => ({
         type: NIGHT,
         amount: NIGHT_PER_UTXO,
@@ -164,7 +181,7 @@ try {
         }
       }
       if (lastErr) throw lastErr;
-      log(`sent ${NIGHT_UTXO_COUNT} x ${NIGHT_PER_UTXO} NIGHT to the poster`);
+      log(`sent ${NIGHT_UTXO_COUNT} x ${NIGHT_PER_UTXO} NIGHT to the ${ROLE}`);
       funded = true;
     } finally {
       // Closed BEFORE the confirmation poll below, and before this process exits at all: the
@@ -175,30 +192,32 @@ try {
     }
 
     for (let i = 0; i < CONFIRM_TRIES; i++) {
-      if (((await unshieldedBalances(poster))[NIGHT] ?? 0n) >= NIGHT_PER_UTXO) break;
+      if (((await unshieldedBalances(recipient))[NIGHT] ?? 0n) >= NIGHT_PER_UTXO) break;
       await sleep(CONFIRM_INTERVAL_MS);
     }
   } else {
-    log("the poster already holds enough NIGHT — nothing to send");
+    log(`the ${ROLE} already holds enough NIGHT — nothing to send`);
   }
 
-  const after = (await unshieldedBalances(poster))[NIGHT] ?? 0n;
-  log(`poster NIGHT after: ${after}`);
+  const after = (await unshieldedBalances(recipient))[NIGHT] ?? 0n;
+  log(`${ROLE} NIGHT after: ${after}`);
 
   // FAIL LOUDLY rather than write a marker over a wallet that got nothing. A poster with no
   // NIGHT still starts and reports `degraded: insufficient_dust` on /health — 200, by design
   // — so an unfunded wallet would present as a permanently healthy poster that never mints.
   if (after < NIGHT_PER_UTXO) {
-    log(`ERROR: the poster holds ${after} NIGHT after provisioning, expected >= ${NIGHT_PER_UTXO}.`);
-    log("ERROR: it would start, report `degraded: insufficient_dust` on /health with a 200,");
-    log("ERROR: and never mint. Refusing to record this as provisioned.");
+    log(`ERROR: the ${ROLE} holds ${after} NIGHT after provisioning, expected >= ${NIGHT_PER_UTXO}.`);
+    log("ERROR: without NIGHT it cannot pay for a proving transaction at all — the poster");
+    log("ERROR: would start and report `degraded` on /health with a 200, the solver's own");
+    log("ERROR: prefunding check would refuse, and the maker could not post an offer.");
+    log("ERROR: Refusing to record this as provisioned.");
     exitCode = 1;
   } else {
     console.log(
-      `POSTER_PROVISION_RESULT posterNight=${after} funded=${funded} ` +
+      `NIGHT_PROVISION_RESULT role=${ROLE} night=${after} funded=${funded} ` +
         `utxos=${NIGHT_UTXO_COUNT} each=${NIGHT_PER_UTXO}`,
     );
-    log("the poster registers this NIGHT for DUST itself at startup — nothing else to do");
+    log(`the ${ROLE} registers this NIGHT for DUST itself — nothing else to do here`);
     exitCode = 0;
   }
 } catch (err) {
@@ -206,7 +225,7 @@ try {
   exitCode = 1;
 } finally {
   await genesis?.wallet?.stop?.().catch(() => {});
-  await poster?.wallet?.stop?.().catch(() => {});
+  await recipient?.wallet?.stop?.().catch(() => {});
 }
 
 process.exit(exitCode);
