@@ -253,6 +253,33 @@ tops the wallet up whenever free coins fall below a threshold. It is a second lo
 with its own failure modes and its own wallet facade, for a devnet demo whose book only has to
 be non-empty. Recorded as an additive follow-up in the project's questions file (Q3, option B).
 
+### A posted offer stops being SPONSORED as the reference price moves away from it
+
+`sponsored` is `to_amount <= suggested_to_amount` (`packages/node/market-mock.ts`), and
+`suggested` is recomputed from **today's** reference prices with `SPONSOR_DISCOUNT_BPS` already
+applied. An offer's want leg is FIXED when it is posted. So any move in the give token's price
+against the want token's, after the post, flips a perfectly good offer to `sponsored: false`
+without anything being wrong.
+
+**Kernel #69 made this much more visible here.** The poster used to mint a fresh coin every
+tick, so the newest live offer was never older than ~60 s and the reference had no time to move.
+It cannot mint now: once the `POSTER_PREMINT_COUNT` pre-minted coins are all live it reports
+`insufficient_inventory` and posts nothing new — so on a long-running stack the newest live
+offer can be tens of minutes old, and the `prices` profile is refreshing CoinGecko underneath it.
+
+**Measured on this project's own gate:** the same assertion read `sponsored=true` on the first
+`./verify.sh`, and `false` two price refreshes later on an offer asking **0.0453 %** above the
+by-then-current suggestion.
+
+`./verify.sh --poster` therefore asserts the property that is actually the poster's job —
+**its own quote snapshot in the journal says the offer was sponsorable when it was built** — and
+REPORTS the live reading with the drift. Refill the poster to get a fresh offer:
+
+```sh
+docker compose run --rm issuer-fund TWBTC 1000000 \
+  0000000000000000000000000000000000000000000000000000000000000041 5
+```
+
 ### A configured size RANGE is a filter now, not a draw
 
 `OFFER_POSTER_GIVE_MIN`/`_GIVE_MAX` used to draw a log-uniform size per fresh mint. At this pin

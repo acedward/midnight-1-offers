@@ -40,12 +40,18 @@
 #                   If the budget runs out it emits ONE failure naming the offer, the wait and
 #                   the last status, and SKIPS the assertions that would read empty fields
 #                   rather than turning one cause into six failures (issue 00017).
-#   sponsored       GET /v1/quote for that offer's ACTUAL legs, with the offer's own want
-#                   amount as `to_amount`, answers `sponsored: true`. The `to_amount` is not
-#                   optional: without it the kernel quotes its own suggested amount, which
-#                   lands on the sponsorship threshold BY CONSTRUCTION and would make this a
-#                   check that cannot fail. With it, this is the batcher's real question —
-#                   "would I pay this offer's Celestia fee?" — asked of the offer as posted.
+#   sponsored       TWO readings, and only one of them is an assertion.
+#                   ASSERTED: the poster's OWN quote snapshot for that offer (journal,
+#                   `QuoteSnapshot.sponsored`) says it was sponsorable WHEN IT WAS BUILT. That
+#                   is the poster's actual contract — size the want leg onto the sponsorship
+#                   threshold — and it is a claim about the poster rather than about the clock.
+#                   REPORTED: `GET /v1/quote` for the offer's ACTUAL legs, with its own want
+#                   amount as `to_amount`, right now. `sponsored` is
+#                   `to_amount <= suggested_to_amount`, and `suggested` is recomputed from
+#                   today's prices — so a fixed want leg goes false on any price move. At this
+#                   pin the book is BOUNDED (the poster cannot mint), so the newest live offer
+#                   can be tens of minutes old and this WILL go false on a long-running stack.
+#                   Measured on this phase's own gate; see the block for the numbers.
 #   size range      only when a range is configured: the last two adopted coins differ in size.
 #   a real take     e2e-taker settles ONE poster offer on chain and is credited EXACTLY the
 #                   give amount, having paid EXACTLY the want amount. Offers that are listed
@@ -323,7 +329,11 @@ if (!r || !r.ok) { console.log("fetch=fail"); process.exit(0); }
 const j = await r.json().catch(() => null);
 if (!j || typeof j !== "object") { console.log("fetch=unparseable"); process.exit(0); }
 out.push("fetch=ok");
-out.push("contractAddress=" + (j.contractAddress ?? "?"));
+// The journal is keyed by NETWORK + GIVE-TOKEN at this pin, not by a contract address —
+// kernel #69 deleted the contract, and re-keying it is what makes "these coins belong to
+// this chain" checkable at all now.
+out.push("networkId=" + (j.networkId ?? "?"));
+out.push("giveColour=" + (j.giveColour ?? "?"));
 const coins = j.coins && typeof j.coins === "object" ? j.coins : {};
 let total = 0;
 const live = [];   // every LIVE offer, newest first (sorted below)
@@ -465,10 +475,10 @@ if [[ "$FIELDS" != *"fetch=ok"* ]]; then
   exit 1
 fi
 J_OFFERS="$(field journalOffers)"
-info "the journal records $(field journalCoins) coin(s) and ${J_OFFERS:-0} offer(s), contract $(field contractAddress)"
+info "the journal records $(field journalCoins) coin(s) and ${J_OFFERS:-0} offer(s) on network $(field networkId), give colour $(field giveColour | cut -c1-16)…"
 OFFER_ID="$(field offerId)"
 if [[ -z "${OFFER_ID:-}" ]]; then
-  fail "the journal records no offer at all, yet /health reported ${MINTS} mint(s)"
+  fail "the journal records no offer at all, yet /health reported ${POSTED} produced offer(s)"
   exit 1
 fi
 # `picked` says WHICH entry the probe settled on, and the phrasing has to stay honest: the
@@ -573,17 +583,57 @@ elif [[ "$GIVE_TOKEN" =~ ^[0-9a-f]{64}$ && "$WANT_TOKEN" =~ ^[0-9a-f]{64}$ ]]; t
     "${KERNEL}/v1/quote?from_token=${GIVE_TOKEN}&to_token=${WANT_TOKEN}&from_amount=${GIVE_AMOUNT}&to_amount=${WANT_AMOUNT}" \
     2>/dev/null | tr -d '\n' || true)"
   SPONSORED="$(json_bool "$QUOTE" sponsored)"
+  SUGGESTED="$(json_str "$QUOTE" suggested_to_amount)"
+  # THE POSTER'S OWN VERDICT AT POST TIME, out of the journal. `poster-journal.ts` records a
+  # `QuoteSnapshot` per offer whose `sponsored` is the quote's verdict WHEN THE OFFER WAS BUILT.
+  AT_POST="$(field journalQuoteSponsored)"
+
   if [[ -z "$QUOTE" ]]; then
     fail "GET /v1/quote for the poster's own legs did not answer"
-  elif [[ "$SPONSORED" == "true" ]]; then
-    ok "GET /v1/quote says the offer as posted is SPONSORED (the batcher pays its Celestia fee)"
-    info "give ${GIVE_AMOUNT} of ${GIVE_TOKEN:0:12}… → want ${WANT_AMOUNT} of ${WANT_TOKEN:0:12}…"
-    info "suggested_to_amount=$(json_str "$QUOTE" suggested_to_amount)  from_source=$(json_str "$QUOTE" from_source)  to_source=$(json_str "$QUOTE" to_source)"
   else
-    fail "GET /v1/quote says sponsored=${SPONSORED:-unreadable}: ${QUOTE:0:300}"
-    info "the want leg is sized from this same quote every tick, so a false here means the"
-    info "prices moved between posting and now, or a leg is unpriced (from_source/to_source"
-    info "would read demo-fallback — the poster registers both names at startup for this)."
+    # ── THE HARD ASSERTION: it was sponsorable WHEN POSTED ──────────────────
+    #
+    # This is the poster's actual contract — "size the want leg from GET /v1/quote so the offer
+    # lands on the sponsorship threshold and the batcher pays its Celestia fee" — and it is a
+    # claim about the poster, not about the clock.
+    if [[ "$AT_POST" == "true" ]]; then
+      ok "the poster's own quote snapshot records this offer as SPONSORED when it was built"
+    else
+      fail "the journal's quote snapshot for this offer records sponsored=${AT_POST:-unreadable}
+            — the poster did not size the want leg onto the sponsorship threshold. That is the
+            poster's job every tick; a forced OFFER_POSTER_WANT_AMOUNT also produces this."
+    fi
+
+    # ── AND THE LIVE READING, which is time-sensitive BY CONSTRUCTION ───────
+    #
+    # `sponsored` is `to_amount <= suggested_to_amount` (packages/node/market-mock.ts), and
+    # `suggested` is recomputed from TODAY'S reference prices with the 250 bps discount already
+    # applied. An offer's want leg is FIXED when it is posted, so ANY move in the give token's
+    # price against the want token's since then flips this to false without anything being
+    # wrong.
+    #
+    # THAT MATTERS MUCH MORE AT THIS PIN, and it is a direct consequence of kernel #69. The
+    # poster used to mint a fresh coin every tick, so the newest live offer was never older than
+    # ~60 s. It cannot mint now: once the POSTER_PREMINT_COUNT pre-minted coins are all live it
+    # reports `insufficient_inventory` and posts nothing new, so the newest live offer can be
+    # tens of minutes old — and the `prices` profile refreshes CoinGecko inside the same gate.
+    # MEASURED on this phase's gate: run 1 read `sponsored=true`; two price refreshes later run 3
+    # read `false` on an offer asking 0.0453 % above the by-then-current suggestion.
+    #
+    # So it is REPORTED with the drift rather than asserted. The property it was standing in for
+    # is asserted above, against the snapshot, where the clock cannot reach it.
+    if [[ "$SPONSORED" == "true" ]]; then
+      ok "and GET /v1/quote still says SPONSORED right now (the reference has not moved past it)"
+    else
+      warn "GET /v1/quote says sponsored=${SPONSORED:-unreadable} RIGHT NOW — the reference moved after the offer was posted"
+      info "want ${WANT_AMOUNT} vs suggested_to_amount ${SUGGESTED:-?} for the same give amount."
+      info "The want leg is fixed at post time; \`suggested\` is recomputed from today's prices."
+      info "At this pin the book is BOUNDED (kernel #69: the poster cannot mint), so the newest"
+      info "live offer can be minutes old — see docs/KNOWN-LIMITATIONS.md. Refill to get a fresh"
+      info "one: docker compose run --rm issuer-fund ${GIVE_NAME} ${GIVE_AMOUNT} <poster-seed> 5"
+    fi
+    info "give ${GIVE_AMOUNT} of ${GIVE_TOKEN:0:12}… → want ${WANT_AMOUNT} of ${WANT_TOKEN:0:12}…"
+    info "suggested_to_amount=${SUGGESTED:-?}  from_source=$(json_str "$QUOTE" from_source)  to_source=$(json_str "$QUOTE" to_source)"
   fi
 else
   fail "could not read the offer's two colours from the kernel"
