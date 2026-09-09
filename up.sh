@@ -37,7 +37,9 @@ after the file. No compose \`profiles:\` key is used anywhere in this repository
                  proof-server ${PROOF_VERSION}, and the shared PostgreSQL.
   offerfiles     Celestia DA devnet, the contract deploy one-shot, the offer-files kernel
                  (:${KERNEL_HOST_PORT}) and the batcher (:${BATCHER_HOST_PORT}).
-  frontend       the zswap-da SPA (:${FRONTEND_HOST_PORT}).
+  frontend       the zswap-da SPA (:${FRONTEND_HOST_PORT}). Its Faucet tab is a LINK to the
+                 issuer's faucet site since effectstream #922; that URL is baked into the
+                 image, so rebuild the profile after changing FAUCET_HOST_PORT.
   shielded-night the Shielded NIGHT dApp (:${SHIELDED_NIGHT_HOST_PORT}) — NIGHT <-> sNight, wrapped
                  1:1 by a contract this profile deploys ONCE per stack. Depends only on core.
   solver         the Midnight Intents relay (:${RELAY_HTTP_HOST_PORT} HTTP, :${RELAY_WS_HOST_PORT} WS), the COW solver
@@ -543,6 +545,12 @@ service_present proof-server && info "proof server      http://${HOST_ADDR}:${PR
 service_present kernel       && info "offer-files API   ${KERNEL_URL}"
 service_present batcher      && info "batcher           ${BATCHER_URL}"
 service_present frontend     && info "zswap-da SPA      http://${HOST_ADDR}:${FRONTEND_HOST_PORT}"
+# The SPA's Faucet link is the one value in this stack that is BAKED INTO AN IMAGE rather
+# than written into /config.js at container start (effectstream #920 gives it no window.*
+# override), so it is worth printing what this image was built with rather than what this
+# .env says. `./verify.sh` asserts the two agree; a mismatch here means the frontend image
+# predates the current port block and needs `./up.sh --build`.
+service_present frontend     && info "SPA faucet link   ${FRONTEND_FAUCET_URL}   (baked at build time — rebuild after a port change)"
 service_present shielded-night && info "Shielded NIGHT    http://${HOST_ADDR}:${SHIELDED_NIGHT_HOST_PORT}   contract ${SHIELDED_NIGHT_CONTRACT:-unknown}"
 service_present relay        && info "intents relay     ${RELAY_URL}   (solver WS :${RELAY_WS_HOST_PORT})"
 service_present solver-frontend && info "solver monitor    ${SOLVER_FRONTEND_URL}"

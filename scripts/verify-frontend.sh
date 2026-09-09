@@ -19,7 +19,18 @@
 #               means the entrypoint never ran.
 #   wired       index.html loads config.js BEFORE the module bundle, or every override is dead.
 #   bundle      both halves of the browser-network URI fix (effectstream#912) are in the SERVED javascript,
-#               not merely in the source tree a build stage saw.
+#               not merely in the source tree a build stage saw — AND the two values
+#               effectstream#920 made BUILD-TIME are in there too, carrying THIS stack's
+#               numbers. Those two are the whole reason this block matters at
+#               `FRONTEND_REF=400880ce…`: `src/config.ts` reads VITE_MIDNIGHT_NETWORK_ID and
+#               VITE_FAUCET_URL from `import.meta.env` and offers NO `window.*` override for
+#               either, so unlike the six endpoint URLs they cannot be corrected at container
+#               start. An image built for a DIFFERENT port block serves a Faucet link to a dead
+#               port and looks perfectly healthy; an image built with no network id runs the
+#               SPA on PREPROD (the template's default since #920) against this `undeployed`
+#               chain. Both are caught HERE, from the bytes the browser downloads.
+#   faucet      the link's destination is this stack's own `issuer` faucet site, and when that
+#               profile is up it actually answers.
 #   endpoints   the config the page would actually receive is RESOLVED here exactly the way the
 #               patch resolves it (overrides first, then the dot-less-hostname rewrite), and
 #               then asserted twice over: no compose-internal hostname may survive, and every
@@ -47,6 +58,12 @@ load_env
 BIND="${HOST_ADDR:-127.0.0.1}"
 FPORT="${FRONTEND_HOST_PORT:-10600}"
 BASE="http://${BIND}:${FPORT}"
+
+# What the SPA's Faucet link SHOULD be, from this stack's own environment. load_env defaults it
+# from the FAUCET_URL it computes, and scripts/pick-ports.sh writes it into every generated
+# .env, so it is set in every supported configuration; the empty case is handled rather than
+# assumed, because a hand-written .env is legal.
+WANT_FAUCET_URL="${FRONTEND_FAUCET_URL:-}"
 
 FAILURES=0
 fail() { err "$*"; FAILURES=$(( FAILURES + 1 )); }
@@ -145,7 +162,7 @@ done
 # emits verbatim: `([A-Z])` is the camelCase->SCREAMING_SNAKE mapping of the override lane,
 # `[^/:]+` the hostname rewrite.
 echo
-log "frontend: browser-network rewrite is in the shipped bundle"
+log "frontend: the shipped bundle carries this stack's own build-time values"
 # ACROSS EVERY CHUNK, not just the entry. Vite code-splits, and api.ts lands in a lazily
 # imported chunk — checking only the `src=` script would have looked for the rewrite in the
 # 6 MB file that does not contain it and failed a correct build. Chunk names are content
@@ -169,13 +186,30 @@ else
     info "chunks $(printf '%s\n' "$ASSET_PATHS" | grep -c '^/assets/') javascript asset(s)"
     FOUND_OVERRIDE=0
     FOUND_REWRITE=0
+    FOUND_NETWORK=0
+    # Pre-satisfied when there is nothing to look for, so the early `break` below still fires
+    # after the entry chunk instead of downloading every asset in the manifest for nothing.
+    FOUND_FAUCET=0
+    [[ -n "$WANT_FAUCET_URL" ]] || FOUND_FAUCET=1
+    # Vite inlines `import.meta.env.VITE_*` as a string literal, so the faucet URL appears
+    # VERBATIM and the network id appears as `"undeployed".trim()` — the shape
+    # `(import.meta.env.VITE_MIDNIGHT_NETWORK_ID)?.trim()` compiles to once the literal is
+    # substituted (measured on the built image, not guessed). Both live in the ENTRY chunk at
+    # this pin, so the loop below normally stops after the first download.
     while IFS= read -r path; do
       [[ -n "$path" ]] || continue
-      (( FOUND_OVERRIDE && FOUND_REWRITE )) && break
+      (( FOUND_OVERRIDE && FOUND_REWRITE && FOUND_FAUCET && FOUND_NETWORK )) && break
       chunk="$(curl -fsS --max-time 60 "${BASE}${path}" 2>/dev/null || true)"
       [[ -n "$chunk" ]] || continue
       case "$chunk" in *'([A-Z])'*) FOUND_OVERRIDE=1 ;; esac
       case "$chunk" in *'[^/:]+'*)  FOUND_REWRITE=1 ;; esac
+      case "$chunk" in *'"undeployed".trim()'*) FOUND_NETWORK=1 ;; esac
+      # An `if`, not `[[ … ]] && case …`: this is the LAST command in the loop body, and a
+      # false test there would make the body's exit status 1 under `set -euo pipefail`. That is
+      # trap #1 of this repository's shell rules and it has cost a run before.
+      if [[ -n "$WANT_FAUCET_URL" ]]; then
+        case "$chunk" in *"$WANT_FAUCET_URL"*) FOUND_FAUCET=1 ;; esac
+      fi
     done <<< "$ASSET_PATHS"
 
     if (( FOUND_OVERRIDE )); then
@@ -188,6 +222,72 @@ else
     else
       fail "the compose-hostname rewrite is NOT in the bundle — service names would reach the browser"
     fi
+
+    # THE NETWORK ID. effectstream#920 flipped the template's default to `preprod`, and
+    # src/config.ts feeds the same constant to address formatting, offer parsing,
+    # initialApi.connect() (Lace) and the built-in JS wallet's connectFromSeed(). A bundle
+    # without it is wrong in four places at once and looks entirely healthy.
+    if (( FOUND_NETWORK )); then
+      ok "the bundle was built with VITE_MIDNIGHT_NETWORK_ID=undeployed"
+    else
+      fail "the bundle does NOT carry the inlined network id \`undeployed\`. Since effectstream
+            #920 an unset VITE_MIDNIGHT_NETWORK_ID defaults to PREPROD, which would put the SPA's
+            address encoding, offer parsing and wallet handshake on the wrong network. Rebuild:
+            ./up.sh --build --with frontend"
+    fi
+
+    # THE FAUCET LINK. This is the one value in this image that CANNOT be corrected at container
+    # start, so it is the one that can be stale while everything else is right.
+    if [[ -z "$WANT_FAUCET_URL" ]]; then
+      warn "FRONTEND_FAUCET_URL is empty in this environment — cannot check which faucet the SPA links to"
+    elif (( FOUND_FAUCET )); then
+      ok "the Faucet link points at this stack: ${WANT_FAUCET_URL}"
+    else
+      fail "the served bundle does NOT carry ${WANT_FAUCET_URL}. VITE_FAUCET_URL is BAKED IN at
+            build time (src/config.ts offers no window.* override for it), so this image was
+            built for a different port block — or for none, in which case the Faucet link opens
+            the PUBLIC mint-test-tokens site, which knows nothing about this chain's colours.
+            Rebuild: ./up.sh --build --with frontend"
+    fi
+  fi
+fi
+
+# ── the faucet the link opens ───────────────────────────────────────────────
+#
+# Two different claims, and the first one does not need the issuer profile at all: the URL the
+# image was built with must name the port THIS env file publishes the faucet on. They come from
+# one expression in scripts/pick-ports.sh and one in scripts/lib/common.sh, so a disagreement
+# means somebody edited one of them — and it is exactly the disagreement that produces a link
+# to a dead port.
+echo
+log "frontend: the faucet the link opens"
+if [[ -n "$WANT_FAUCET_URL" ]]; then
+  LINK_PORT="$(uri_port "$WANT_FAUCET_URL")"
+  if [[ "$LINK_PORT" == "${FAUCET_HOST_PORT:-10500}" ]]; then
+    ok "the link's port is this stack's FAUCET_HOST_PORT (${LINK_PORT})"
+  else
+    fail "the Faucet link names port ${LINK_PORT:-<none>} but FAUCET_HOST_PORT is ${FAUCET_HOST_PORT:-10500}"
+  fi
+
+  # The `?network=` is NOT decoration and it is NOT set by this URL either: src/faucetUrl.ts
+  # does `url.searchParams.set('network', <the built-in network id>)`, so the query the browser
+  # actually opens comes from the network id asserted above. Carried here so this string is the
+  # one up.sh prints; asserted so the two cannot silently drift apart.
+  case "$WANT_FAUCET_URL" in
+    *"network=undeployed"*) ok "the link carries ?network=undeployed" ;;
+    *) warn "FRONTEND_FAUCET_URL carries no ?network=undeployed — harmless (the template appends
+             the network id it was built with) but it should match what up.sh prints" ;;
+  esac
+
+  if service_present faucet; then
+    if [[ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "$WANT_FAUCET_URL" 2>/dev/null)" == "200" ]]; then
+      ok "the faucet site answers 200 at the address the link opens"
+    else
+      fail "the faucet site does NOT answer at ${WANT_FAUCET_URL} — the SPA's Faucet link is dead"
+    fi
+  else
+    dim "the issuer profile is not up — skipping the live faucet fetch"
+    dim "(./up.sh --with offerfiles --with issuer --with frontend to include it)"
   fi
 fi
 
