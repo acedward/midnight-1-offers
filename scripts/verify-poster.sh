@@ -52,6 +52,16 @@
 #                   pin the book is BOUNDED (the poster cannot mint), so the newest live offer
 #                   can be tens of minutes old and this WILL go false on a long-running stack.
 #                   Measured on this phase's own gate; see the block for the numbers.
+#   first offer     THE OLDEST LIVE OFFER, not the newest — the end of the journal every other
+#     priced        check here ignores, and the end where issues/00023 lived. Zero
+#                   `demo-fallback` lines and zero `market_rate=1` quote lines in the poster's
+#                   WHOLE log; zero offers in the journal whose own quote snapshot names a
+#                   fallback source or a market rate of exactly 1; the oldest LIVE offer
+#                   re-quoted with its exact legs still priced from market data and still within
+#                   a band of the kernel's own `sponsor_discount`; and `docker inspect` showing
+#                   the poster's `StartedAt` later than the registrar's `FinishedAt`. See that
+#                   block's own header for why every assertion above it passed on a stack whose
+#                   first two offers were mispriced by eleven orders of magnitude.
 #   size range      only when a range is configured: the last two adopted coins differ in size.
 #   a real take     e2e-taker settles ONE poster offer on chain and is credited EXACTLY the
 #                   give amount, having paid EXACTLY the want amount. Offers that are listed
@@ -637,6 +647,378 @@ elif [[ "$GIVE_TOKEN" =~ ^[0-9a-f]{64}$ && "$WANT_TOKEN" =~ ^[0-9a-f]{64}$ ]]; t
   fi
 else
   fail "could not read the offer's two colours from the kernel"
+fi
+
+# ── THE FIRST OFFER WAS PRICED TOO (00025; organizer issues/00023) ───────────
+#
+# WHY THIS BLOCK EXISTS, and why everything above it passed while the stack was wrong.
+#
+# `up.sh` used to start `offer-poster` in the same `docker compose up` as everything else, and
+# `issuer-registrar` — the `replicas: 0` one-shot that gives the kernel each colour's name,
+# decimals AND `asset_id` — runs BY HAND, ~2 minutes later. Inside that window the kernel's
+# `GET /v1/quote` answers an unknown colour with a FABRICATED $1 per BASE UNIT
+# (`source: "demo-fallback"`, `market_rate: 1`) and still reports `sponsored: true`, because
+# that flag is computed arithmetically from the fabricated prices instead of by the batcher's
+# own gate. The poster believed it. Measured on the 00020 phase-G gate: ticks 1 and 2 offered
+# 1000000 base units of TWBTC (8 decimals, ~$790) for 975000 base units of TWETH (18 decimals,
+# ~$0.000000002) — ELEVEN ORDERS OF MAGNITUDE off — and the solver's ladder derivation PREFERRED
+# them, because a taker paying 10^-11 of the reference is the cheapest fill on the book.
+#
+# EVERY ASSERTION ABOVE STILL PASSED, and that is the lesson: the sponsorship block asserts the
+# NEWEST live offer and the take settles the NEWEST live offer, and by the time verify runs the
+# newest offers are fed-priced. The two wrong ones are the OLDEST two. So this block asserts the
+# other end of the journal, plus two claims that hold for every tick ever run.
+#
+#   the log        ZERO `demo-fallback` lines and ZERO `market_rate=1` quote lines, over the
+#                  WHOLE log rather than a tail — the mispriced ticks are the first ones.
+#   the journal    ZERO recorded offers whose own quote snapshot names a fallback source or a
+#                  market rate of exactly 1. This is the authoritative form of the same claim:
+#                  `QuoteSnapshot` (deploy/scripts/lib/poster-journal.ts) stores `fromSource`,
+#                  `toSource`, `marketRate`, `sponsorDiscount` and `sponsored` AS THE POSTER WAS
+#                  TOLD THEM when the offer was built, so the clock cannot reach it.
+#   the oldest     the OLDEST live offer, re-quoted through `GET /v1/quote` with its exact legs:
+#                  both sources are market data, and its `discount` is still within a band of
+#                  the kernel's OWN `sponsor_discount`.
+#   the ordering   `docker inspect`: the poster's `StartedAt` is later than the registrar
+#                  container's `FinishedAt`. The structural claim, independent of any log.
+#
+# ── WHAT IS ASSERTED AND WHAT IS REPORTED, and why they differ ───────────────
+# `sponsored` on a LIVE re-quote is `to_amount <= suggested_to_amount`, and `suggested` is
+# recomputed from TODAY'S prices — so it is true iff the reference happened to move in the
+# favourable direction since the offer was posted. Measured on the 00020 phase-E and phase-G
+# gates: the same offer read `sponsored=true` on one run and `false` two price refreshes later,
+# 0.0453 % above the by-then-current suggestion. On the OLDEST offer, which is the first tick of
+# the stack, that is at its most stale. So `sponsored` is ASSERTED against the journal snapshot
+# (where it is a fact about the poster) and REPORTED with the drift on the live re-quote.
+#
+# The BAND is the assertable form of the same property, and it is generous on purpose:
+# `POSTER_PRICE_BAND` (default 0.05, i.e. five percentage points) swallows any real price drift
+# while still failing the 00023 offer by a factor of ~20 — its `discount` against a corrected
+# reference is ~1.0 against a threshold of 0.025.
+echo
+log "poster: first offer priced (the OLDEST live offer, not the newest)"
+
+# Five percentage points of drift tolerance on `discount` vs the kernel's own
+# `sponsor_discount`. Set POSTER_PRICE_BAND=0 to assert the post-time equality exactly (it will
+# fail on any price refresh; that is what the band is for).
+PRICE_BAND="${POSTER_PRICE_BAND:-0.05}"
+
+# float_within <a> <b> <tolerance> — |a − b| <= tol, exit 2 when either side is unreadable.
+#
+# `awk`, because bash has no floating point at all and these verify scripts take no dependency
+# a stock macOS box lacks (`scripts/issuer-token-names.sh` and the issuer's registrar entrypoint
+# already use it). `</dev/null` so awk cannot consume the caller's stdin — the same hazard that
+# ate five of six lines of a `while read` loop in 00020 phase G.
+float_within() {
+  awk -v a="${1:-}" -v b="${2:-}" -v t="${3:-0}" 'BEGIN {
+    if (a == "" || b == "") { exit 2 }
+    d = a - b; if (d < 0) { d = -d }
+    exit (d <= t) ? 0 : 1
+  }' </dev/null
+}
+
+# ts_key <RFC3339-nano> — a fixed-width digit string that compares correctly as a STRING.
+#
+# Docker formats timestamps with Go's RFC3339Nano, which TRIMS TRAILING ZEROS from the
+# fractional second — so `2026-09-09T14:07:01.4788068Z` and `2026-09-09T14:07:02.100311Z` differ
+# in length and a plain string comparison of the two is wrong. The fraction is therefore padded
+# to nine digits and every separator dropped, giving 23 digits every time. Compared as a string
+# rather than a number on purpose: 23 significant digits do not survive a double.
+ts_key() {
+  awk -v t="${1:-}" 'BEGIN {
+    if (t == "") { exit 0 }
+    sub(/Z$/, "", t)
+    n = index(t, ".")
+    if (n > 0) { base = substr(t, 1, n - 1); frac = substr(t, n + 1) } else { base = t; frac = "" }
+    while (length(frac) < 9) { frac = frac "0" }
+    frac = substr(frac, 1, 9)
+    gsub(/[^0-9]/, "", base)
+    print base frac
+  }' </dev/null
+}
+
+# ── (a) the poster's WHOLE log ───────────────────────────────────────────────
+# Not `--tail`: the offers this block exists to catch are the FIRST ones the poster ever posted.
+# `|| true` on the capture and on every count, for the reason in this file's header — a `grep`
+# that legitimately matches nothing exits 1, `pipefail` makes that the pipeline's status and
+# `set -e` would kill the script at exactly the clean state being described.
+POSTER_LOG="$(dc logs --no-color offer-poster 2>/dev/null || true)"
+if [[ -z "${POSTER_LOG:-}" ]]; then
+  fail "docker compose logs offer-poster produced nothing — the log cannot be checked for
+        demo-fallback quotes. That is not a pass: the poster has posted offers, so it has
+        logged."
+else
+  # `demo-fallback` is the kernel's answer for a colour it has never been told about; `fallback`
+  # is the deterministic colour-hash price for a colour it knows but cannot map to an asset.
+  # `deploy/scripts/lib/poster-quote.ts` treats both as NOT market data (`DEMO_SOURCES`), and
+  # the poster warns on either, so both are counted — separately, because they mean different
+  # things to whoever reads the failure.
+  LOG_DEMO="$(printf '%s\n' "$POSTER_LOG" | grep -c 'demo-fallback' || true)"
+  # `market_rate=1` and NOT `market_rate=1.0234…` or `market_rate=15`: the field is printed by
+  # `formatLogFields` as `String(number)`, so the demo answer is the exact three characters
+  # `=1` at a field boundary. A genuine rate of exactly 1 would need two colours at identical
+  # per-base-unit prices, which the shipped pair (8-decimal TWBTC, 18-decimal TWETH) cannot be.
+  LOG_RATE1="$(printf '%s\n' "$POSTER_LOG" | grep -cE 'market_rate=1([^0-9.]|$)' || true)"
+  LOG_LINES="$(printf '%s\n' "$POSTER_LOG" | grep -c '' || true)"
+  if [[ "${LOG_DEMO:-0}" == "0" && "${LOG_RATE1:-0}" == "0" ]]; then
+    ok "the poster's whole log (${LOG_LINES:-0} lines) carries NO demo-fallback quote and NO market_rate=1"
+  else
+    fail "the poster quoted from fabricated prices: ${LOG_DEMO:-?} demo-fallback line(s) and ${LOG_RATE1:-?} market_rate=1 quote line(s)
+          in ${LOG_LINES:-0} log lines. The kernel prices a colour it has not been told about at
+          \$1 per BASE UNIT and still answers sponsored:true, so those ticks posted real,
+          settleable offers off by orders of magnitude (issues/00023, issues/00024). up.sh starts
+          the poster only after issuer-registrar binds the colours; a poster started by hand, or
+          one whose registrar ran late, produces exactly this."
+    dim  "$(printf '%s\n' "$POSTER_LOG" | grep -E 'demo-fallback|market_rate=1([^0-9.]|$)' | head -4 | tr '\n' ' ' || true)"
+  fi
+fi
+
+# ── (b) the journal's OLDEST live offer, and every offer's recorded sources ──
+#
+# A QUOTED heredoc, so nothing here is expanded by this shell. Read from inside the container
+# for the same reason the exact-coin probe is: the interesting values are nested and this host
+# has neither jq nor bun.
+read -r -d '' OLDEST_PROBE_JS <<'OLDEST_JS' || true
+const r = await fetch("http://127.0.0.1:9977/journal", { signal: AbortSignal.timeout(10000) }).catch(() => null);
+if (!r || !r.ok) { console.log("fetch=fail"); process.exit(0); }
+const j = await r.json().catch(() => null);
+if (!j || typeof j !== "object") { console.log("fetch=unparseable"); process.exit(0); }
+const out = ["fetch=ok"];
+// `DEMO_SOURCES` in deploy/scripts/lib/poster-quote.ts, restated: neither is market data.
+const BAD = ["demo-fallback", "fallback"];
+const coins = j.coins && typeof j.coins === "object" ? j.coins : {};
+const entries = [];
+for (const [nonce, coin] of Object.entries(coins)) {
+  for (const offer of coin.offers ?? []) entries.push({ nonce, coin, offer });
+}
+// EVERY offer the journal remembers, not just the live ones: an offer that was consumed or
+// expired was still posted at that price, and a stack that ever posted one is a stack whose
+// ordering was wrong.
+let badSource = 0;
+let rate1 = 0;
+let noQuote = 0;
+for (const e of entries) {
+  const q = e.offer.quote ?? null;
+  if (!q || typeof q !== "object") { noQuote += 1; continue; }
+  if (BAD.includes(String(q.fromSource)) || BAD.includes(String(q.toSource))) badSource += 1;
+  if (Number(q.marketRate) === 1) rate1 += 1;
+}
+out.push("offers=" + entries.length);
+out.push("badSourceOffers=" + badSource);
+out.push("rate1Offers=" + rate1);
+out.push("noQuoteOffers=" + noQuote);
+// The OLDEST LIVE one, by the journal's own `postedAt`. Ascending, i.e. the exact opposite of
+// the exact-coin probe above — which is the whole point of this block.
+const live = entries.filter((e) => e.offer.status === "live");
+live.sort((a, b) => String(a.offer.postedAt).localeCompare(String(b.offer.postedAt)));
+out.push("liveOffers=" + live.length);
+if (live.length === 0) { console.log(out.join(String.fromCharCode(10))); process.exit(0); }
+const pick = live[0];
+const q = pick.offer.quote ?? {};
+out.push("oldestOfferId=" + pick.offer.offerId);
+out.push("oldestPostedAt=" + pick.offer.postedAt);
+// The offer's own legs, out of the journal: the give colour is the journal's key and the give
+// amount is the coin's WHOLE value (every offer spends its coin entire, no change output).
+out.push("oldestGiveColour=" + (j.giveColour ?? "?"));
+out.push("oldestGiveAmount=" + (pick.coin.value ?? "?"));
+out.push("oldestWantColour=" + (pick.offer.wantColour ?? "?"));
+out.push("oldestWantAmount=" + (pick.offer.wantAmount ?? "?"));
+out.push("oldestQuoteSponsored=" + (q.sponsored === true));
+out.push("oldestQuoteFromSource=" + (q.fromSource ?? "absent"));
+out.push("oldestQuoteToSource=" + (q.toSource ?? "absent"));
+out.push("oldestQuoteMarketRate=" + (q.marketRate ?? "absent"));
+out.push("oldestQuoteSponsorDiscount=" + (q.sponsorDiscount ?? "absent"));
+console.log(out.join(String.fromCharCode(10)));
+OLDEST_JS
+
+OLDEST="$(dc exec -T offer-poster bun -e "$OLDEST_PROBE_JS" 2>/dev/null || true)"
+oldest_field() { printf '%s\n' "$OLDEST" | sed -n "s/^$1=//p" | head -1 || true; }
+
+if [[ "$OLDEST" != *"fetch=ok"* ]]; then
+  fail "could not read the poster's journal for the oldest-offer check (${OLDEST:-no output})"
+else
+  J_ALL="$(oldest_field offers)"
+  J_BAD="$(oldest_field badSourceOffers)"
+  J_RATE1="$(oldest_field rate1Offers)"
+  J_NOQ="$(oldest_field noQuoteOffers)"
+  if [[ "${J_BAD:-1}" == "0" && "${J_RATE1:-1}" == "0" ]]; then
+    ok "all ${J_ALL:-0} offer(s) the journal remembers were quoted from MARKET data (0 fallback sources, 0 at market_rate 1)"
+  else
+    fail "of ${J_ALL:-?} offers in the poster's journal, ${J_BAD:-?} were quoted from a fallback
+          source and ${J_RATE1:-?} at a market rate of exactly 1. Those are the offers issues/00023
+          describes: posted before issuer-registrar bound this stack's colours, priced by the
+          kernel at \$1 per BASE UNIT, reported sponsorable, and preferred by the solver's ladder."
+  fi
+  if [[ "${J_NOQ:-0}" != "0" ]]; then
+    warn "${J_NOQ} journal offer(s) carry no quote snapshot at all — they cannot be checked either way"
+  fi
+
+  OLD_ID="$(oldest_field oldestOfferId)"
+  if [[ -z "${OLD_ID:-}" ]]; then
+    fail "the journal records $(oldest_field liveOffers) live offer(s) but none could be read as the oldest"
+  else
+    OLD_GIVE_C="$(oldest_field oldestGiveColour)"
+    OLD_GIVE_A="$(oldest_field oldestGiveAmount)"
+    OLD_WANT_C="$(oldest_field oldestWantColour)"
+    OLD_WANT_A="$(oldest_field oldestWantAmount)"
+    OLD_FROM_S="$(oldest_field oldestQuoteFromSource)"
+    OLD_TO_S="$(oldest_field oldestQuoteToSource)"
+    OLD_SPONS="$(oldest_field oldestQuoteSponsored)"
+    OLD_RATE="$(oldest_field oldestQuoteMarketRate)"
+    info "oldest LIVE offer ${OLD_ID:0:16}… posted $(oldest_field oldestPostedAt) — $(oldest_field liveOffers) live of ${J_ALL:-?} recorded"
+    info "give ${OLD_GIVE_A} of ${OLD_GIVE_C:0:12}… → want ${OLD_WANT_A} of ${OLD_WANT_C:0:12}…"
+    info "its own snapshot: from_source=${OLD_FROM_S} to_source=${OLD_TO_S} market_rate=${OLD_RATE} sponsored=${OLD_SPONS}"
+
+    # THE ASSERTION THE CLOCK CANNOT REACH: what the poster was TOLD when it built this offer.
+    case "${OLD_FROM_S}:${OLD_TO_S}" in
+      feed:feed|feed:seed|seed:feed|seed:seed)
+        ok "the OLDEST live offer was quoted from market data on BOTH legs (${OLD_FROM_S}/${OLD_TO_S})" ;;
+      *)
+        fail "the OLDEST live offer was quoted from '${OLD_FROM_S}'/'${OLD_TO_S}', not feed/seed.
+              A 'demo-fallback' leg means the kernel had never been told that colour when this
+              offer was built, i.e. the poster started before issuer-registrar (issues/00023);
+              'fallback' means the colour is registered with no asset_id (issues/00024)." ;;
+    esac
+    if [[ "$OLD_SPONS" == "true" ]]; then
+      ok "…and its own quote snapshot recorded it SPONSORED when it was built"
+    else
+      fail "the oldest live offer's quote snapshot records sponsored=${OLD_SPONS:-unreadable} — the
+            poster did not size its want leg onto the sponsorship threshold on that tick."
+    fi
+
+    # ── the live re-quote, with the offer's EXACT legs ──────────────────────
+    if [[ "$OLD_GIVE_C" =~ ^[0-9a-f]{64}$ && "$OLD_WANT_C" =~ ^[0-9a-f]{64}$ ]]; then
+      OLD_QUOTE="$(curl -fsS --max-time 20 \
+        "${KERNEL}/v1/quote?from_token=${OLD_GIVE_C}&to_token=${OLD_WANT_C}&from_amount=${OLD_GIVE_A}&to_amount=${OLD_WANT_A}" \
+        2>/dev/null | tr -d '\n' || true)"
+      if [[ -z "$OLD_QUOTE" ]]; then
+        fail "GET /v1/quote for the OLDEST live offer's own legs did not answer"
+      else
+        # `json_num` matches integers only, and every one of these is a JSON number that can
+        # carry a fraction or a sign, so they are scraped with their own pattern here.
+        quote_float() {  # quote_float <body> <key> — the raw JSON number, or nothing
+          printf '%s' "$1" \
+            | grep -oE "\"$2\"[[:space:]]*:[[:space:]]*-?[0-9]+(\.[0-9]+)?([eE][-+]?[0-9]+)?" \
+            | sed "s/.*:[[:space:]]*//" | head -1 || true
+        }
+        OQ_FROM_S="$(json_str "$OLD_QUOTE" from_source)"
+        OQ_TO_S="$(json_str "$OLD_QUOTE" to_source)"
+        OQ_RATE="$(quote_float "$OLD_QUOTE" market_rate)"
+        OQ_IMPLIED="$(quote_float "$OLD_QUOTE" implied_rate)"
+        OQ_DISCOUNT="$(quote_float "$OLD_QUOTE" discount)"
+        OQ_THRESHOLD="$(quote_float "$OLD_QUOTE" sponsor_discount)"
+        OQ_SPONS="$(json_bool "$OLD_QUOTE" sponsored)"
+        OQ_SUGGESTED="$(json_str "$OLD_QUOTE" suggested_to_amount)"
+        info "re-quoted now: market_rate=${OQ_RATE:-?} implied_rate=${OQ_IMPLIED:-?} discount=${OQ_DISCOUNT:-?}"
+        info "               sponsor_discount=${OQ_THRESHOLD:-?} from_source=${OQ_FROM_S:-?} to_source=${OQ_TO_S:-?} sponsored=${OQ_SPONS:-?}"
+
+        # The kernel's CURRENT price provenance for those two colours. Unlike `sponsored`, this
+        # is not a function of when the offer was posted.
+        case "${OQ_FROM_S}:${OQ_TO_S}" in
+          feed:feed|feed:seed|seed:feed|seed:seed)
+            ok "the kernel still prices both of that offer's colours from market data (${OQ_FROM_S}/${OQ_TO_S})" ;;
+          *)
+            fail "GET /v1/quote now prices those colours '${OQ_FROM_S:-none}'/'${OQ_TO_S:-none}' — the
+                  kernel's registry lost, or never had, this stack's colours (issues/00024)." ;;
+        esac
+        # THE BAND. `discount` is 1 − implied/market: it equals `sponsor_discount` exactly at
+        # post time and drifts with the reference afterwards. The 00023 offer's discount against
+        # a corrected reference is ~1.0, so this fails it by a factor of ~20 while tolerating
+        # every real price move seen on a gate.
+        BAND_RC=0
+        float_within "${OQ_DISCOUNT:-}" "${OQ_THRESHOLD:-}" "$PRICE_BAND" || BAND_RC=$?
+        case "$BAND_RC" in
+          0) ok "…and its implied rate is still within ${PRICE_BAND} of the sponsorship threshold (discount ${OQ_DISCOUNT} vs ${OQ_THRESHOLD})" ;;
+          2) fail "could not read discount / sponsor_discount off the re-quote: ${OLD_QUOTE:0:200}" ;;
+          *) fail "the OLDEST live offer's implied rate is OUT OF BAND: discount=${OQ_DISCOUNT} against a
+                   sponsor_discount of ${OQ_THRESHOLD} (tolerance ${PRICE_BAND}).
+                   want ${OLD_WANT_A} vs suggested_to_amount ${OQ_SUGGESTED:-?} for give ${OLD_GIVE_A}.
+                   This is the shape of issues/00023: an offer priced from a fabricated quote sits
+                   orders of magnitude away from the reference and the solver's ladder prefers it." ;;
+        esac
+        # REPORTED, not asserted — see this block's header.
+        if [[ "$OQ_SPONS" == "true" ]]; then
+          ok "GET /v1/quote still calls that offer SPONSORED right now"
+        else
+          warn "GET /v1/quote says sponsored=${OQ_SPONS:-unreadable} for the oldest live offer right now"
+          info "want ${OLD_WANT_A} vs suggested_to_amount ${OQ_SUGGESTED:-?}. The want leg is fixed at"
+          info "post time and \`suggested\` is recomputed from today's prices, so on the OLDEST offer"
+          info "of a bounded book this flips on any price refresh. The band above is the assertable"
+          info "form of the same property; the post-time verdict is asserted off the journal."
+        fi
+      fi
+    else
+      fail "the oldest live offer's colours are not 64-hex (give '${OLD_GIVE_C}', want '${OLD_WANT_C}')"
+    fi
+  fi
+fi
+
+# ── (c) the ORDERING, off daemon-owned state ─────────────────────────────────
+#
+# The structural claim, and the only one here that does not depend on the poster having logged
+# or journalled anything: the poster's container STARTED after the registrar's container
+# FINISHED.
+#
+# The registrar is a `docker compose run` container (`oneoff=True`), so this must NOT filter
+# `oneoff=False` the way scripts/verify-oneshots.sh does for compose-managed one-shots — and
+# `up.sh` deliberately runs it WITHOUT `--rm` so that its exit code, its log and this timestamp
+# survive the run at all.
+#
+# `docker ps -aq` lists newest first, so `head -1` is the run belonging to the most recent
+# `./up.sh`. That matters: an ADDITIVE `./up.sh --with poster` re-runs the registrar (idempotent,
+# `already=6`) while leaving an already-running poster alone, and the initial `up` of that run
+# scale-downs the previous run container away — so the only registrar container left can be
+# NEWER than the poster's start. That is not a violation of anything and it is not asserted as
+# one; it is reported, with the two timestamps, and the property for the run that DID start the
+# poster is the journal assertion above.
+POSTER_CID="$(docker ps -aq \
+  --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME}" \
+  --filter "label=com.docker.compose.service=offer-poster" \
+  --filter "label=com.docker.compose.oneoff=False" 2>/dev/null | head -1 || true)"
+REG_CID="$(docker ps -aq \
+  --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME}" \
+  --filter "label=com.docker.compose.service=issuer-registrar" 2>/dev/null | head -1 || true)"
+POSTER_STARTED_AT="$(docker inspect -f '{{.State.StartedAt}}' "${POSTER_CID:-none}" 2>/dev/null || true)"
+REG_FINISHED_AT="$(docker inspect -f '{{.State.FinishedAt}}' "${REG_CID:-none}" 2>/dev/null || true)"
+REG_CREATED_AT="$(docker inspect -f '{{.Created}}' "${REG_CID:-none}" 2>/dev/null || true)"
+REG_STATUS="$(docker inspect -f '{{.State.Status}}' "${REG_CID:-none}" 2>/dev/null || true)"
+REG_CODE="$(docker inspect -f '{{.State.ExitCode}}' "${REG_CID:-none}" 2>/dev/null || true)"
+
+if [[ -z "${POSTER_CID:-}" || -z "${POSTER_STARTED_AT:-}" ]]; then
+  fail "no offer-poster container to inspect in project '${COMPOSE_PROJECT_NAME}' — the ordering
+        claim cannot be read (and this section got this far, so one exists)"
+elif [[ -z "${REG_CID:-}" ]]; then
+  fail "no issuer-registrar container in project '${COMPOSE_PROJECT_NAME}': the one-shot that binds
+        this stack's colours left no record, so the bring-up order cannot be verified. up.sh runs
+        it WITHOUT --rm exactly so that it does. A stack brought up by hand with
+        \`docker compose run --rm --no-deps issuer-registrar\` produces this."
+elif [[ "$REG_STATUS" != "exited" || "$REG_CODE" != "0" ]]; then
+  fail "the issuer-registrar container is '${REG_STATUS:-unreadable}' with exit code ${REG_CODE:-unreadable}
+        — the colours were never bound successfully, so nothing downstream can be priced."
+else
+  POSTER_KEY="$(ts_key "$POSTER_STARTED_AT")"
+  REG_FIN_KEY="$(ts_key "$REG_FINISHED_AT")"
+  REG_CRE_KEY="$(ts_key "$REG_CREATED_AT")"
+  info "issuer-registrar finished ${REG_FINISHED_AT}"
+  info "offer-poster     started  ${POSTER_STARTED_AT}"
+  if [[ -z "$POSTER_KEY" || -z "$REG_FIN_KEY" ]]; then
+    fail "could not read both timestamps (poster '${POSTER_STARTED_AT}', registrar '${REG_FINISHED_AT}')"
+  elif [[ "$POSTER_KEY" > "$REG_FIN_KEY" ]]; then
+    ok "offer-poster STARTED AFTER issuer-registrar FINISHED — its first quote could only be a priced one"
+  elif [[ -n "$REG_CRE_KEY" && "$POSTER_KEY" < "$REG_CRE_KEY" ]]; then
+    info "SKIPPED — this registrar container was CREATED after the poster started, so it belongs to"
+    info "a LATER ./up.sh than the one that started the poster (an additive --with poster leaves a"
+    info "running poster alone and re-runs the registrar idempotently, and that run's initial"
+    info "\`up\` removes the previous registrar container). The ordering claim for the run that DID"
+    info "start this poster is carried by the journal assertions above — every recorded offer,"
+    info "including the oldest, was quoted from market data."
+  else
+    fail "offer-poster STARTED BEFORE issuer-registrar FINISHED: ${POSTER_STARTED_AT} < ${REG_FINISHED_AT}.
+          That is the window issues/00023 describes — the kernel does not know the poster's colours
+          yet, quotes them at \$1 per BASE UNIT and still says sponsored:true. ./up.sh holds the
+          poster out of the initial \`docker compose up\` and starts it after the registrar; a
+          poster started any other way has no such guarantee."
+  fi
 fi
 
 # ── a configured size range really varies the size ───────────────────────────

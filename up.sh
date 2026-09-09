@@ -543,7 +543,21 @@ if (( ! FAILED )) \
    && [[ " $PROFILES " == *" issuer "* ]] && [[ " $PROFILES " == *" offerfiles "* ]] \
    && service_present faucet && service_present kernel; then
   log "registering this stack's six issuer colours with the offer-files token registry"
-  if ! dc run --rm --no-deps -T issuer-registrar; then
+  # NO `--rm` HERE, DELIBERATELY, AND IT IS THE ONLY ONE-SHOT IN THIS FILE RUN THAT WAY (00025).
+  #
+  # Two reasons, and neither is tidiness. (1) This is the one FATAL cross-profile step, and with
+  # `--rm` its container — and therefore its LOG — is destroyed the instant it exits, so the
+  # advice printed on failure ("read its log") had nothing to read. (2) The exited container's
+  # `State.FinishedAt` is the only DAEMON-OWNED record that this step ran before the poster
+  # started; `scripts/verify-poster.sh` compares it with the poster's `State.StartedAt`, which is
+  # the structural proof of the ordering this project exists to establish, independent of any log
+  # line or journal entry.
+  #
+  # It leaves no residue: the container carries this project's compose labels, `./down.sh -v`
+  # removes it (measured: zero containers by label AND by name afterwards), and the NEXT
+  # `./up.sh`'s initial `up` scale-downs this `replicas: 0` service, taking the previous run
+  # container with it — so exactly one is kept, the newest, which is the one verify wants.
+  if ! dc run --no-deps -T issuer-registrar; then
     err "could not register the issuer colours in the kernel registry"
     info "the kernel is left holding the six canonical NAMES at the Preprod colours its own seed"
     info "shipped — colours that do not exist on this chain. Re-run it alone with:"
@@ -661,9 +675,9 @@ if (( POSTER_HELD )); then
       POSTER_COLOURS_DEADLINE=$(( SECONDS + POSTER_COLOURS_WAIT_S ))
       POSTER_COLOURS_OK=0
       POSTER_KNOWN=""
-      POSTER_COLOURS_POLLS=0
+      POSTER_COLOUR_TRIES=0
       while :; do
-        POSTER_COLOURS_POLLS=$(( POSTER_COLOURS_POLLS + 1 ))
+        POSTER_COLOUR_TRIES=$(( POSTER_COLOUR_TRIES + 1 ))
         POSTER_KNOWN="$(curl -fsS --max-time 10 "${KERNEL_URL}/v1/known-tokens" 2>/dev/null || true)"
         if [[ -n "$POSTER_KNOWN" ]] \
            && poster_colour_priced "$POSTER_KNOWN" "$POSTER_GIVE_COLOUR" \
@@ -676,7 +690,7 @@ if (( POSTER_HELD )); then
       done
       POSTER_COLOURS_ELAPSED=$(( SECONDS - POSTER_COLOURS_START ))
       if (( POSTER_COLOURS_OK )); then
-        ok "the kernel prices BOTH of the poster's colours (non-null asset_id) — ${POSTER_COLOURS_ELAPSED}s, ${POSTER_COLOURS_POLLS} poll(s)"
+        ok "the kernel prices BOTH of the poster's colours (non-null asset_id) — ${POSTER_COLOURS_ELAPSED}s, ${POSTER_COLOUR_TRIES} poll(s)"
         log "starting offer-poster — the last service in this bring-up"
         # `--no-deps`: every one of its declared dependencies (kernel healthy, both one-shots
         # completed) was satisfied by the `up` above, which would not have returned otherwise.
@@ -688,7 +702,7 @@ if (( POSTER_HELD )); then
           FAILED=1
         fi
       else
-        err "the kernel still does not price the poster's colours after ${POSTER_COLOURS_ELAPSED}s (${POSTER_COLOURS_POLLS} poll(s), budget ${POSTER_COLOURS_WAIT_S}s)"
+        err "the kernel still does not price the poster's colours after ${POSTER_COLOURS_ELAPSED}s (${POSTER_COLOUR_TRIES} poll(s), budget ${POSTER_COLOURS_WAIT_S}s)"
         info "give ${OFFER_POSTER_GIVE_TOKEN} ${POSTER_GIVE_COLOUR:0:16}… asset_id present: $(poster_colour_priced "$POSTER_KNOWN" "$POSTER_GIVE_COLOUR" && echo yes || echo no)"
         info "want ${OFFER_POSTER_WANT_TOKEN} ${POSTER_WANT_COLOUR:0:16}… asset_id present: $(poster_colour_priced "$POSTER_KNOWN" "$POSTER_WANT_COLOUR" && echo yes || echo no)"
         info "offer-poster was NOT started, on purpose: a colour the kernel cannot price is"
