@@ -988,11 +988,20 @@ EOF
 
   # ── THE 8-/18-DECIMAL PAIR, QUOTED THROUGH THE UI'S OWN EDGE ───────────────
   #
-  # Only meaningful with the `poster` profile up: the poster is what puts TWBTC -> TWETH on
-  # the book, and the UI only offers colours the relay advertises. This is the assertion phase
-  # F could not make and named as phase G's, and it is the whole reason the two profiles are
-  # exercised together in the `--all` gate.
-  if service_present offer-poster && service_present faucet; then
+  # Only meaningful with the `poster` profile up: the poster is what puts a TWBTC/TWETH offer
+  # on the book, and the UI only offers colours the relay advertises. This is the assertion
+  # phase F could not make and named as phase G's, and it is the whole reason the two profiles
+  # are exercised together in the `--all` gate.
+  #
+  # THE DIRECTION AND THE AMOUNT ARE READ OFF THE PUBLISHED LADDER, never guessed. Measured on
+  # the phase-G gate: the poster GIVES TWBTC and WANTS TWETH, so the tradable direction is
+  # tokenIn=TWETH -> tokenOut=TWBTC, and its single rung was `input 975000 -> output 1000000`
+  # — an amount derived from live USD prices across an 18-decimal and an 8-decimal token, so it
+  # is different on every run and on every tick. Quoting a hand-picked amount answers
+  # `422 unfulfillable` ("amountIn is outside the published price range for this pair"), which
+  # is the relay being right and the assertion being wrong. Taking the rung from the ladder
+  # makes this an EXACT assertion, the same shape as the maker's `quote(750000) = 500000`.
+  if service_present offer-poster && service_present faucet && service_present solver-frontend; then
     UI_BTC="$(issuer_token_id TWBTC || true)"
     UI_ETH="$(issuer_token_id TWETH || true)"
     if [[ -z "$UI_BTC" || -z "$UI_ETH" ]]; then
@@ -1004,40 +1013,77 @@ EOF
       else
         fail "the UI's /api/v1/tokens does not list TWBTC (${UI_BTC:0:16}…) and TWETH (${UI_ETH:0:16}…) — the poster's pair is not on the published ladder"
       fi
-      # And a real quote on that pair, through the same proxy a browser uses. The poster's
-      # offers are the rungs, so the amount is its own give size; the assertion is that the
-      # answer is a POSITIVE integer of base units, not a particular number — the poster's
-      # want leg is priced from live USD feeds and moves between runs.
-      UI_Q_FILE="$(mktemp)"
-      UI_Q_CODE="$(curl -sS --max-time 20 -o "$UI_Q_FILE" -w '%{http_code}' \
-        -X POST -H 'content-type: application/json' \
-        -d "{\"tokenIn\":\"${UI_BTC}\",\"tokenOut\":\"${UI_ETH}\",\"amountIn\":\"${OFFER_POSTER_GIVE_AMOUNT:-1000000}\"}" \
-        "$UI/api/v1/quote" 2>/dev/null || true)"
-      UI_Q_BODY="$(tr -d '\n' < "$UI_Q_FILE" 2>/dev/null || true)"
-      rm -f "$UI_Q_FILE"
-      UI_Q_OUT="$(printf '%s' "$UI_Q_BODY" | sed -n 's/.*"amountOut"[[:space:]]*:[[:space:]]*"\{0,1\}\([0-9]\{1,\}\).*/\1/p' | head -1 || true)"
-      if [[ "$UI_Q_CODE" == "200" && -n "$UI_Q_OUT" ]] && [[ "$UI_Q_OUT" != "0" ]]; then
-        ok "POST /api/v1/quote through the UI's edge quotes ${OFFER_POSTER_GIVE_AMOUNT:-1000000} TWBTC (8 dec) -> ${UI_Q_OUT} TWETH (18 dec) base units"
-      elif [[ "$UI_Q_CODE" == "503" ]]; then
-        # The documented fail-closed ladder withdrawal, ~10-20 s windows. Retried once rather
-        # than accepted, because "the relay was between publications" and "the pair is not
-        # quotable" must not read the same.
-        sleep 20
-        UI_Q_FILE="$(mktemp)"
-        UI_Q_CODE="$(curl -sS --max-time 20 -o "$UI_Q_FILE" -w '%{http_code}' \
+
+      # The published ladder's levels, flattened to `LEVEL <tokenIn> <tokenOut> <in> <out>`.
+      # Read from inside the monitor container for the same reason every other nested field in
+      # this file is: this host has no jq and no bun. A QUOTED heredoc, as above.
+      read -r -d '' LADDER_PROBE_JS <<'LADDER_JS' || true
+const r = await fetch("http://127.0.0.1:8080/api/snapshot",
+                      { signal: AbortSignal.timeout(8000) }).catch(() => null);
+if (!r || !r.ok) process.exit(0);
+const s = await r.json().catch(() => null);
+const snap = s && s.solver ? s.solver.snapshot : null;
+const lad = snap && snap.ladder && !("error" in snap.ladder) ? snap.ladder : null;
+const last = lad && lad.last ? lad.last : null;
+for (const pair of (last && Array.isArray(last.levels) ? last.levels : [])) {
+  for (const lvl of (Array.isArray(pair.levels) ? pair.levels : [])) {
+    console.log(["LEVEL", pair.tokenIn, pair.tokenOut, lvl.input, lvl.output].join(" "));
+  }
+}
+LADDER_JS
+
+      # ui_quote <tokenIn> <tokenOut> <amountIn> — prints "<http code> <amountOut or empty>".
+      ui_quote() {
+        local body_file code body out
+        body_file="$(mktemp)"
+        code="$(curl -sS --max-time 20 -o "$body_file" -w '%{http_code}' \
           -X POST -H 'content-type: application/json' \
-          -d "{\"tokenIn\":\"${UI_BTC}\",\"tokenOut\":\"${UI_ETH}\",\"amountIn\":\"${OFFER_POSTER_GIVE_AMOUNT:-1000000}\"}" \
+          -d "{\"tokenIn\":\"$1\",\"tokenOut\":\"$2\",\"amountIn\":\"$3\"}" \
           "$UI/api/v1/quote" 2>/dev/null || true)"
-        UI_Q_BODY="$(tr -d '\n' < "$UI_Q_FILE" 2>/dev/null || true)"
-        rm -f "$UI_Q_FILE"
-        UI_Q_OUT="$(printf '%s' "$UI_Q_BODY" | sed -n 's/.*"amountOut"[[:space:]]*:[[:space:]]*"\{0,1\}\([0-9]\{1,\}\).*/\1/p' | head -1 || true)"
-        if [[ "$UI_Q_CODE" == "200" && -n "$UI_Q_OUT" && "$UI_Q_OUT" != "0" ]]; then
-          ok "POST /api/v1/quote quotes TWBTC (8 dec) -> ${UI_Q_OUT} TWETH (18 dec) after one fail-closed 503 window"
+        body="$(tr -d '\n' < "$body_file" 2>/dev/null || true)"
+        rm -f "$body_file"
+        out="$(printf '%s' "$body" | sed -n 's/.*"amountOut"[[:space:]]*:[[:space:]]*"\{0,1\}\([0-9]\{1,\}\).*/\1/p' | head -1 || true)"
+        printf '%s %s' "${code:-none}" "${out}"
+      }
+
+      # Retried as a WHOLE — re-read the ladder, then quote it — because the poster posts a new
+      # offer roughly every minute and the relay withdraws its ladder fail-closed in ~10-20 s
+      # windows. Re-quoting a stale rung would answer 422 for a reason that is test sequencing
+      # rather than a property of the stack.
+      UI_PAIR_OK=0
+      UI_PAIR_LAST=""
+      for UI_TRY in 1 2 3; do
+        UI_LEVELS="$(dc exec -T solver-frontend bun -e "$LADDER_PROBE_JS" 2>/dev/null || true)"
+        UI_LEVEL="$(printf '%s\n' "$UI_LEVELS" \
+          | grep -m1 -E "^LEVEL (${UI_ETH} ${UI_BTC}|${UI_BTC} ${UI_ETH}) " || true)"
+        if [[ -z "$UI_LEVEL" ]]; then
+          UI_PAIR_LAST="the published ladder carries no TWBTC/TWETH level (levels: $(printf '%s' "$UI_LEVELS" | grep -c '^LEVEL ' || true))"
         else
-          fail "the UI's edge could not quote TWBTC -> TWETH twice, 20 s apart: ${UI_Q_CODE} ${UI_Q_BODY:0:200}"
+          # `read` rather than `set --`: the positional parameters belong to the script, and
+          # the five fields are exactly what the probe printed.
+          UI_L_IN=""; UI_L_OUT=""; UI_L_AMT=""; UI_L_WANT=""
+          # The literal `LEVEL` tag is consumed and discarded: `read`'s first variable takes it
+          # and shellcheck would otherwise (correctly) call that variable unused.
+          # shellcheck disable=SC2034
+          read -r _UI_L_TAG UI_L_IN UI_L_OUT UI_L_AMT UI_L_WANT <<EOF
+$UI_LEVEL
+EOF
+          UI_ANS="$(ui_quote "$UI_L_IN" "$UI_L_OUT" "$UI_L_AMT")"
+          UI_Q_CODE="${UI_ANS%% *}"
+          UI_Q_OUT="${UI_ANS##* }"
+          if [[ "$UI_Q_CODE" == "200" && "$UI_Q_OUT" == "$UI_L_WANT" ]]; then
+            UI_PAIR_OK=1
+            UI_IN_DEC="$(issuer_token_field "$([[ "$UI_L_IN" == "$UI_ETH" ]] && echo TWETH || echo TWBTC)" decimals || true)"
+            UI_OUT_DEC="$(issuer_token_field "$([[ "$UI_L_OUT" == "$UI_ETH" ]] && echo TWETH || echo TWBTC)" decimals || true)"
+            ok "POST /api/v1/quote through the UI's own edge: ${UI_L_AMT} (${UI_IN_DEC} dec) -> ${UI_Q_OUT} (${UI_OUT_DEC} dec), EXACTLY the published rung"
+            break
+          fi
+          UI_PAIR_LAST="rung ${UI_L_AMT} -> ${UI_L_WANT} answered ${UI_Q_CODE} out='${UI_Q_OUT}'"
         fi
-      else
-        fail "the UI's edge answered ${UI_Q_CODE:-nothing} for TWBTC -> TWETH: ${UI_Q_BODY:0:200}"
+        (( UI_TRY < 3 )) && sleep 20
+      done
+      if (( ! UI_PAIR_OK )); then
+        fail "the UI's edge could not quote the poster's 8-/18-decimal pair in 3 attempts 20 s apart — last: ${UI_PAIR_LAST}"
       fi
     fi
   fi
