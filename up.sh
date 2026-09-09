@@ -479,6 +479,80 @@ if (( ! FAILED )) \
     FAILED=1
   fi
 fi
+# ── the THIRD cross-profile step: the intents UI's labels and DECIMALS (00020 phase G) ──
+#
+# The browser UI takes a colour's label and its DECIMALS from a config block baked into
+# `index.html` AT BUILD TIME (upstream's design, not this repository's choice — the relay's
+# `GET /tokens` carries raw 64-hex colours and nothing else). This stack's colours derive from
+# the contracts the `issuer` profile deploys, so they do not exist when the image is built. Up
+# to 00020 phase F that left the operator a documented SECOND PASS to run by hand:
+#
+#   ./scripts/issuer-token-names.sh >> .env && ./up.sh --build
+#
+# WHY IT IS NO LONGER A MANUAL STEP. Until that pass runs, the page does not merely look ugly
+# — it is WRONG ABOUT MONEY, and silently. With no entry for a colour the UI shows its last 8
+# hex characters (cosmetic) but ALSO assumes SIX decimals: right for TWUSDC/TWUSDM/UTWUSDC,
+# wrong for TWBTC and UTWBTC (8), and wrong by TWELVE ORDERS OF MAGNITUDE for TWETH (18).
+# Nothing warns; the page renders a plausible number. That is the same "confidently wrong is
+# worse than absent" argument the registrar block above makes about the kernel's colours, and
+# it deserves the same answer: do it in the same pass.
+#
+# It has to be HERE and cannot be a build arg: the value is only knowable after
+# `issuer-deploy` has published the registry, which is minutes after the build. So the image is
+# rebuilt — one layer, the vite build — and the single container recreated.
+#
+# CONDITIONAL, so a second `./up.sh` on the same chain costs nothing but the check: the served
+# page is asked whether it already carries the first colour, and the rebuild happens only when
+# it does not.
+#
+# NON-FATAL, unlike the registrar. The difference is what is left behind on failure: a failed
+# registrar leaves the KERNEL holding wrong colours, which every quote and every sponsorship
+# decision then uses. A failed rebuild here leaves the UI as it was — showing hex tails and
+# assuming six decimals — which is the pre-phase-G status quo, documented in
+# docs/KNOWN-LIMITATIONS.md, and is a browser-side display problem rather than a wrong
+# on-chain decision. `./verify.sh`'s solver section asserts the six DECIMALS out of the served
+# bytes, so a stack that skipped this does not pass the gate quietly.
+if (( ! FAILED )) \
+   && [[ " $PROFILES " == *" issuer "* ]] && [[ " $PROFILES " == *" solver "* ]] \
+   && service_present faucet && service_present intents-ui; then
+  # `--value-only` prints just the comma-separated `NAME=<64-hex>:<decimals>:<label>` list; it
+  # reads the registry through `issuer-registry`, this repository's ONE validating reader.
+  # `|| true` so an unreadable registry yields the empty string and the warning below rather
+  # than a `pipefail` exit (00011 C.8).
+  UI_TOKEN_NAMES="$("$REPO_ROOT/scripts/issuer-token-names.sh" --value-only 2>/dev/null || true)"
+  UI_TOKEN_NAMES="${UI_TOKEN_NAMES%%$'\n'*}"
+  if [[ -z "${UI_TOKEN_NAMES//[[:space:]]/}" ]]; then
+    warn "could not read this stack's token names from the issuer registry"
+    info "the intents UI will show hex tails AND assume 6 decimals, which is wrong for TWBTC (8)"
+    info "and wrong by twelve orders of magnitude for TWETH (18). See why with:"
+    info "  ./scripts/issuer-token-names.sh --table"
+  else
+    # The first entry's colour, used only to decide whether a rebuild is needed. bash 3.2 has
+    # no `${var##*(...)}` regex trim, so this is two ordinary expansions: take the first
+    # comma-separated entry, then the field between the first `=` and the first `:`.
+    UI_FIRST="${UI_TOKEN_NAMES%%,*}"
+    UI_FIRST_COLOUR="${UI_FIRST#*=}"
+    UI_FIRST_COLOUR="${UI_FIRST_COLOUR%%:*}"
+    UI_PAGE="$(curl -fsS --max-time 10 \
+      "http://${HOST_ADDR}:${INTENTS_UI_HOST_PORT}/" 2>/dev/null || true)"
+    if [[ -n "$UI_FIRST_COLOUR" && "$UI_PAGE" == *"$UI_FIRST_COLOUR"* ]]; then
+      ok "the intents UI already carries this chain's six token labels and decimals"
+    else
+      log "baking this chain's six token labels and decimals into the intents UI"
+      info "(one image layer and one container; the colours only exist after issuer-deploy)"
+      if INTENTS_UI_TOKEN_NAMES="$UI_TOKEN_NAMES" \
+           dc up -d --build --no-deps intents-ui \
+         && wait_compose_healthy intents-ui "$RELAY_WAIT_TIMEOUT"; then
+        ok "the intents UI now names all six colours with their own decimals"
+      else
+        warn "could not rebuild the intents UI with this chain's token names"
+        info "the page will show hex tails and assume 6 decimals (wrong for TWBTC and TWETH)."
+        info "Do it by hand with:"
+        info "  ./scripts/issuer-token-names.sh >> ${ENV_FILE##*/} && ./up.sh --build"
+      fi
+    fi
+  fi
+fi
 # The poster. Its health server binds only AFTER wallet sync, DUST registration, the bounded
 # dust wait and the contract join, which is why POSTER_WAIT_TIMEOUT is minutes and not seconds
 # — and why compose gives its healthcheck a 15-minute start_period. Reaching healthy here means
