@@ -126,8 +126,10 @@ TAKE_FUNDER_SEED="${POSTER_TAKE_FUNDER_SEED:-${MIDNIGHT_GENESIS_SEED:-0000000000
 # The poster's two legs as ISSUER TOKEN NAMES, with compose's own defaults. They are no longer
 # faucet presets (WBTC/WETH); the ids are resolved from the issuer's registry below, exactly as
 # the poster's entrypoint resolves them from the handoff.
-GIVE_NAME="${OFFER_POSTER_GIVE_TOKEN:-TWBTC}"
-WANT_NAME="${OFFER_POSTER_WANT_TOKEN:-TWETH}"
+# NO INLINE FALLBACK — `load_env` (scripts/lib/common.sh) is the single place these are
+# defaulted, and compose/poster.yml carries the twin literal. See that block in common.sh.
+GIVE_NAME="${OFFER_POSTER_GIVE_TOKEN}"
+WANT_NAME="${OFFER_POSTER_WANT_TOKEN}"
 # How much of the want token the taker is given before the take. It must cover the offer's want
 # leg, which is QUOTED per tick and therefore not known until the offer is picked — so this is
 # deliberately generous rather than exact, and the driver fails with the shortfall and the exact

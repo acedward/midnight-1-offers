@@ -238,8 +238,11 @@ resolve_pair_leg() {
   issuer_token_id "$value" || true
 }
 
-GIVE_NAME="${MAKER_OFFER_GIVE_TOKEN:-TWBTC}"
-WANT_NAME="${MAKER_OFFER_WANT_TOKEN:-TWETH}"
+# NO INLINE FALLBACK: `load_env` (scripts/lib/common.sh) is the single place these two names are
+# defaulted, and compose/solver.yml carries the twin literal. A copy here is exactly what made
+# run 2 of this phase's gate fail five assertions — see that block in common.sh.
+GIVE_NAME="${MAKER_OFFER_GIVE_TOKEN}"
+WANT_NAME="${MAKER_OFFER_WANT_TOKEN}"
 GIVE_TOKEN="$(resolve_pair_leg "$GIVE_NAME")"
 WANT_TOKEN="$(resolve_pair_leg "$WANT_NAME")"
 if [[ ! "$GIVE_TOKEN" =~ ^[0-9a-f]{64}$ || ! "$WANT_TOKEN" =~ ^[0-9a-f]{64}$ ]]; then

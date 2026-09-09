@@ -366,6 +366,29 @@ load_env() {
   # kernel #69 deleted the mint, the file and the volume it lived on. It must be SHIELDED — the
   # offer is a shielded-to-shielded swap — which rules out UTWUSDC and UTWBTC.
   : "${SNIGHT_BOOK_WANT_TOKEN:=TWUSDC}"
+
+  # ── THE TWO TRADED PAIRS, IN ONE PLACE (00020 PR C) ────────────────────────
+  # Since kernel #69 every token comes from the `issuer` profile, so which NAMES the maker and
+  # the poster trade is configuration rather than construction — and FOUR readers have to agree
+  # on it: compose/solver.yml's anchors, compose/poster.yml, scripts/verify-solver.sh and
+  # scripts/verify-poster.sh. The verify scripts read them from HERE and carry no fallback of
+  # their own; the compose fragments carry the twin literal because a compose file cannot source
+  # a shell library, exactly as they do for KERNEL_REF.
+  #
+  # THIS EXISTS BECAUSE THE DRIFT ALREADY HAPPENED. Run 2 of the 00020 PR C gate failed five
+  # solver assertions with `the seeded offer gives 3e901d34…, but this stack's TWBTC is
+  # 65d405e9…`: compose had been moved to TWUSDC -> TWUSDM and verify-solver.sh still defaulted
+  # to TWBTC -> TWETH inline. The receipt and the ladder were correct; the script was looking up
+  # the wrong two names.
+  #
+  # THE TWO PAIRS MUST STAY DISJOINT. The solver's published ladder is derived from the whole
+  # book for a directed pair, and verify-solver.sh asserts `quote(WANT_AMOUNT) == GIVE_AMOUNT`
+  # exactly — which holds only while the maker's offer is alone on its pair. See
+  # docs/OPERATIONS.md, "The maker and the poster trade DIFFERENT pairs, on purpose".
+  : "${MAKER_OFFER_GIVE_TOKEN:=TWUSDC}"   # 6 decimals, shielded, priced as usd-coin
+  : "${MAKER_OFFER_WANT_TOKEN:=TWUSDM}"   # 6 decimals, shielded, priced as usdm-2
+  : "${OFFER_POSTER_GIVE_TOKEN:=TWBTC}"   # 8 decimals, shielded, priced as bitcoin
+  : "${OFFER_POSTER_WANT_TOKEN:=TWETH}"   # 18 decimals, shielded, priced as ethereum
   # The taker, and the wallet that funds it. e2e-taker starts empty at genesis (measured), so
   # the chain provisions it: NIGHT from the funder below, and the token the offer demands from
   # `issuer-fund` — since 00020 PR C nothing else on the stack can produce one.
