@@ -67,6 +67,12 @@
 #                     container with `bun -e`, for the same reason /state is: this host has
 #                     no jq and no bun, and the verify scripts take no dependency a stock
 #                     macOS box lacks.
+#                     AND, since 00025, that EVERY PUBLISHED RUNG on the poster's pair is
+#                     priced within a band of the kernel's own reference. That is the exact
+#                     symptom of organizer issues/00023: a non-empty, un-withheld ladder whose
+#                     only rung was an offer mispriced by eleven orders of magnitude, which the
+#                     derivation preferred because it was the cheapest fill on the book — and
+#                     every assertion in this section passed while it was published.
 #   health            THE CONTAINER HEALTHCHECK ITSELF, because a healthcheck is a thing that
 #                     can be wrong. Since 00015 it asks the solver's own /health for `ready`
 #                     (issues/00013); the claim worth checking is not "healthy now" but "stays
@@ -751,6 +757,31 @@ PROBE_JS
   fi
 fi
 
+# ── the published ladder's LEVELS, read once and used twice ──────────────────
+#
+# Flattened to `LEVEL <tokenIn> <tokenOut> <input> <output>`, one line per rung. Read from
+# inside the monitor container for the same reason every other nested field in this file is:
+# this host has no jq and no bun. A QUOTED heredoc, so nothing here is expanded by this shell.
+#
+# HOISTED OUT OF THE intents-UI BLOCK in 00025, because there are now two consumers: the
+# monitor block asserts that every rung on the poster's pair is priced within a band of the
+# kernel's reference (issues/00023), and the UI block quotes one rung through the UI's own edge.
+# One definition, so the two cannot drift apart in what "a rung" means.
+read -r -d '' LADDER_PROBE_JS <<'LADDER_JS' || true
+const r = await fetch("http://127.0.0.1:8080/api/snapshot",
+                      { signal: AbortSignal.timeout(8000) }).catch(() => null);
+if (!r || !r.ok) process.exit(0);
+const s = await r.json().catch(() => null);
+const snap = s && s.solver ? s.solver.snapshot : null;
+const lad = snap && snap.ladder && !("error" in snap.ladder) ? snap.ladder : null;
+const last = lad && lad.last ? lad.last : null;
+for (const pair of (last && Array.isArray(last.levels) ? last.levels : [])) {
+  for (const lvl of (Array.isArray(pair.levels) ? pair.levels : [])) {
+    console.log(["LEVEL", pair.tokenIn, pair.tokenOut, lvl.input, lvl.output].join(" "));
+  }
+}
+LADDER_JS
+
 # ── the monitor (solver-frontend) ────────────────────────────────────────────
 if service_present solver-frontend; then
   echo
@@ -893,6 +924,143 @@ MONITOR_JS
     else
       ok "the monitor reads the kernel's book directly (it renders with the solver down)"
     fi
+
+    # ── EVERY PUBLISHED RUNG ON THE POSTER'S PAIR IS PRICED (00025) ─────────
+    #
+    # THE EXACT SYMPTOM OF issues/00023, asserted where it was visible and unasserted. On the
+    # 00020 phase-G gate the whole published `TWETH → TWBTC` ladder was ONE rung, and that rung
+    # was the poster's tick-2 offer: `975000 → 1000000`, i.e. a taker giving
+    # 0.000000000000975 TWETH for 0.01 TWBTC. The six correctly-priced offers behind it were all
+    # `excluded: residual-budget`, because the derivation sorts by price and a fill at 10^-11 of
+    # the reference is unbeatable. Every assertion in this section passed: the ladder was
+    # non-empty, not withheld, and the relay answered that rung EXACTLY — the relay was right,
+    # the rung was garbage.
+    #
+    # HOW THE BAND IS COMPUTED, and why it is direction-agnostic. Each rung is re-quoted through
+    # the kernel with its OWN `tokenIn`/`tokenOut` and its own amounts, and the kernel returns
+    # `discount = 1 − implied_rate/market_rate` for exactly those numbers. For a rung derived
+    # from a correctly-quoted poster offer that is ±`sponsor_discount` (0.025) depending on which
+    # way the rung faces — the taker side of a sponsored offer gets slightly MORE than market —
+    # plus whatever the reference has drifted since. So the assertion is |discount| <=
+    # SOLVER_RUNG_BAND, default 0.10, which is four times the threshold and swallows any real
+    # drift. The 00023 rung's `discount` against a corrected reference is about −3.4e11.
+    #
+    # THE POSTER'S PAIR, resolved from the issuer registry rather than typed: the colours are
+    # per chain, and `OFFER_POSTER_GIVE_TOKEN`/`_WANT_TOKEN` are defaulted in exactly one place
+    # (scripts/lib/common.sh) which compose reads too.
+    if service_present offer-poster && service_present faucet; then
+      RUNG_BAND="${SOLVER_RUNG_BAND:-0.10}"
+      # ONE `issuer-registry` run for both colours: primed as a PLAIN CALL in this shell so its
+      # process-lifetime cache survives. Inside `$( )` it would be a subshell, the cache would
+      # die with it, and every `issuer_token_id` below would start its own container — a
+      # container that INHERITS AND CONSUMES STDIN (00020 phase G).
+      issuer_registry_lines >/dev/null 2>&1 || true
+      RUNG_GIVE="$(issuer_token_id "${OFFER_POSTER_GIVE_TOKEN}" || true)"
+      RUNG_WANT="$(issuer_token_id "${OFFER_POSTER_WANT_TOKEN}" || true)"
+      if [[ ! "$RUNG_GIVE" =~ ^[0-9a-f]{64}$ || ! "$RUNG_WANT" =~ ^[0-9a-f]{64}$ ]]; then
+        fail "could not resolve the poster's pair (${OFFER_POSTER_GIVE_TOKEN} -> ${RUNG_GIVE:-?},
+              ${OFFER_POSTER_WANT_TOKEN} -> ${RUNG_WANT:-?}) from the issuer registry, so the
+              published rungs on it cannot be priced"
+      else
+        # rung_discount <tokenIn> <tokenOut> <input> <output> — the kernel's own
+        # `1 − implied/market` for that rung, or nothing when it could not be read.
+        #
+        # `|| true` on the capture and on every extraction: an unanswered quote must yield the
+        # empty string and a NAMED failure in the caller, never a `pipefail` exit from inside
+        # `$( )` (00011 C.8).
+        rung_discount() {
+          local body
+          body="$(curl -fsS --max-time 20 \
+            "${KERNEL}/v1/quote?from_token=$1&to_token=$2&from_amount=$3&to_amount=$4" \
+            2>/dev/null | tr -d '\n' || true)"
+          printf '%s' "$body" \
+            | grep -oE '"discount"[[:space:]]*:[[:space:]]*-?[0-9]+(\.[0-9]+)?([eE][-+]?[0-9]+)?' \
+            | sed 's/.*:[[:space:]]*//' | head -1 || true
+        }
+        # in_band <value> <tolerance> — |value| <= tol. awk, because bash has no floating point
+        # and 3.4e11 is not something `[[ ]]` can compare. `</dev/null` so awk cannot consume
+        # the `while read` loop's stdin below — the failure that ate five of six lines in 00020
+        # phase G.
+        in_band() {
+          awk -v v="${1:-}" -v t="${2:-0}" 'BEGIN {
+            if (v == "") { exit 2 }
+            if (v < 0) { v = -v }
+            exit (v <= t) ? 0 : 1
+          }' </dev/null
+        }
+
+        # Retried as a WHOLE — re-read the ladder, then quote it — for the same reason the UI
+        # block is: the poster posts roughly every minute and the relay withdraws its ladder
+        # fail-closed in 10-20 s windows, so a rung read now can be gone when it is quoted.
+        # `RUNG_DONE` means "this check reached a verdict", pass OR fail — not "it passed". An
+        # out-of-band rung is a finding and is reported immediately rather than retried.
+        RUNG_DONE=0
+        RUNG_LAST=""
+        for RUNG_TRY in 1 2 3; do
+          RUNG_LEVELS="$(dc exec -T solver-frontend bun -e "$LADDER_PROBE_JS" 2>/dev/null || true)"
+          RUNG_ON_PAIR="$(printf '%s\n' "$RUNG_LEVELS" \
+            | grep -E "^LEVEL (${RUNG_WANT} ${RUNG_GIVE}|${RUNG_GIVE} ${RUNG_WANT}) " || true)"
+          RUNG_COUNT="$(printf '%s\n' "$RUNG_ON_PAIR" | grep -c '^LEVEL ' || true)"
+          if [[ "${RUNG_COUNT:-0}" == "0" ]]; then
+            RUNG_LAST="the published ladder carries no rung on the poster's pair ($(printf '%s\n' "$RUNG_LEVELS" | grep -c '^LEVEL ' || true) rung(s) in total)"
+            (( RUNG_TRY < 3 )) && sleep 15
+            continue
+          fi
+          # The loop's input is a here-doc, and NOTHING inside it may read stdin: `dc exec`,
+          # `dc run` and a bare `awk` all would. `rung_discount` uses curl (which does not) and
+          # `in_band`'s awk is fed `</dev/null` for exactly this reason.
+          RUNG_CHECKED=0
+          RUNG_BAD=""
+          RUNG_UNREADABLE=""
+          RUNG_REPORT=""
+          while IFS= read -r rung; do
+            [[ -n "$rung" ]] || continue
+            # shellcheck disable=SC2034  # the literal LEVEL tag is consumed and discarded
+            read -r _R_TAG R_IN R_OUT R_AMT R_GOT <<EOF
+$rung
+EOF
+            [[ -n "${R_AMT:-}" && -n "${R_GOT:-}" ]] || continue
+            RUNG_CHECKED=$(( RUNG_CHECKED + 1 ))
+            R_DISC="$(rung_discount "$R_IN" "$R_OUT" "$R_AMT" "$R_GOT")"
+            R_RC=0
+            in_band "${R_DISC:-}" "$RUNG_BAND" || R_RC=$?
+            case "$R_RC" in
+              0) RUNG_REPORT="${RUNG_REPORT} ${R_AMT}->${R_GOT}(d=${R_DISC})" ;;
+              2) RUNG_UNREADABLE="${RUNG_UNREADABLE} ${R_AMT}->${R_GOT}" ;;
+              *) RUNG_BAD="${RUNG_BAD} ${R_AMT}->${R_GOT}(d=${R_DISC})" ;;
+            esac
+          done <<EOF
+${RUNG_ON_PAIR}
+EOF
+          if (( RUNG_CHECKED != RUNG_COUNT )); then
+            RUNG_LAST="read ${RUNG_CHECKED} of ${RUNG_COUNT} rung(s) — the check would be vacuous"
+          elif [[ -n "$RUNG_UNREADABLE" ]]; then
+            RUNG_LAST="the kernel would not quote rung(s):${RUNG_UNREADABLE}"
+          elif [[ -z "$RUNG_BAD" ]]; then
+            ok "all ${RUNG_CHECKED} published rung(s) on the poster's pair are priced within ${RUNG_BAND} of the kernel's reference:${RUNG_REPORT}"
+            RUNG_DONE=1
+            break
+          else
+            # NOT retried: an out-of-band rung is a finding, not a race. Fail immediately and
+            # name the rung, its discount and the arithmetic.
+            fail "published rung(s) on the poster's pair are priced OUTSIDE the band (|1 - implied/market| > ${RUNG_BAND}):${RUNG_BAD}
+                  ${RUNG_CHECKED} rung(s) checked, in band:${RUNG_REPORT:- none}
+                  This is issues/00023 exactly: an offer quoted before issuer-registrar bound this
+                  stack's colours is priced from the kernel's fabricated \$1-per-base-unit demo
+                  answer, and the solver's ladder derivation PREFERS it because it is the cheapest
+                  fill on the book. A taker quoting this pair through the relay is quoted, and can
+                  settle, that rung. ./up.sh starts the poster only after the registrar; check
+                  \`docker compose logs offer-poster | grep -E 'demo-fallback|market_rate='\`."
+            RUNG_DONE=1   # a verdict was reached; a finding is never retried
+            break
+          fi
+          (( RUNG_TRY < 3 )) && sleep 15
+        done
+        if (( ! RUNG_DONE )); then
+          fail "could not price the poster's published rungs in 3 attempts 15 s apart — last: ${RUNG_LAST}"
+        fi
+      fi
+    fi
   fi
 
   # 3. The SSE feed. One frame on connect is the contract; `--max-time` bounds the stream,
@@ -1027,24 +1195,6 @@ EOF
       else
         fail "the UI's /api/v1/tokens does not list TWBTC (${UI_BTC:0:16}…) and TWETH (${UI_ETH:0:16}…) — the poster's pair is not on the published ladder"
       fi
-
-      # The published ladder's levels, flattened to `LEVEL <tokenIn> <tokenOut> <in> <out>`.
-      # Read from inside the monitor container for the same reason every other nested field in
-      # this file is: this host has no jq and no bun. A QUOTED heredoc, as above.
-      read -r -d '' LADDER_PROBE_JS <<'LADDER_JS' || true
-const r = await fetch("http://127.0.0.1:8080/api/snapshot",
-                      { signal: AbortSignal.timeout(8000) }).catch(() => null);
-if (!r || !r.ok) process.exit(0);
-const s = await r.json().catch(() => null);
-const snap = s && s.solver ? s.solver.snapshot : null;
-const lad = snap && snap.ladder && !("error" in snap.ladder) ? snap.ladder : null;
-const last = lad && lad.last ? lad.last : null;
-for (const pair of (last && Array.isArray(last.levels) ? last.levels : [])) {
-  for (const lvl of (Array.isArray(pair.levels) ? pair.levels : [])) {
-    console.log(["LEVEL", pair.tokenIn, pair.tokenOut, lvl.input, lvl.output].join(" "));
-  }
-}
-LADDER_JS
 
       # ui_quote <tokenIn> <tokenOut> <amountIn> — prints "<http code> <amountOut or empty>".
       ui_quote() {
