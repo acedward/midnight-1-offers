@@ -1410,17 +1410,33 @@ else
       -e "TAKER_SEED=${SETTLE_TAKER_SEED}" \
       --entrypoint bun solver run deploy/scripts/e2e.ts >"$SETTLE_LOG" 2>&1 || SETTLE_RC=$?
     # `|| true` on every count, and each was exercised on an empty file first.
-    SETTLE_PASS="$(grep -c '^PASS ' "$SETTLE_LOG" || true)"
-    SETTLE_FAIL="$(grep -c '^FAIL ' "$SETTLE_LOG" || true)"
+    #
+    # THE PATTERN IS `PASS` FOLLOWED BY TWO SPACES, and it is not cosmetic. The driver's
+    # assert() prints `  PASS  <what>` through a logger that prefixes `[e2e] <ISO timestamp> `,
+    # so the marker is never at the start of a line — a `^PASS ` anchor counts ZERO on a run
+    # that passed all eighteen, which is exactly what the phase-G gate reported before this was
+    # fixed (`0 PASS / 0 FAIL` beside an OK). Two trailing spaces also separate an assertion
+    # line from the SUMMARY's `case A PASS — …` and from the `FAILED — N assertion(s):` header,
+    # neither of which is an assertion.
+    SETTLE_PASS="$(grep -c 'PASS  ' "$SETTLE_LOG" || true)"
+    SETTLE_FAIL="$(grep -c 'FAIL  ' "$SETTLE_LOG" || true)"
     SETTLE_TX="$(grep -oE 'txId 0x[0-9a-f]+' "$SETTLE_LOG" | head -1 || true)"
     if (( SETTLE_RC == 0 )) && grep -q 'ALL ASSERTIONS PASSED' "$SETTLE_LOG"; then
-      ok "the canonical settlement driver passed: ${SETTLE_PASS:-0} PASS / ${SETTLE_FAIL:-0} FAIL${SETTLE_TX:+ (}${SETTLE_TX}${SETTLE_TX:+)}"
-      # The assertions themselves, so the gate's own output carries the claim rather than
-      # pointing at a log the reader does not have.
-      grep '^PASS ' "$SETTLE_LOG" | sed 's/^/      /' || true
+      if (( SETTLE_PASS < 1 )); then
+        # `ALL ASSERTIONS PASSED` with nothing counted means the driver's output shape moved
+        # under this parser. Reported as a real failure rather than trusted, because a
+        # settlement claim resting on one grep of one line is not a measurement.
+        fail "the driver printed ALL ASSERTIONS PASSED but this parser counted ZERO assertions — its output shape changed; the settlement claim is NOT made"
+        tail -40 "$SETTLE_LOG" | sed 's/^/      /' >&2 || true
+      else
+        ok "the canonical settlement driver passed: ${SETTLE_PASS} assertion(s), 0 FAIL${SETTLE_TX:+ (}${SETTLE_TX}${SETTLE_TX:+)}"
+        # The assertions themselves, so the gate's own output carries the claim rather than
+        # pointing at a log the reader does not have.
+        grep 'PASS  ' "$SETTLE_LOG" | sed -e 's/^\[e2e\] [^ ]* *//' -e 's/^/      /' || true
+      fi
     else
       fail "the canonical settlement driver FAILED (exit ${SETTLE_RC}, ${SETTLE_PASS:-0} PASS / ${SETTLE_FAIL:-0} FAIL)"
-      grep -E '^(FAIL|PASS) ' "$SETTLE_LOG" | sed 's/^/      /' >&2 || true
+      grep -E '(PASS|FAIL)  ' "$SETTLE_LOG" | sed 's/^/      /' >&2 || true
       tail -40 "$SETTLE_LOG" | sed 's/^/      /' >&2 || true
       info "the offer this consumes is re-seeded automatically on the next run of this section"
     fi
