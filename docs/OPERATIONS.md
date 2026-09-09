@@ -2,14 +2,17 @@
 
 > **Scope.** This file documents the **`issuer`** profile (the stack's own token source), the
 > **`solver`** profile's monitor and status listener, the **`shielded-night`** profile, the
-> `core` profile's own re-pins (the node image), and the `offerfiles`-profile notes that each
-> kernel re-pin makes unavoidable for anyone running an existing stack forward. The rest of the
-> `offerfiles` profile's operating notes are still to be written.
+> `core` profile's own re-pins (the node image), the **`frontend`** profile's re-pins (the one
+> place where a value is baked into an image rather than written at container start), and the
+> `offerfiles`-profile notes that each kernel re-pin makes unavoidable for anyone running an
+> existing stack forward. The rest of the `offerfiles` profile's operating notes are still to be
+> written.
 
 ## Re-pin to kernel `main` @ `e3b9388` (00020 PR C) — **BREAKING. `./down.sh -v` is the upgrade path**
 
-**Read this one first.** It is the newest re-pin, it is the only breaking one in project 00020,
-and it changes where this stack's tokens come from.
+**Read this one first.** It is the only BREAKING re-pin in project 00020 and it changes where
+this stack's tokens come from. (The newest re-pin is the frontend's, in the section immediately
+below; it is not breaking, and it finishes the story this one starts.)
 
 ```sh
 git pull
@@ -73,15 +76,97 @@ They run one after another because three wallet facades are involved (genesis, t
 
 ### What this pin costs, stated plainly
 
-The zswap-da SPA's **Faucet tab is dead** on this pin: it proves a mint in the browser and
-fetches its proving keys from `/keys/*`, which no longer exists. Nothing automated depended on
-it — `issuer-fund` is the headless path and the browser mint was always an owner hand test — and
-the `issuer` profile's own faucet site (`${FAUCET_HOST_PORT}`) mints the six issued tokens
-through a connected wallet in exactly the same way. See `docs/KNOWN-LIMITATIONS.md`.
+The zswap-da SPA's **Faucet tab was dead** on this pin alone: it proved a mint in the browser
+and fetched its proving keys from `/keys/*`, which no longer exists. **00020 PR D closed that**
+— the tab is gone and the SPA now LINKS to the `issuer` profile's own faucet site, which mints
+the six issued tokens through a connected wallet in exactly the same way. See the next section
+and `docs/KNOWN-LIMITATIONS.md`. Nothing automated ever depended on the in-page mint:
+`issuer-fund` is the headless path and the browser mint was always an owner hand test.
+
+## Re-pin the SPA to `midnight-1` @ `400880ce` (00020 PR D) — **not breaking; a frontend image only**
+
+The newest re-pin, and the other half of kernel #69. Nothing outside `images/zswap-da` changes:
+no chain state, no database, no volume, no other image.
+
+```sh
+git pull
+./up.sh --build --with offerfiles --with issuer --with frontend
+```
+
+`--build` is not optional here, and that is the one operational novelty this pin introduces —
+see "the faucet link is baked" below.
+
+### What effectstream [#922](https://github.com/effectstream/effectstream/pull/922) removed
+
+**The template's own copy of the contract lane**, matching kernel #69 on the other side:
+`src/contract/` (the `.compact` source and its committed `manifest.json`),
+`scripts/build-contract.ts`, the `prebuild` hook, `src/screens/Faucet.tsx`,
+`hooks/useContract.ts`, `hooks/useMintReconciler.ts`, `services/contractWallet.ts`,
+`services/mintQueue.ts`, `api.registerKnownToken`, vite's `zk-artifact-404` plugin, and the
+`compact-js` / `compact-runtime` / five `midnight-js` contract-lane dependencies.
+
+So `images/zswap-da` **has no Compact stage, no `COMPACT_VERSION` build arg and no toolchain
+entry in `config/artifact-decisions.json`**. Two of this repository's four Compact compilers are
+now gone — the kernel's 0.30.0 with #69, the template's 0.31.0 with #922 — and the two that
+remain (shielded-night 0.31.1, issuer 0.31.1) compile contracts that are still real. The image
+ASSERTS the deleted paths are absent, so a `FRONTEND_REF` moved backwards fails the build
+instead of shipping a page whose Faucet screen fetches proving keys the kernel no longer serves.
+
+### What effectstream [#920](https://github.com/effectstream/effectstream/pull/920) changed, and the one knob it makes mandatory
+
+The Faucet TAB became a Faucet **LINK** — a plain `<a>` in the nav that needs no wallet and
+never probes the service — and two new build-time values control it:
+
+| variable | what it does | where this repository sets it |
+|---|---|---|
+| `VITE_MIDNIGHT_NETWORK_ID` | the network the page formats addresses with, parses offers with, hands `initialApi.connect()` (Lace) and gives the built-in JS wallet. **#920 flipped its default from `undeployed` to `preprod`.** | the literal `FRONTEND_NETWORK_ID: 'undeployed'` in `compose/frontend.yml`, deliberately NOT overridable from the environment |
+| `VITE_FAUCET_URL` | the base URL of the faucet the link opens; the `?network=` on it is appended by the template from the value above | `FRONTEND_FAUCET_URL`, emitted per stack by `scripts/pick-ports.sh` and defaulted in `scripts/lib/common.sh` from the `FAUCET_URL` it already computes |
+
+**Setting the network id is not optional.** An image built without it runs the SPA on
+**preprod** against this `undeployed` chain — wrong address encoding, wrong offer parsing, and a
+wallet handshake for another network — and it would look like a working page.
+
+### The faucet link is BAKED, so a port-block change needs `--build`
+
+`src/config.ts` reads both values from `import.meta.env` and offers **no `window.*` override**
+for either, unlike the six endpoint URLs `images/zswap-da/entrypoint.sh` writes into
+`/config.js` at container start. So the faucet URL is compiled into the bundle.
+
+That is affordable — this repository builds the SPA image per stack anyway — but it means:
+
+* **after changing `FAUCET_HOST_PORT` (or regenerating a port block with
+  `scripts/pick-ports.sh`), rebuild the frontend**: `./up.sh --build …`. A plain `./up.sh` will
+  keep serving a link to the previous stack's faucet port.
+* `./verify.sh`'s `frontend` section asserts the **served bundle** carries exactly this stack's
+  `FRONTEND_FAUCET_URL`, so a stale image is a FAILED GATE rather than a dead link somebody
+  finds by clicking.
+
+The link's own address is what `up.sh` prints on bring-up:
+
+```
+token faucet      http://127.0.0.1:<FAUCET_HOST_PORT>/?network=undeployed   (the ?network= is not optional)
+```
+
+Recorded as a follow-up rather than solved here: a `window.FAUCET_URL` override upstream would
+make this runtime like everything else in `/config.js`.
+
+### One upstream wart you will see in the build log
+
+`bun.lock` at this ref still lists one package `#922` removed from `package.json`
+(`@midnight-ntwrk/midnight-js-fetch-zk-config-provider`), so `bun install --frozen-lockfile`
+refuses a correct tree. The image installs unfrozen and then asserts the resolution added
+nothing, changed nothing and removed only that one orphan, printing:
+
+```
+OK: the resolved set matches the pinned lockfile (minus the one orphan #922 left behind)
+```
+
+A different pruning, or any addition, fails the build and prints the offending lines.
 
 ## Re-pin the node to `1.0.1` (00020 PR A) — **not breaking; an existing volume keeps working**
 
-This is the newest re-pin and the one to read first. `NODE_IMAGE` is now
+The first of project 00020's re-pins, and the only one that touches the chain itself.
+`NODE_IMAGE` is now
 `docker.io/midnightntwrk/midnight-node@sha256:a340cdea456d58d79c0d0e6c8891a3988b472febc228496d33c8448cc1b5b632`
 — the official multiarch index for **1.0.1**, which is the newest NON-PRERELEASE release on the
 1.x line (1.0.2 exists only as alphas; 2.0.0/2.1.0 are the 2.x line this repository does not
@@ -154,7 +239,8 @@ line.)
 
 ## Re-pin to kernel `main` @ `a608fa6` (00018) — **not breaking**
 
-This is the newest re-pin and the one to read first. `KERNEL_REF` is now
+Superseded by `e3b9388…` at the top of this file; kept because it is the last pin before the
+faucet contract was removed. `KERNEL_REF` was
 `a608fa67419c16188e9405417ecdf34f3f7c47a1`, one first-parent merge past `c293ebd`
 ([kernel #68](https://github.com/effectstream/zswap-offerfiles-kernel/pull/68), merged
 2026-09-04). `FRONTEND_REF`, `SHIELDED_NIGHT_REF` and `RELAY_REF` do **not** move with it.
@@ -219,9 +305,10 @@ arrives as `DEVA`; `./verify.sh` and the one-shot both compare against the norma
 The previous re-pin. Still the one that decides whether an OLD volume can be carried forward.
 
 This re-pin set `KERNEL_REF` to `c293ebd57937c0065663b08b2c244438be8989a5` (superseded by
-`a608fa6…` above) and `FRONTEND_REF` to `58ab921be5513b77937a37be86bf724a41888302`, which is
-still the pin today. **Those two moved together**, because the change was one change split
-across two repositories.
+`a608fa6…`, then by `e3b9388…` above) and `FRONTEND_REF` to
+`58ab921be5513b77937a37be86bf724a41888302` (superseded by `400880ce…` above). **Those two moved
+together**, because the change was one change split across two repositories — as they did again
+in 00020, where kernel #69 and effectstream #920/#922 are one change split the same way.
 
 ### What moved
 

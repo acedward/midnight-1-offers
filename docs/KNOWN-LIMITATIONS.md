@@ -1,27 +1,52 @@
 # Known limitations
 
-> **Scope.** This file records the limitations of the **`offerfiles`** (one entry, added by the
-> `a608fa6` re-pin), **`solver`**, **`poster`**, **`prices`**, **`shielded-night`** and
-> **`issuer`** profiles. The remaining `offerfiles` entries land with 00005 P6.
+> **Scope.** This file records the limitations of the **`offerfiles`**, **`frontend`**,
+> **`solver`**, **`poster`**, **`prices`**, **`shielded-night`** and **`issuer`** profiles. The
+> two SPA entries at the top sit under `offerfiles` because both were caused by a KERNEL re-pin;
+> the `frontend` profile's own limitation is the second of them. The remaining `offerfiles`
+> entries land with 00005 P6.
 
 ## `offerfiles`
 
-### The SPA's Faucet tab is DEAD at `KERNEL_REF=e3b9388…` (00020 PR C)
+### ~~The SPA's Faucet tab is DEAD at `KERNEL_REF=e3b9388…`~~ — **RESOLVED in 00020 PR D**
 
-Kernel [#69](https://github.com/effectstream/zswap-offerfiles-kernel/pull/69) deleted
-`packages/node/zk-assets.ts`, so the kernel no longer serves `GET /keys/*` or `GET /zkir/*`. The
-zswap-da SPA's Faucet tab proves its mint IN THE BROWSER and fetches the proving keys from
-exactly those routes, so pressing it fails. `scripts/verify-frontend.sh` asserts the routes are
-**gone** (a 200 would mean `KERNEL_REF` had moved backwards onto a line these images no longer
-build for) and says so where a reader will meet it.
+**Kept as history, because it explains why the page looks different.** Between 00020 PR C and
+PR D the stack ran a SPA built before effectstream #922, and its Faucet tab was dead: kernel
+[#69](https://github.com/effectstream/zswap-offerfiles-kernel/pull/69) deleted
+`packages/node/zk-assets.ts`, so `GET /keys/*` and `GET /zkir/*` stopped existing, and that tab
+proved its mint IN THE BROWSER against exactly those routes.
 
-**Nothing automated ever depended on it.** `issuer-fund` is this stack's headless minting path
-and the browser mint has always been an owner hand test. **The hand test moved**, it did not
-disappear: the `issuer` profile's own faucet site on `${FAUCET_HOST_PORT}` mints the six issued
-tokens through a connected Lace wallet in exactly the same way, with the wallet doing the
-proving.
+**`FRONTEND_REF=400880ce…` removes the tab rather than fixing it**, which is the right answer:
+effectstream [#922](https://github.com/effectstream/effectstream/pull/922) deleted the whole
+contract lane from the template — there is no in-page mint left to break — and
+[#920](https://github.com/effectstream/effectstream/pull/920) put a Faucet **LINK** in its place.
+This repository points that link at THIS stack's own faucet site
+(`${FAUCET_HOST_PORT}/?network=undeployed`, the `issuer` profile), which mints the six issued
+tokens through a connected Lace wallet with the wallet doing the proving.
 
-Phase D of project 00020 re-points the SPA's Faucet link at that site.
+`scripts/verify-frontend.sh` still asserts the kernel's ZK routes are **gone** — a 200 would
+mean `KERNEL_REF` had moved backwards onto a line these images no longer build for — and now
+also asserts that the served bundle carries this stack's own faucet URL.
+
+**What did NOT change:** `issuer-fund` is still the headless minting path, and pressing a faucet
+button in a browser is still the owner's hand test (see the `issuer` section below). The mint
+moved between pages; it did not become automatable.
+
+### The SPA's faucet link is BAKED INTO THE IMAGE, so a port-block change needs `--build` (00020 PR D)
+
+`src/config.ts` at `FRONTEND_REF=400880ce…` reads `VITE_FAUCET_URL` and
+`VITE_MIDNIGHT_NETWORK_ID` from `import.meta.env` and exposes **no `window.*` override for
+either** — unlike the six endpoint URLs, which `images/zswap-da/entrypoint.sh` writes into
+`/config.js` at container start and which therefore work on any port block with one image.
+
+So the faucet URL is compiled in. `./up.sh` **without** `--build`, after `FAUCET_HOST_PORT`
+changed, serves a link to the previous stack's faucet port. It is caught rather than left to be
+discovered: `./verify.sh`'s `frontend` section asserts the SERVED bundle carries exactly the
+`FRONTEND_FAUCET_URL` this stack's env file names, so a stale image FAILS THE GATE.
+
+The clean fix is upstream — a `window.FAUCET_URL` beside `window.API_BASE` — and it is recorded
+as a follow-up (00020 Q4, option B) rather than patched into the built bundle at container
+start, which would be editing minified third-party bytes whose failure mode is a silent no-op.
 
 ### There is no `mints` counter any more, and `insufficient_inventory` is a normal state
 
