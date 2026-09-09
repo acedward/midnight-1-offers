@@ -80,19 +80,56 @@ COPY --from=reference src/ ./src/
 ARG UI_NETWORK_ID=undeployed
 RUN printf 'VITE_NETWORK_ID=%s\n' "${UI_NETWORK_ID}" > /app/.env
 
-# Token NAMES are the one thing the relay cannot supply: `/tokens` carries raw colours, and the
-# app's `tokenNames` module labels a colour by the `TOKEN_<NAME>` config key it finds in the
-# baked config block (a `VITE_TOKEN_<NAME>=<64-hex>` line here), falling back to the colour's
-# last 8 hex chars. So this is a BUILD-time knob, and because colours are minted per chain the
-# value lives in each stack's `.env` (INTENTS_UI_TOKEN_NAMES), never in a committed default.
-# The label the app shows is the whole key, `TOKEN_<NAME>` — that is upstream's convention
-# (its own preprod config names tokens TOKEN_A…TOKEN_J) and not something this image changes.
-# Malformed entries fail the build rather than silently producing an unlabeled token.
+# Token NAMES, LABELS and DECIMALS are the three things the relay cannot supply: `/tokens`
+# carries raw colours and nothing else. The app resolves them out of the config block baked
+# into index.html at build time, and since RELAY_REF=b32e0b100 (00020 PR F) it reads THREE key
+# shapes rather than one:
+#
+#   TOKEN_<NAME>=<64-hex colour>        the token exists and this colour is it
+#   METADATA_TOKEN_<NAME>_LABEL=<text>  what the UI writes next to an amount
+#   METADATA_TOKEN_<NAME>_DECIMALS=<n>  how the UI scales that amount
+#
+# Note the metadata prefix wraps the WHOLE `TOKEN_<NAME>` key rather than the bare name — that
+# is upstream's shape, measured at the pin, and getting it wrong would be silent.
+#
+# THE DEFAULTS ARE THE REASON THIS KNOB GREW. With no `_LABEL` the app shows the whole key
+# (`TOKEN_TWBTC`); that is cosmetic. With no `_DECIMALS` the app assumes **SIX** — which is
+# wrong for TWBTC (8) and wrong by twelve orders of magnitude for TWETH (18), and it is wrong
+# QUIETLY: the page renders a plausible number. And a non-numeric value is worse still, because
+# the app hands it to `Number()` and would render NaN with no error anywhere. So decimals are
+# validated here, as digits and within a sane bound, rather than trusted.
+#
+# This is a BUILD-time knob by upstream's design, and because colours are minted per chain the
+# value lives in each stack's `.env` (INTENTS_UI_TOKEN_NAMES), never in a committed default —
+# `./scripts/issuer-token-names.sh` prints the whole line from the issuer's own registry.
+#
+# ENTRY FORMAT, comma-separated:  <NAME>=<64-hex>[:<decimals>[:<label>]]
+#   TWBTC=f1205a0d…9806:8:twBTC     the shape the generator emits
+#   TWBTC=f1205a0d…9806             still accepted; label falls back to the key, decimals to 6
+# A trailing field may be OMITTED; a field written as an empty string (`…:8:` or `…::twBTC`)
+# is refused, because that is an unset variable in whatever produced the line rather than a
+# choice. Malformed entries FAIL the build rather than silently producing a mislabelled or
+# mis-scaled token.
 ARG UI_TOKEN_NAMES=
 RUN set -eu; \
     IFS=','; for pair in ${UI_TOKEN_NAMES}; do \
       [ -n "${pair}" ] || continue; \
-      name="${pair%%=*}"; hex="${pair#*=}"; \
+      name="${pair%%=*}"; rest="${pair#*=}"; \
+      # The colour is everything up to the first colon; the two optional fields follow it in
+      # order. `rest` without a colon leaves `hex` == `rest` and both fields empty.
+      hex="${rest%%:*}"; dec=""; label=""; \
+      if [ "${rest}" != "${hex}" ]; then \
+        tail="${rest#*:}"; dec="${tail%%:*}"; \
+        if [ "${tail}" != "${dec}" ]; then label="${tail#*:}"; fi; \
+        # A field that is PRESENT BUT EMPTY (`NAME=<hex>::label`, `NAME=<hex>:8:`) is refused
+        # rather than treated as omitted. Omitting a trailing field is a choice; writing the
+        # colon and no value is an unset variable in whatever produced the line, and the one
+        # thing this knob exists to prevent is a token that silently falls back to six decimals.
+        [ -n "${dec}" ] || { echo "FAIL: UI_TOKEN_NAMES entry '${pair}': the decimals field is present but empty" >&2; exit 1; }; \
+        case "${tail}" in \
+          *:*) [ -n "${label}" ] || { echo "FAIL: UI_TOKEN_NAMES entry '${pair}': the label field is present but empty" >&2; exit 1; } ;; \
+        esac; \
+      fi; \
       case "${name}" in \
         ""|*[!A-Z0-9_]*) echo "FAIL: UI_TOKEN_NAMES entry '${pair}': name must be A-Z, 0-9 or _" >&2; exit 1 ;; \
       esac; \
@@ -103,7 +140,27 @@ RUN set -eu; \
       case "${hex}" in \
         *[!0-9a-f]*) echo "FAIL: UI_TOKEN_NAMES entry '${pair}': colour must be lowercase hex" >&2; exit 1 ;; \
       esac; \
+      if [ -n "${dec}" ]; then \
+        case "${dec}" in \
+          *[!0-9]*|???*) echo "FAIL: UI_TOKEN_NAMES entry '${pair}': decimals must be 1-2 digits" >&2; exit 1 ;; \
+        esac; \
+        # 36 is a bound, not a limit anybody reaches: this stack's widest token is 18, and the
+        # point is to refuse a transposed field (a colour fragment, a year) rather than to
+        # legislate. `Number()` on the app side would swallow anything.
+        [ "${dec}" -le 36 ] || { echo "FAIL: UI_TOKEN_NAMES entry '${pair}': decimals ${dec} is out of range (0-36)" >&2; exit 1; }; \
+      fi; \
+      if [ -n "${label}" ]; then \
+        # No comma (the entry separator), no colon (the field separator), no quote or
+        # backslash — the value has to survive an env FILE, a JSON document and the grep
+        # below. Registry symbols (`twBTC`, `utwUSDC`) are well inside this.
+        case "${label}" in \
+          *[!A-Za-z0-9._-]*) echo "FAIL: UI_TOKEN_NAMES entry '${pair}': label must be A-Z, a-z, 0-9, . _ or -" >&2; exit 1 ;; \
+          ????????????????*) echo "FAIL: UI_TOKEN_NAMES entry '${pair}': label is longer than 15 characters" >&2; exit 1 ;; \
+        esac; \
+      fi; \
       printf 'VITE_TOKEN_%s=%s\n' "${name}" "${hex}" >> /app/.env; \
+      [ -z "${dec}" ]   || printf 'VITE_METADATA_TOKEN_%s_DECIMALS=%s\n' "${name}" "${dec}" >> /app/.env; \
+      [ -z "${label}" ] || printf 'VITE_METADATA_TOKEN_%s_LABEL=%s\n' "${name}" "${label}" >> /app/.env; \
     done; \
     cat /app/.env
 
@@ -111,13 +168,30 @@ RUN npx vite build --outDir dist-ui \
  && test -f /app/dist-ui/index.html \
  && grep -q 'id="config"' /app/dist-ui/index.html
 
-# Every configured name must have reached the baked config block — the plugin reads env FILES
-# and a silently ignored line would ship a UI that shows hex tails again.
+# Every configured key must have reached the baked config block — the plugin reads env FILES,
+# and a silently ignored line would ship a UI that shows hex tails again, or worse, scales an
+# 8-decimal token by six. All THREE keys are checked, per token, against the emitted bytes:
+# this is the only place that proves the `VITE_` prefix really is stripped into the shape the
+# app's parser looks for.
 RUN set -eu; \
     IFS=','; for pair in ${UI_TOKEN_NAMES}; do \
       [ -n "${pair}" ] || continue; \
-      grep -q "\"TOKEN_${pair%%=*}\":\"${pair#*=}\"" /app/dist-ui/index.html \
-        || { echo "FAIL: TOKEN_${pair%%=*} did not reach the baked config block" >&2; exit 1; }; \
+      name="${pair%%=*}"; rest="${pair#*=}"; \
+      hex="${rest%%:*}"; dec=""; label=""; \
+      if [ "${rest}" != "${hex}" ]; then \
+        tail="${rest#*:}"; dec="${tail%%:*}"; \
+        if [ "${tail}" != "${dec}" ]; then label="${tail#*:}"; fi; \
+      fi; \
+      grep -q "\"TOKEN_${name}\":\"${hex}\"" /app/dist-ui/index.html \
+        || { echo "FAIL: TOKEN_${name} did not reach the baked config block" >&2; exit 1; }; \
+      if [ -n "${dec}" ]; then \
+        grep -q "\"METADATA_TOKEN_${name}_DECIMALS\":\"${dec}\"" /app/dist-ui/index.html \
+          || { echo "FAIL: METADATA_TOKEN_${name}_DECIMALS did not reach the baked config block" >&2; exit 1; }; \
+      fi; \
+      if [ -n "${label}" ]; then \
+        grep -q "\"METADATA_TOKEN_${name}_LABEL\":\"${label}\"" /app/dist-ui/index.html \
+          || { echo "FAIL: METADATA_TOKEN_${name}_LABEL did not reach the baked config block" >&2; exit 1; }; \
+      fi; \
     done
 
 # ── 2. serve it ──────────────────────────────────────────────────────────────
