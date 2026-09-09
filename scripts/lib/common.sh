@@ -278,8 +278,12 @@ load_env() {
   # The Shielded NIGHT dApp. A first-party public repository already on this stack's 1.x line
   # (ledger-v8 8.1.0 / midnight-js 4.1.1 / compact-runtime 0.16.0), so nothing here is
   # patched — see config/artifact-decisions.json -> sources[shielded-night].
+  # RE-PINNED in 00020 PR E to main @ 2bb32838a (upstream #13 multinetwork + the isolated
+  # frontend/protocols/{shared,v1,v2} trees, #14 proving-asset URLs resolved against the page
+  # origin, #15 reverse any sNight amount). `undeployed` is `midnight-1.x` in upstream's own
+  # network table, so this stack still runs the v1/ledger-v8 adapter. Not breaking; `--build`.
   : "${SHIELDED_NIGHT_REPO:=https://github.com/effectstream/shielded-night.git}"
-  : "${SHIELDED_NIGHT_REF:=f7fcefa7921bf2c3f634871f9ad3aa3a32251af0}"
+  : "${SHIELDED_NIGHT_REF:=2bb32838a0572019a49436c3743bae7d0299817a}"
   # THE TOKEN ISSUER (00020 PR B). `effectstream/mint-test-tokens` is public and already on
   # this stack's exact 1.x line (ledger-v8 8.1.0 / compact-runtime 0.16.0 / compactc 0.31.1 /
   # midnight-js 4.1.1), and it supports `MN_NETWORK=undeployed` explicitly — which is the only

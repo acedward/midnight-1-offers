@@ -1,6 +1,6 @@
 {
   "schemaVersion": "artifact-decision-matrix-v2",
-  "pinsDigest": "551fa6f9e52bcebf917851679686c068cae38ceb0e99c4522e8c7e191efd1154",
+  "pinsDigest": "419a00795ea511bbbd4258d01d94223eb160cbfd683a83bf7a3981e1ec093d2c",
   "frozenOn": "2026-09-01",
   "note": "Frozen artifact-selection contract for every external dependency of this Midnight 1.x demo. Each field was re-derived from a live source on the freeze date. scripts/verify-artifact-decisions.sh enforces it offline. Do not edit a digest, SHA or hash to make a build pass: re-verify against the source first, then regenerate pinsDigest with --update-pins so the change is visible in review. Schema v2 differs from the 2.x sibling's v1 by adding `sources` (git-pinned source builds) and `toolchains`, and by replacing the warehouse proof-data generation with a pre-warm strategy.",
   "selectionOrder": [
@@ -415,19 +415,28 @@
       "acquisition": "anonymous-git-fetch",
       "repository": "https://github.com/effectstream/shielded-night.git",
       "branch": "main",
-      "ref": "f7fcefa7921bf2c3f634871f9ad3aa3a32251af0",
+      "ref": "2bb32838a0572019a49436c3743bae7d0299817a",
+      "supersededRefs": [
+        "f7fcefa7921bf2c3f634871f9ad3aa3a32251af0",
+        "6d87db4",
+        "0b0a358"
+      ],
       "envVar": "SHIELDED_NIGHT_REF",
-      "verifiedOn": "2026-09-03",
-      "reason": "A first-party public repository ALREADY on this stack's line, which is why this profile needed no porting: @midnight-ntwrk/ledger-v8 8.1.0 (with a tree-wide `overrides` pin), midnight-js 4.1.1, compact-js 2.5.1, compact-runtime 0.16.0, dapp-connector-api 4.0.1, and a contract whose pragma pairs with compactc 0.31.1 — the same triple this repository's core runs (node 1.0.0 / indexer 4.3.3 / proof-server 8.1.0). The image fetches this commit with `git fetch --depth 1 origin <sha>` and asserts the v8 line in BOTH directions before building. NOTHING of this source is committed here.",
+      "verifiedOn": "2026-09-09",
+      "reason": "A first-party public repository ALREADY on this stack's line, which is why this profile needed no porting: @midnight-ntwrk/ledger-v8 8.1.0 (with a tree-wide `overrides` pin), midnight-js 4.1.1, compact-js 2.5.1, compact-runtime 0.16.0, dapp-connector-api 4.0.1, and a contract whose pragma pairs with compactc 0.31.1 — the same triple this repository's core runs (node 1.0.1 / indexer 4.3.3 / proof-server 8.1.0). The image fetches this commit with `git fetch --depth 1 origin <sha>` and asserts the v8 line in BOTH directions before building. NOTHING of this source is committed here. RE-PINNED 2026-09-09 (00020 PR E) from f7fcefa to main @ 2bb32838a, three first-parent merges on: #13 multinetwork (Stagenet, a `protocolFamily` per network with `undeployed` = `midnight-1.x`, the isolated frontend/protocols/{shared,v1,v2} trees, and a Midnight-2.x contract at contracts/v2 at compactc 0.34.0 that this stack neither deploys nor compiles — Q11), #14 proving-asset URLs resolved against the page origin (the served path moved to contract/v1/shielded-night), #15 reverse any sNight amount. Re-measured at the new pin before building: every existing assertion still holds — ledger-v8 8.1.0 and compact-runtime 0.16.0 in root AND frontend package.json, `compact compile +0.31.1`, zero '\"@midnightntwrk/ledger-v9\"' keys in package.json/frontend/package.json/bun.lock/frontend/bun.lock, UNDEPLOYED_ADDRESS in runtime-config.ts, /config.js in index.html, the four MN_*_URL knobs, MN_EXTERNAL_STACK, DEPLOY_OUT and --allow-unlocked — and src/, scripts/ and test/support/ are BYTE-IDENTICAL to the previous pin, so the v1 byte-exact rebuild target and both round-trip test names did not move.",
       "provenance": {
         "branch": "main",
         "isBranchHead": true,
         "mergeCommitOf": [
           9,
           11,
-          12
+          12,
+          13,
+          14,
+          15
         ],
-        "note": "The MERGE COMMIT of effectstream/shielded-night#12 (\"lockfile regen on bun 1.4.0 + verify-deployment.ts --allow-unlocked\", project 00007 questions Q7/Q8/Q11), which is main's head. main also carries #9 (the three integration knobs, 5902a90) and #11 (preprod address). RE-PINNED IN PHASE H2 from phase G's pin (6d87db4, main after #11) — a pure fast-forward of one PR."
+        "note": "The MERGE COMMIT of effectstream/shielded-night#15 (\"reverse conversion: convert any sNight amount the wallet holds\"), which is main's head. main also carries #14 (proving-asset URLs resolved against the page origin, 6c4b03d), #13 (multinetwork Preview/Preprod/Stagenet with an isolated Midnight-2.x contract stack beside v1, edac395), #12 (the bun 1.4.0 lockfiles and --allow-unlocked, f7fcefa — the previous pin), #11 (preprod address) and #9 (the three integration knobs). RE-PINNED IN 00020 PHASE E from f7fcefa: three PRs, all fast-forward on main.",
+        "repinnedFor": "00020 PR E — shielded-night main @ 2bb32838a (#13 multinetwork, #14 page-origin proving assets, #15 reverse any amount)"
       },
       "$comment": [
         "THIS PIN IS THE ONE THING PHASE A DID NOT OWN, AND IT IS NOW SETTLED. The three",
@@ -457,7 +466,43 @@
         "(FR-016) no longer makes the strongest check in the profile read as a failure.",
         "images/shielded-night/entrypoint-verify.sh's `verify_keys()` was rewritten to call",
         "it with the flag and read the exit code directly, dropping the ~70-line stdout",
-        "parse (see the entrypoint's own header comment)."
+        "parse (see the entrypoint's own header comment).",
+        "",
+        "WHAT THE MOVE FROM f7fcefa TO 2bb32838a (00020 PHASE E) BUYS, AND WHAT IT COSTS THE IMAGE.",
+        "",
+        "#14 is the one this stack's own page needed: the multi-network adapters #13 introduced",
+        "passed a RELATIVE './contract/v1/shielded-night' straight to FetchZkConfigProvider, whose",
+        "SDK validates its base with a bare `new URL(baseURL)` — so selecting a network and pressing",
+        "Connect wallet threw \"Failed to construct 'URL': Invalid URL\" before any network work. #14",
+        "adds frontend/protocols/shared/asset-url.ts, which resolves the tree from the page ORIGIN",
+        "plus the vite base. THE SERVED PATH MOVED WITH IT: the v1 adapter now fetches",
+        "<origin>/contract/v1/shielded-night/…, and vite emits contract/v1, contract/v2 AND the legacy",
+        "contract/compiled (kept for clients open across a rollout). nginx.conf's ZK-artifact",
+        "`try_files … =404` lane, the image's dist assertions, compose's web healthcheck and",
+        "scripts/verify-shielded-night.sh all follow the page — otherwise a MISS under the new path",
+        "would answer 200 with the SPA shell and the prover would be handed HTML as a proving key.",
+        "",
+        "#13's cost is the BUILD, not the runtime: the SPA now needs FOUR dependency installs, and",
+        "frontend/protocols/{v1,v2} carry package-lock.json rather than a bun lockfile. Upstream's own",
+        "CI installs root (bun), frontend (bun), then `npm ci` in each protocol tree, with the comment",
+        "that every install matters because vite.config.ts routes each generated contract's",
+        "@midnight-ntwrk/compact-runtime import to its OWN profile tree — two Compact runtimes with two",
+        "WASM class identities that must never meet. `oven/bun:1.4.0` carries node but NOT npm",
+        "(measured), so the Dockerfile gained a `protocols` stage on the node:24.15.0-trixie digest",
+        "images/issuer already pins, whose only job is those two `npm ci` runs.",
+        "",
+        "AND THE v8-LINE ASSERTION HAD TO GROW. It was TRUE at this pin but no longer COMPLETE: it",
+        "never looked at frontend/protocols/v1, which is the tree that now actually builds the adapter",
+        "the `undeployed` page runs. Measured at the pin: protocols/v1 carries ledger-v8 8.1.0 and",
+        "compact-runtime 0.16.0 with ZERO '\"@midnightntwrk/ledger-v9\"' keys in its package.json or",
+        "package-lock.json, while ledger-v9 1.0.0-rc.3 appears ONLY in protocols/v2 and contracts/v2 —",
+        "the 2.x lane, reachable only from Stagenet. The assertion now covers protocols/v1 in both",
+        "directions and names protocols/v2 as the deliberate, isolated exception.",
+        "",
+        "#15 required nothing here, and that is a measurement: the reverse-conversion work is entirely",
+        "page-side (frontend/src/lib/swap.ts, the new frontend/protocols/shared/coin-store.ts). The",
+        "contract is unchanged, both round-trip test names are unchanged, and the image's own",
+        "driver/snight-driver.ts unwrap mode already discovered its coins instead of needing an exact one."
       ]
     },
     {

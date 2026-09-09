@@ -51,7 +51,7 @@
     },
     {
       "component": "Shielded NIGHT dApp",
-      "source": "[`effectstream/shielded-night`](https://github.com/effectstream/shielded-night) `main` (the 1.x line); contract recompiled in-image with compactc 0.31.1, byte-identical to the committed artifacts",
+      "source": "[`effectstream/shielded-night`](https://github.com/effectstream/shielded-night) `main` (the 1.x line); the v1 contract is recompiled in-image with compactc 0.31.1 and must be byte-identical to the committed artifacts. Since [#13](https://github.com/effectstream/shielded-night/pull/13) the page is multinetwork and picks its protocol from a `protocolFamily` per network — `undeployed` is `midnight-1.x`, so this stack runs the v1/ledger-v8 adapter out of `frontend/protocols/v1`; the Midnight-2.x lane (`contracts/v2`, compactc 0.34.0) is served but unreachable here. [#14](https://github.com/effectstream/shielded-night/pull/14) moved the served proving assets to `contract/v1/shielded-night`, resolved against the page origin",
       "pin": "{commit:SHIELDED_NIGHT_REF@effectstream/shielded-night}",
       "pinnedIn": "{files:SHIELDED_NIGHT_REF}"
     },
