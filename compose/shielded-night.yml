@@ -141,7 +141,7 @@ services:
       # handed an HTML document as a proving key.
       test:
         - 'CMD-SHELL'
-        - 'wget -qO/dev/null http://127.0.0.1:10900/ && wget -qO- http://127.0.0.1:10900/config.js | grep -q entrypoint-web.sh && wget -qO/tmp/vk http://127.0.0.1:10900/contract/compiled/shielded-night/keys/convertToShielded.verifier && [ -s /tmp/vk ]'
+        - 'wget -qO/dev/null http://127.0.0.1:10900/ && wget -qO- http://127.0.0.1:10900/config.js | grep -q entrypoint-web.sh && wget -qO/tmp/vk http://127.0.0.1:10900/contract/v1/shielded-night/keys/convertToShielded.verifier && [ -s /tmp/vk ]'
       interval: 5s
       timeout: 4s
       retries: 12

@@ -5,9 +5,13 @@
 # ONE BUILD, TWO RUNTIME TARGETS, and they are deliberately different base images:
 #
 #   --target web      nginx serving the built SPA on container :10900, together with the
-#                     compiled contract artifacts under /contract/compiled/shielded-night/
-#                     that the browser's prover fetches. Its entrypoint writes /config.js
-#                     with THIS stack's contract address at container start.
+#                     compiled contract artifacts the browser's prover fetches. SINCE upstream
+#                     #14 that path is /contract/v1/shielded-night/ — the adapter resolves
+#                     `<page origin>/contract/<profile>/shielded-night` and `undeployed` is the
+#                     `midnight-1.x` family; /contract/v2/ and the pre-#14
+#                     /contract/compiled/ are emitted and served too (see nginx.conf). Its
+#                     entrypoint writes /config.js with THIS stack's contract address at
+#                     container start.
 #   --target deploy   the bun runtime carrying the pinned tree and its root node_modules, for
 #                     the deploy one-shot (entrypoint-deploy.sh), the verify driver
 #                     (entrypoint-verify.sh) and the registry one-shot
@@ -49,8 +53,16 @@
 # entrypoint and zswap-da's build both stay on 1.3.11, which is load-bearing there (1.3.14+
 # breaks the kernel's `midnight-contract:deploy` with a graphql-tag/ESM require() error) and
 # unrelated to this tree's lockfile format.
+#
+# NODE_BASE is NEW in 00020 PR E and exists for exactly one reason: upstream #13's two browser
+# protocol trees (frontend/protocols/{v1,v2}) carry package-lock.json and are installed with
+# `npm ci`, and `oven/bun:1.4.0` ships a node fallback binary but NO npm (measured). It is the
+# SAME digest images/issuer pins for its own build stage — one fewer distinct external identity,
+# and one already vetted here. It is a build-only stage: nothing from it reaches either runtime
+# target except the two resolved node_modules trees.
 ARG DEBIAN_BASE=debian:trixie-slim@sha256:f6e2cfac5cf956ea044b4bd75e6397b4372ad88fe00908045e9a0d21712ae3ba
 ARG BUN_BASE=oven/bun:1.4.0@sha256:5ff609364c049b54eb0ff560ec96319729a972078ef2c755d758f0c6ef89c2d6
+ARG NODE_BASE=node:24.15.0-trixie@sha256:8202a46483627d14c75c8078d8c1b1d8ec14b792390c7001adb4f698724c4ca9
 ARG NGINX_BASE=nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10
 
 ARG SHIELDED_NIGHT_REPO=https://github.com/effectstream/shielded-night.git
@@ -97,9 +109,9 @@ RUN set -eux; \
 # line. The 2.x sibling's copy of this profile pins a ledger-v9 branch of the same repository.
 # Nothing but a pin distinguishes them, so the pin is checked rather than trusted: the exact
 # v8 override must be present, compact-runtime must be 0.16.0, and NO ledger-v9 PACKAGE may
-# appear anywhere — not as a DEPENDENCY in either package.json and not as a resolved entry in
-# either lockfile, which is the half a package.json grep cannot see. A tree with two ledger wasm
-# instances fails `instanceof` during proving, hours later and nowhere near the cause.
+# appear anywhere IN THIS STACK'S LANE — not as a DEPENDENCY in a package.json and not as a
+# resolved entry in a lockfile, which is the half a package.json grep cannot see. A tree with two
+# ledger wasm instances fails `instanceof` during proving, hours later and nowhere near the cause.
 #
 # THE PATTERN IS THE PACKAGE NAME, "@midnightntwrk/ledger-v9" (a JSON key, quoted), NOT the
 # bare substring "ledger-v9" — measured 2026-09-03 (project 00007 phase H2) against
@@ -109,15 +121,49 @@ RUN set -eux; \
 # package is actually a dependency anywhere in the tree. The narrower pattern still catches the
 # real hazard (an actual ledger-v9 dependency or resolved lockfile entry) and does not fire on
 # prose that merely mentions the string.
+#
+# ── WHAT "THIS STACK'S LANE" MEANS SINCE upstream #13, and why this list grew ──
+#
+# Before #13 the whole tree was one lane and four files said so. #13 split the browser side into
+# ISOLATED PROTOCOL TREES — frontend/protocols/v1 (midnight-1.x) and frontend/protocols/v2
+# (midnight-2.x) — each with its own package-lock.json, precisely so the two Compact runtimes and
+# their two WASM class identities can never meet in one physical node_modules. So ledger-v9 IS in
+# the pinned tree now, on purpose, in exactly two places: frontend/protocols/v2 (2 + 4 hits) and
+# contracts/v2 (2 + 12), both measured at 2bb32838a.
+#
+# THE OLD FOUR-FILE CHECK WAS THEREFORE STILL TRUE AND NO LONGER SUFFICIENT: it never looked at
+# frontend/protocols/v1, which is the tree that now actually builds the adapter this stack's page
+# runs (frontend/src/lib/networks.ts gives `undeployed` protocolFamily `midnight-1.x`, asserted
+# below). Six files are checked now — the four that were, plus protocols/v1's package.json and
+# package-lock.json — and protocols/v1 is checked in the POSITIVE direction too, because "no v9"
+# and "the v8 this stack runs" are different claims and a tree with neither would pass the first.
+#
+# frontend/protocols/v2 and contracts/v2 are deliberately NOT in the list. They are the 2.x lane;
+# nothing on `undeployed` can select them, and their whole point is being a separate resolution
+# root. Asserting v9's ABSENCE there would fail a correct tree; asserting its PRESENCE would pin
+# an upstream implementation detail this stack does not depend on.
 RUN set -eux; \
     cd /src; \
     grep -q '"@midnight-ntwrk/ledger-v8": "8.1.0"' package.json; \
     grep -q '"@midnight-ntwrk/ledger-v8": "8.1.0"' frontend/package.json; \
     grep -q '"@midnight-ntwrk/compact-runtime": "0.16.0"' package.json; \
     grep -q '"@midnight-ntwrk/compact-runtime": "0.16.0"' frontend/package.json; \
-    for f in package.json frontend/package.json bun.lock frontend/bun.lock; do \
+    # THE v1 BROWSER PROTOCOL TREE, in both directions (upstream #13). Its package-lock.json is
+    # what `npm ci` in stage `protocols` resolves, and what vite.config.ts's
+    # profileRuntimeResolution() plugin routes every src/managed import to.
+    for f in frontend/protocols/v1/package.json frontend/protocols/v1/package-lock.json; do \
+      test -f "$f" || { echo "FAIL: ${f} is missing — upstream #13's isolated v1 protocol tree is not in this pin" >&2; exit 1; }; \
+      grep -q '"@midnight-ntwrk/ledger-v8": "8.1.0"' "$f" \
+        || { echo "FAIL: ${f} does not pin @midnight-ntwrk/ledger-v8 8.1.0; the v1 adapter this stack runs would be off the v8 line" >&2; exit 1; }; \
+      grep -q '"@midnight-ntwrk/compact-runtime": "0.16.0"' "$f" \
+        || { echo "FAIL: ${f} does not pin @midnight-ntwrk/compact-runtime 0.16.0" >&2; exit 1; }; \
+    done; \
+    for f in package.json frontend/package.json bun.lock frontend/bun.lock \
+             frontend/protocols/v1/package.json frontend/protocols/v1/package-lock.json; do \
       if grep -q '"@midnightntwrk/ledger-v9"' "$f"; then \
-        echo "FAIL: ${f} depends on @midnightntwrk/ledger-v9; this repository targets the 1.x/v8 line" >&2; exit 1; \
+        echo "FAIL: ${f} depends on @midnightntwrk/ledger-v9; this repository targets the 1.x/v8 line" >&2; \
+        echo "      (ledger-v9 is expected ONLY in frontend/protocols/v2 and contracts/v2, the isolated 2.x lane)" >&2; \
+        exit 1; \
       fi; \
     done
 
@@ -169,6 +215,119 @@ RUN set -eux; \
     # …and the machine-readable deploy record, so the one-shot never scrapes stdout.
     grep -q 'DEPLOY_OUT' scripts/deploy-record.ts \
       || { echo "FAIL: scripts/deploy-record.ts does not implement DEPLOY_OUT" >&2; exit 1; }
+
+# ── knob 4: THE PROTOCOL THIS STACK'S PAGE SELECTS (upstream #13) ─────────────
+#
+# Until #13 there was one protocol and no choice to make. Now every network in
+# frontend/src/lib/networks.ts carries a `protocolFamily`, and
+# frontend/src/hooks/useShieldedNight.ts branches on exactly that field:
+#
+#     network.protocolFamily === 'midnight-1.x'
+#       ? await import('../../protocols/v1/src/adapter').then(m => m.createV1Adapter(...))
+#       : await import('../../protocols/v2/src/adapter').then(m => m.createV2Adapter(...))
+#
+# `undeployed` is `midnight-1.x` UPSTREAM, so this stack runs the ledger-v8 adapter by upstream's
+# own table rather than by an arrangement of ours — and that is exactly why it is asserted here
+# instead of assumed. A re-pin that moved `undeployed` to `midnight-2.x` would produce a page that
+# loads, offers "Local (undeployed)", and then dials a ledger-v9 adapter at an 8.1.0 chain: a
+# failure with no plausible cause anywhere near the pin. The whole entry is matched on one line
+# (upstream writes it as a single-line object literal) so the family cannot be read off some
+# OTHER network's row.
+#
+# The three shared modules are asserted by path because the v1 adapter imports all three and a
+# vanished one would surface as a module-not-found inside `vite build`, minutes later.
+RUN set -eux; \
+    cd /src; \
+    grep -q "key: 'undeployed'.*protocolFamily: 'midnight-1.x'" frontend/src/lib/networks.ts \
+      || { echo "FAIL: networks.ts does not put 'undeployed' on the midnight-1.x protocol family — this stack is the ledger-v8 line and its page would select the v2 adapter" >&2; \
+           grep -n "protocolFamily" frontend/src/lib/networks.ts >&2; exit 1; }; \
+    grep -q "protocols/v1/src/adapter" frontend/src/hooks/useShieldedNight.ts \
+      || { echo "FAIL: useShieldedNight.ts does not import the v1 adapter" >&2; exit 1; }; \
+    for f in frontend/protocols/shared/adapter-core.ts frontend/protocols/shared/asset-url.ts \
+             frontend/protocols/shared/types.ts frontend/protocols/v1/src/adapter.ts; do \
+      test -f "$f" || { echo "FAIL: ${f} is missing — upstream #13's protocol layout is not in this pin" >&2; exit 1; }; \
+    done
+
+# ── knob 5: WHERE THE PAGE FETCHES ITS PROVING ASSETS FROM (upstream #14) ─────
+#
+# #13's adapters passed a RELATIVE './contract/v1/shielded-night' straight to
+# FetchZkConfigProvider, whose SDK validates its base with a bare `new URL(baseURL)` and no base
+# argument — so pressing Connect wallet threw "Failed to construct 'URL': Invalid URL" before any
+# network work started. #14 added frontend/protocols/shared/asset-url.ts, which resolves the tree
+# from the page ORIGIN plus the vite base, and the v1 adapter now calls it.
+#
+# THIS IS LOAD-BEARING FOR THIS IMAGE, not just for the browser: the resolved path is
+# `<origin>/contract/v1/shielded-night`, so nginx.conf's `try_files … =404` artifact lane, the
+# dist assertions in stage `build`, compose's web healthcheck and scripts/verify-shielded-night.sh
+# all name `contract/v1` now. If a re-pin moved the profile segment again, THE PAGE WOULD STILL
+# WORK (vite copies the tree and the SPA fallback serves an existing file happily) while a MISS
+# would answer 200 with the app shell — the prover handed an HTML document as a proving key, which
+# is the exact failure the =404 lane exists to prevent. So the segment is asserted at its source.
+RUN set -eux; \
+    cd /src; \
+    grep -q 'contractAssetBaseUrl' frontend/protocols/shared/asset-url.ts \
+      || { echo "FAIL: asset-url.ts does not export contractAssetBaseUrl (upstream #14)" >&2; exit 1; }; \
+    grep -q "contractAssetBaseUrl('v1'" frontend/protocols/v1/src/adapter.ts \
+      || { echo "FAIL: the v1 adapter does not resolve its proving-asset base through contractAssetBaseUrl (upstream #14)" >&2; \
+           grep -n 'FetchZkConfigProvider\|ASSET_PATH' frontend/protocols/v1/src/adapter.ts >&2; exit 1; }; \
+    grep -q "contract/\${profile}/\${CONTRACT_ASSET_NAME}" frontend/protocols/shared/asset-url.ts \
+      || { echo "FAIL: asset-url.ts no longer builds 'contract/<profile>/shielded-night' — the served path this image, its nginx.conf and verify-shielded-night.sh use has MOVED" >&2; \
+           grep -n 'contract/' frontend/protocols/shared/asset-url.ts >&2; exit 1; }; \
+    grep -q "dest: 'contract/v1'" frontend/vite.config.ts \
+      || { echo "FAIL: vite.config.ts does not copy the v1 managed tree to dist/contract/v1" >&2; \
+           grep -n 'viteStaticCopy\|dest:' frontend/vite.config.ts >&2; exit 1; }
+
+# ── stage 0b: the two BROWSER PROTOCOL trees, installed with npm (upstream #13) ──
+#
+# WHY A SEPARATE STAGE AT ALL. frontend/protocols/{v1,v2} carry package-lock.json, not a bun
+# lockfile, and upstream's own frontend CI job installs them with `npm ci` — one per tree,
+# deliberately, because vite.config.ts's profileRuntimeResolution() plugin resolves every
+# `@midnight-ntwrk/compact-runtime` import made from src/managed/ or contracts/v2/managed/ to
+# `frontend/protocols/<profile>/node_modules/...`. Two physically separate resolution roots is the
+# mechanism, not an accident: one holds compact-runtime 0.16.0 + ledger-v8 8.1.0, the other 0.19.0
+# + ledger-v9, and a single node_modules would give the WASM classes one identity and break
+# `instanceof` during proving.
+#
+# MEASURED, which is why this stage exists rather than two more lines in `build`:
+# `oven/bun:1.4.0` ships a `node` fallback binary at /usr/local/bun-node-fallback-bin/node and
+# NO npm at all (`command -v npm` finds nothing). `bun install` is not a substitute — it would
+# re-resolve from package.json and migrate the npm lockfile, throwing away the exact pinned set
+# that IS the isolation.
+#
+# The node base is the digest images/issuer already pins for its own build stage — one fewer
+# distinct external identity in this repository, and one already vetted. Nothing from this stage
+# reaches a runtime target: only the two node_modules trees are copied into `build`.
+FROM ${NODE_BASE} AS protocols
+
+WORKDIR /protocols
+# Only the manifests, so a change anywhere else in the pinned tree does not re-run two installs.
+COPY --from=source /src/frontend/protocols/v1/package.json      /protocols/v1/package.json
+COPY --from=source /src/frontend/protocols/v1/package-lock.json /protocols/v1/package-lock.json
+COPY --from=source /src/frontend/protocols/v2/package.json      /protocols/v2/package.json
+COPY --from=source /src/frontend/protocols/v2/package-lock.json /protocols/v2/package-lock.json
+
+# `npm ci`, not `npm install`: it installs exactly the lockfile and fails when the lockfile and
+# the manifest disagree — the same guarantee `bun install --frozen-lockfile` gives the other two
+# trees, and the same command upstream's CI runs.
+RUN set -eux; \
+    npm --version; \
+    cd /protocols/v1 && npm ci --no-audit --fund=false; \
+    cd /protocols/v2 && npm ci --no-audit --fund=false; \
+    # The one file the whole arrangement rests on, per profile, at the exact path
+    # profileRuntimeResolution() hands to rollup. A silently empty install would otherwise
+    # surface as an unresolved import minutes into `vite build`.
+    for p in v1 v2; do \
+      test -f "/protocols/${p}/node_modules/@midnight-ntwrk/compact-runtime/dist/index.js" \
+        || { echo "FAIL: /protocols/${p} has no @midnight-ntwrk/compact-runtime/dist/index.js — vite.config.ts's profileRuntimeResolution() would resolve to a path that does not exist" >&2; exit 1; }; \
+    done; \
+    # …and the two runtimes must be DIFFERENT builds, which is the entire point of installing
+    # both. Identical bytes here would mean the isolation collapsed and both generated contracts
+    # were sharing one WASM identity again.
+    if cmp -s /protocols/v1/node_modules/@midnight-ntwrk/compact-runtime/package.json \
+              /protocols/v2/node_modules/@midnight-ntwrk/compact-runtime/package.json; then \
+      echo "FAIL: the v1 and v2 protocol trees resolved the SAME compact-runtime; upstream #13's WASM-identity isolation is gone" >&2; exit 1; \
+    fi; \
+    echo "OK: v1 compact-runtime $(sed -n 's/.*"version": "\([^"]*\)".*/\1/p' /protocols/v1/node_modules/@midnight-ntwrk/compact-runtime/package.json | head -1), v2 $(sed -n 's/.*"version": "\([^"]*\)".*/\1/p' /protocols/v2/node_modules/@midnight-ntwrk/compact-runtime/package.json | head -1)"
 
 # ── stage 1: recompile the contract, and prove it is the committed one ───────
 # Fetched as a release asset and SHA-256 verified, rather than run through the `compact`
@@ -271,7 +430,7 @@ RUN set -eux; \
     fi; \
     echo "OK: 11 circuits reproduced byte-for-byte from the pinned tree"
 
-# ── stage 2: install both dependency sets, typecheck, build the SPA ──────────
+# ── stage 2: install ALL FOUR dependency sets, typecheck, build the SPA ──────
 FROM ${BUN_BASE} AS build
 
 WORKDIR /src
@@ -280,13 +439,31 @@ COPY --from=source /src /src
 # above, but this makes "what the page serves" and "what this build compiled" the same bytes
 # by construction rather than by argument.
 COPY --from=compact /src/src/managed /src/src/managed
+# The two npm-resolved browser protocol trees (upstream #13, stage `protocols`). They are
+# node_modules ONLY — the source of both adapters came down with the pinned tree above, and the
+# manifests are already there; what stage `protocols` adds is the two isolated resolution roots
+# that vite.config.ts's profileRuntimeResolution() plugin hands to rollup by absolute path.
+COPY --from=protocols /protocols/v1/node_modules /src/frontend/protocols/v1/node_modules
+COPY --from=protocols /protocols/v2/node_modules /src/frontend/protocols/v2/node_modules
 
-# BOTH INSTALLS MATTER, and installing only the frontend's would make this build pass
+# ALL FOUR INSTALLS MATTER, and installing only the frontend's would make this build pass
 # trivially while testing nothing. The frontend imports the compiled contract from
 # ../src/managed — OUTSIDE its package root — so Rollup resolves the WASM-bearing midnight
 # packages for those files from the ROOT node_modules: a second physical copy whose classes
 # fail the app's `instanceof` checks. `vite.config.ts`'s `resolve.dedupe` is the fix, and it
 # is only EXERCISED when both installs are present. This is upstream's own CI reasoning.
+#
+# SINCE upstream #13 there are FOUR, and upstream's CI comment says why in one sentence: "Every
+# install matters. The v1/v2 package trees intentionally carry separate WASM class identities;
+# vite.config.ts routes each generated contract import through its matching profile runtime."
+# The other two are the `npm ci` runs in stage `protocols` (bun cannot do them — `oven/bun:1.4.0`
+# has no npm, and `bun install` would re-resolve rather than install the pinned lockfile).
+# BOTH adapters are bundled even though only one runs: useShieldedNight.ts reaches them through
+# `await import('../../protocols/v{1,2}/src/adapter')` with a STATIC string, which rollup resolves
+# at build time into two chunks. `frontend/tsconfig.json` also includes `protocols/*/src`,
+# `protocols/shared` and ../contracts/v2/managed/contract/index.d.ts, so the frontend TYPECHECK
+# needs them too. Upstream does NOT install contracts/v2 for the frontend job, and neither does
+# this image: the v2 contract's own `index.d.ts` type-resolves against the root tree.
 #
 # Frozen: the lockfiles at the pinned commit ARE the tested dependency set, so a transitive
 # dependency publishing a new version is a build failure rather than a silent difference.
@@ -303,16 +480,50 @@ RUN cd frontend && bun run build
 # esbuild emits it verbatim — upstream documents it as exactly this grep marker. Without the
 # lane in the bundle, /config.js would be written, served, ignored, and the page would show no
 # "Local (undeployed)" network at all.
+#
+# THE SAME ARGUMENT NOW APPLIES TO THE PROTOCOL CHOICE (upstream #13). `'midnight-1.x'` and
+# `'Local (undeployed)'` are string LITERALS, not identifiers, so minification preserves them
+# verbatim; finding both in the emitted bundle is what proves the multinetwork table this stack
+# depends on was shipped, rather than merely written in the tree stage 0 grepped.
 RUN set -eux; \
     grep -rqF 'SHIELDED_NIGHT' /src/frontend/dist/assets \
       || { echo "FAIL: the runtime address-override lane is not in the built bundle" >&2; exit 1; }; \
-    # vite.config.ts copies src/managed into dist/contract/compiled/shielded-night; that is
-    # where FetchZkConfigProvider looks. If the copy plugin ever stops running, the page loads
-    # and then cannot prove anything.
-    test -d /src/frontend/dist/contract/compiled/shielded-night/keys; \
-    test -d /src/frontend/dist/contract/compiled/shielded-night/zkir; \
-    n="$(ls -1 /src/frontend/dist/contract/compiled/shielded-night/keys/*.verifier | wc -l)"; \
-    test "${n}" -eq 11 || { echo "FAIL: dist serves ${n} verifier keys, expected 11" >&2; exit 1; }
+    grep -rqF 'midnight-1.x' /src/frontend/dist/assets \
+      || { echo "FAIL: the built bundle carries no 'midnight-1.x' protocol family — the v1 adapter this stack needs was not shipped" >&2; exit 1; }; \
+    grep -rqF 'Local (undeployed)' /src/frontend/dist/assets \
+      || { echo "FAIL: the built bundle carries no 'Local (undeployed)' network label — this stack's own network is not selectable" >&2; exit 1; }
+# THE THREE SERVED ARTIFACT TREES, and which one the page actually fetches.
+#
+# `frontend/vite.config.ts`'s viteStaticCopy emits three: `contract/v1/shielded-night` and
+# `contract/v2/shielded-night` from the two managed dirs, plus `contract/compiled/shielded-night`
+# — the pre-#14 path, kept upstream "for already-open v1 clients during rollout". SINCE #14 THE
+# PAGE FETCHES contract/v1 (asset-url.ts resolves `<origin>/contract/<profile>/shielded-night`),
+# so that is the one nginx.conf's `=404` lane, compose's healthcheck and
+# scripts/verify-shielded-night.sh name — and all three are asserted here because a copy plugin
+# that stopped running would leave a page that loads and then cannot prove anything.
+#
+# v2 IS ASSERTED BUT NOT COMPILED HERE (Q11). `undeployed` is `midnight-1.x`, so nothing on this
+# stack can select the v2 adapter or fetch these keys; they come straight from the pinned tree,
+# whose byte-exactness at compactc 0.34.0 is upstream's own CI job. Asserting the tree was
+# EMITTED still catches the real local failure — a copy target silently dropped by a re-pin.
+RUN set -eux; \
+    for profile in v1 v2 compiled; do \
+      d="/src/frontend/dist/contract/${profile}/shielded-night"; \
+      test -d "${d}/keys" || { echo "FAIL: dist has no ${d}/keys — vite's copy target for '${profile}' did not run" >&2; exit 1; }; \
+      test -d "${d}/zkir" || { echo "FAIL: dist has no ${d}/zkir" >&2; exit 1; }; \
+      n="$(ls -1 "${d}"/keys/*.verifier | wc -l)"; \
+      test "${n}" -eq 11 || { echo "FAIL: dist serves ${n} verifier keys under contract/${profile}, expected 11" >&2; ls -1 "${d}/keys" >&2; exit 1; }; \
+    done; \
+    # THE ONE THE PAGE FETCHES must be the v1 contract this stage compiled, byte for byte — not
+    # the v2 tree copied into the wrong destination, which would pass every count above.
+    cmp /src/src/managed/keys/convertToShielded.verifier \
+        /src/frontend/dist/contract/v1/shielded-night/keys/convertToShielded.verifier \
+      || { echo "FAIL: dist/contract/v1 does not carry the v1 verifier keys this build compiled" >&2; exit 1; }; \
+    if cmp -s /src/frontend/dist/contract/v1/shielded-night/keys/convertToShielded.verifier \
+              /src/frontend/dist/contract/v2/shielded-night/keys/convertToShielded.verifier; then \
+      echo "FAIL: dist/contract/v1 and dist/contract/v2 carry the SAME verifier key; one copy target is pointing at the wrong managed tree" >&2; exit 1; \
+    fi; \
+    echo "OK: contract/v1 (this build's 11 circuits), contract/v2 (the 2.x tree, served but unreachable on undeployed) and the legacy contract/compiled are all in dist"
 
 # ── runtime target 1: the deploy one-shot and the verify driver ──────────────
 # The bun runtime with the pinned tree and its ROOT node_modules only. No frontend, no
