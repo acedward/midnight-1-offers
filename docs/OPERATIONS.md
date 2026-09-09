@@ -940,6 +940,48 @@ each transition took.
 | `SOLVER_LADDER_BUDGET_S` | `300` | `verify.sh`: how long the relay may take to advertise both colours after a re-seed |
 | `SOLVER_VERIFY_RESEED` | `true` | `verify.sh`: re-seed the book when no live maker offer is left. `false` makes an empty book a FAILURE instead — never a skip |
 | `MAKER_OFFER_RESEED` | `false` | the `maker-offer` one-shot: post another offer even though the marker exists. `verify.sh` sets it; an operator restart still JOINs |
+| `SOLVER_VERIFY_SETTLEMENT` | `true` | `verify.sh`: run the canonical settlement driver at the end of the solver section (see below). `false` skips it and the section says loudly that the settlement claim was NOT made |
+| `SOLVER_SETTLEMENT_CASES` | `A` | which of the driver's cases run. `A` is the exact-advertised settlement; `B`/`C`/`D` are the boundary and refusal cases the relay-side assertions already cover, and each extra case costs a mint and a proof |
+| `SOLVER_SETTLEMENT_SYNC_BUDGET_S` | `240` | how long the section waits for the solver's own `backend.isCurrent` before dispatching the intent. Dispatching early is refused TERMINALLY (`issues/00022`), so this is a wait rather than a retry |
+
+### `./verify.sh` proves the stack SETTLES, not merely that it quotes
+
+Since 00020 phase G the solver section ends by running the kernel tree's own
+`deploy/scripts/e2e.ts` **case A** — the canonical 18-assertion settlement driver — as a
+one-off on the `solver` service, so it inherits exactly the env and the two volumes it needs
+(`ZSWAP_API`, `RELAY_HTTP_URL`, `SOLVER_JOURNAL_PATH`, the `solver-config` receipt and the
+`solver-journal` sqlite). It asserts an intent pushed through the relay to the connected solver,
+merged and submitted on chain, with the taker credited and debited **to the unit**, the maker
+offer `consumed` and the solver journal `SETTLED`.
+
+It runs **last**, after the health sampling, because it CONSUMES the offer it fills. That costs
+the next run one re-seed, which the section performs and reports (see the next subsection) — it
+never costs it an assertion.
+
+Two settings are not obvious and both are measurements rather than preferences:
+
+* **`E2E_SKIP_PROVISION=true`, with the taker funded by `issuer-fund` instead.** The driver's own
+  `fundTakerNight` transfers unshielded NIGHT out of its `MAKER_SEED` wallet, and every one of
+  the maker's NIGHT UTXOs is **registered for dust generation** — that is how it pays for its own
+  offer's proving fees — and a registered UTXO is not available as ordinary transfer input.
+  Upstream's deployment runs this driver against a genesis wallet with unregistered NIGHT to
+  spare; this stack gives every role a dedicated wallet with exactly what it needs.
+* **`MAKER_SEED` is passed explicitly.** The `solver` service carries `SOLVER_SEED`, so the
+  driver's own fallback chain (`MAKER_SEED` → `MIDNIGHT_WALLET_SEED` → genesis-1) would drive
+  **genesis-1** rather than the wallet that owns the offer.
+
+`E2E_REQUIRE_UNFUNDED_SOLVER` is deliberately left unset: this stack's solver IS funded by
+`solver-inventory`, so the capital-free premise is not this section's claim.
+
+To run it by hand against a live stack (what phases B–F did):
+
+```bash
+docker compose run --rm --no-deps -T \
+  -e E2E_CASES=A -e E2E_SKIP_PROVISION=true \
+  -e E2E_TOKEN_OUT=<the maker's give colour> -e E2E_TOKEN_IN=<the maker's want colour> \
+  -e MAKER_SEED=0x…0031 -e TAKER_SEED=0x…0032 \
+  --entrypoint bun solver run deploy/scripts/e2e.ts
+```
 
 **`SOLVER_REPO` / `SOLVER_REF` are retired.** The solver is the kernel commit; set either and
 `scripts/lib/common.sh` warns that it is ignored. Move `KERNEL_REF` instead.

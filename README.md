@@ -60,8 +60,11 @@ When `up.sh` returns, these are live (default ports; every one is overridable in
 
 With `poster` up the book fills itself: one sponsored, takeable offer a minute, so the SPA has
 something real to trade against without a second human. `./verify.sh` drives every profile
-that is up end to end (wrap → post → take → unwrap, with exact balances) and prints one
-section per profile; `./down.sh` stops and keeps the chain, `./down.sh -v` wipes every volume.
+that is up end to end (wrap → post → take → unwrap, with exact balances, and — with `solver`
+up — a real INTENT settled through the relay with the taker's balances asserted to the unit)
+and prints one section per profile, plus a `one-shots` section that asserts every service which
+runs once and exits really exited 0 and left its receipt on its volume;
+`./down.sh` stops and keeps the chain, `./down.sh -v` wipes every volume.
 Wallets, seeds and how to import them into Lace: [`docs/WALLETS.md`](docs/WALLETS.md).
 What each service does in detail: [`docs/COMPONENTS.md`](docs/COMPONENTS.md). Operating it,
 upgrading a pin, two stacks at once: [`docs/OPERATIONS.md`](docs/OPERATIONS.md).
